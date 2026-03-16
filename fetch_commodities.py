@@ -53,14 +53,14 @@ HEADERS       = {"User-Agent": "Mozilla/5.0"}
 # SGE spot configs (gold & silver)
 SGE_CONFIGS = [
     {"key": "gold",   "commodity": "黄金 Au99.99", "symbol": "Au99.99", "unit": "元/克"},
-    {"key": "silver", "commodity": "白银 Ag99.99", "symbol": "Ag99.99", "unit": "元/千克"},
+    {"key": "silver", "commodity": "白银 Ag99.99", "symbol": "Ag99.99", "unit": "元/克", "divisor": 1000},
 ]
 
 # Main-contract (主力连续) futures configs
 FUTURES_CONFIGS = [
-    {"key": "copper",   "commodity": "铜 (上期所 CU)",    "symbol": "CU0", "unit": "元/吨"},
-    {"key": "aluminum", "commodity": "铝 (上期所 AL)",    "symbol": "AL0", "unit": "元/吨"},
-    {"key": "oil",      "commodity": "原油 (上海 INE SC)", "symbol": "SC0", "unit": "元/桶"},
+    {"key": "copper",             "commodity": "铜 (上期所 CU)",         "symbol": "CU0", "unit": "元/吨"},
+    {"key": "aluminum",           "commodity": "铝 (上期所 AL)",         "symbol": "AL0", "unit": "元/吨"},
+    {"key": "lithium_carbonate",  "commodity": "碳酸锂 (广期所 LC)",     "symbol": "LC0", "unit": "元/吨"},
 ]
 
 # International futures configs (via ak.futures_foreign_hist, 新浪财经)
@@ -578,6 +578,10 @@ def main() -> int:
                 print(f"  [SKIP] {cfg['commodity']}")
                 failed.append(cfg["key"])
                 continue
+            divisor = cfg.get("divisor", 1)
+            if divisor != 1:
+                entries = [{"date": e["date"], "price": round(e["price"] / divisor, 4)}
+                           for e in entries]
             latest = _db_save(conn, cfg["key"], cfg["symbol"], cfg["commodity"],
                                cfg["unit"], source, entries)
             saved_count += 1
