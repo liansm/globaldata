@@ -61,6 +61,12 @@ FUTURES_CONFIGS = [
     {"key": "copper",             "commodity": "铜 (上期所 CU)",         "symbol": "CU0", "unit": "元/吨"},
     {"key": "aluminum",           "commodity": "铝 (上期所 AL)",         "symbol": "AL0", "unit": "元/吨"},
     {"key": "lithium_carbonate",  "commodity": "碳酸锂 (广期所 LC)",     "symbol": "LC0", "unit": "元/吨"},
+    {"key": "methanol",           "commodity": "甲醇 (郑商所 MA)",       "symbol": "MA0", "unit": "元/吨"},
+    {"key": "urea",               "commodity": "尿素 (郑商所 UR)",       "symbol": "UR0", "unit": "元/吨"},
+    {"key": "meg",                "commodity": "乙二醇 (大商所 EG)",     "symbol": "EG0", "unit": "元/吨"},
+    {"key": "styrene",            "commodity": "苯乙烯 (大商所 EB)",     "symbol": "EB0", "unit": "元/吨"},
+    {"key": "polypropylene",      "commodity": "聚丙烯 (大商所 PP)",     "symbol": "PP0", "unit": "元/吨"},
+    {"key": "natural_rubber",     "commodity": "天然橡胶 (上期所 RU)",   "symbol": "RU0", "unit": "元/吨"},
 ]
 
 # International futures configs (via ak.futures_foreign_hist, 新浪财经)
