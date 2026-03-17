@@ -7,6 +7,7 @@ const route = useRoute()
 const navItems = [
   { label: '大宗商品', icon: '📦', to: '/',        names: ['home', 'detail'] },
   { label: '全球股市', icon: '📈', to: '/markets',  names: ['markets', 'market-detail'] },
+  { label: '加密货币', icon: '₿',  to: '/crypto',   names: ['crypto'] },
 ]
 
 function isActive(item: typeof navItems[0]) {

@@ -3,6 +3,7 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import { commoditiesRoutes } from './routes/commodities'
 import { marketsRoutes } from './routes/markets'
+import { cryptoRoutes } from './routes/crypto'
 
 const app = Fastify({
   logger: {
@@ -21,6 +22,7 @@ app.register(cors, {
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.register(commoditiesRoutes)
 app.register(marketsRoutes)
+app.register(cryptoRoutes)
 
 // Health check
 app.get('/health', async () => ({

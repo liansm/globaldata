@@ -7,6 +7,8 @@ import {
   timestamp,
   serial,
   bigserial,
+  unique,
+  index,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 
@@ -60,6 +62,35 @@ export const indexPrices = pgTable('index_prices', {
   volume:    numeric('volume',   { precision: 24, scale: 4 }),
   turnover:  numeric('turnover', { precision: 24, scale: 4 }),
 })
+
+// --------------------------------------------------------------------------
+// crypto_coins — one row per cryptocurrency
+// --------------------------------------------------------------------------
+export const cryptoCoins = pgTable('crypto_coins', {
+  key:       varchar('key',    { length: 60  }).primaryKey(),
+  symbol:    varchar('symbol', { length: 30  }),
+  name:      varchar('name',   { length: 100 }),
+  unit:      varchar('unit',   { length: 20  }).default('USD'),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+               .default(sql`NOW()`).notNull(),
+})
+
+// --------------------------------------------------------------------------
+// crypto_prices — daily snapshot per coin (upserted on each run)
+// --------------------------------------------------------------------------
+export const cryptoPrices = pgTable('crypto_prices', {
+  id:        bigserial('id', { mode: 'number' }).primaryKey(),
+  coinKey:   varchar('coin_key',   { length: 60 }).notNull(),
+  priceDate: date('price_date').notNull(),
+  close:     numeric('close',      { precision: 20, scale: 6 }),
+  changePct: numeric('change_pct', { precision: 8,  scale: 4 }),
+  volume24h: numeric('volume_24h', { precision: 24, scale: 2 }),
+  high24h:   numeric('high_24h',   { precision: 20, scale: 6 }),
+  low24h:    numeric('low_24h',    { precision: 20, scale: 6 }),
+}, (t) => [
+  unique('crypto_prices_uniq').on(t.coinKey, t.priceDate),
+  index('crypto_prices_key_date').on(t.coinKey, t.priceDate),
+])
 
 // --------------------------------------------------------------------------
 // fetch_log — one row per commodity per run (audit trail)
