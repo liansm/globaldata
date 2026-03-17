@@ -18,6 +18,11 @@ const router = createRouter({
       name: 'markets',
       component: () => import('@/pages/Markets.vue'),
     },
+    {
+      path: '/crypto',
+      name: 'crypto',
+      component: () => import('@/pages/Crypto.vue'),
+    },
   ],
 })
 

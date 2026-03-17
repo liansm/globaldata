@@ -30,12 +30,12 @@ const SECTIONS = [
   {
     title: '能源',
     icon: '⛽',
-    keys: ['intl_oil_wti', 'intl_gas', 'natural_gas'],
+    keys: ['intl_oil_wti', 'intl_gas', 'natural_gas', 'coal_port_5500', 'lithium_carbonate'],
   },
   {
-    title: '动力煤 & 新能源',
-    icon: '🔋',
-    keys: ['coal_port_5500', 'lithium_carbonate'],
+    title: '化工品',
+    icon: '🧪',
+    keys: ['methanol', 'urea', 'meg', 'styrene', 'polypropylene', 'natural_rubber'],
   },
 ]
 
