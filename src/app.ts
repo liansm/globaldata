@@ -2,6 +2,7 @@ import 'dotenv/config'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import { commoditiesRoutes } from './routes/commodities'
+import { marketsRoutes } from './routes/markets'
 
 const app = Fastify({
   logger: {
@@ -19,6 +20,7 @@ app.register(cors, {
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.register(commoditiesRoutes)
+app.register(marketsRoutes)
 
 // Health check
 app.get('/health', async () => ({

@@ -37,6 +37,31 @@ export const prices = pgTable('prices', {
 })
 
 // --------------------------------------------------------------------------
+// market_indices — one row per index / capital-flow series
+// --------------------------------------------------------------------------
+export const marketIndices = pgTable('market_indices', {
+  key:       varchar('key',    { length: 60  }).primaryKey(),
+  symbol:    varchar('symbol', { length: 60  }).notNull(),
+  name:      varchar('name',   { length: 200 }).notNull(),
+  market:    varchar('market', { length: 50  }).notNull(),   // 'A股' | '港股' | '资金流向'
+  unit:      varchar('unit',   { length: 50  }),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+               .default(sql`NOW()`).notNull(),
+})
+
+// --------------------------------------------------------------------------
+// index_prices — daily close / volume per index, unique per (index_key, date)
+// --------------------------------------------------------------------------
+export const indexPrices = pgTable('index_prices', {
+  id:        bigserial('id', { mode: 'number' }).primaryKey(),
+  indexKey:  varchar('index_key',  { length: 60 }).notNull(),
+  priceDate: date('price_date').notNull(),
+  close:     numeric('close',    { precision: 16, scale: 4 }),
+  volume:    numeric('volume',   { precision: 24, scale: 4 }),
+  turnover:  numeric('turnover', { precision: 24, scale: 4 }),
+})
+
+// --------------------------------------------------------------------------
 // fetch_log — one row per commodity per run (audit trail)
 // --------------------------------------------------------------------------
 export const fetchLog = pgTable('fetch_log', {
