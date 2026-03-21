@@ -25,7 +25,7 @@ const key = computed(() => route.params.key as string)
 const loading = ref(false)
 const error   = ref('')
 const detail  = ref<MarketDetail | null>(null)
-const days    = ref<number | 'ytd'>(365)
+const days    = ref<number | 'ytd'>('ytd')
 
 const daysOptions: { label: string; value: number | 'ytd' }[] = [
   { label: '今年来', value: 'ytd'  },
