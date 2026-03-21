@@ -30,14 +30,15 @@ const key = computed(() => route.params.key as string)
 const loading = ref(false)
 const error = ref('')
 const detail = ref<MarketDetail | null>(null)
-const days = ref(90)
+const days = ref(365)
 
 const daysOptions = [
-  { label: '7天',  value: 7 },
-  { label: '30天', value: 30 },
-  { label: '90天', value: 90 },
+  { label: '30天',  value: 30 },
+  { label: '90天',  value: 90 },
   { label: '180天', value: 180 },
-  { label: '1年',  value: 365 },
+  { label: '1年',   value: 365 },
+  { label: '2年',   value: 730 },
+  { label: '5年',   value: 1825 },
 ]
 
 async function loadDetail() {
