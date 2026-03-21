@@ -30,9 +30,10 @@ const key = computed(() => route.params.key as string)
 const loading = ref(false)
 const error = ref('')
 const detail = ref<MarketDetail | null>(null)
-const days = ref(365)
+const days = ref<number | 'ytd'>(365)
 
-const daysOptions = [
+const daysOptions: { label: string; value: number | 'ytd' }[] = [
+  { label: '今年来', value: 'ytd' },
   { label: '30天',  value: 30 },
   { label: '90天',  value: 90 },
   { label: '180天', value: 180 },
@@ -41,11 +42,18 @@ const daysOptions = [
   { label: '5年',   value: 1825 },
 ]
 
+function ytdFrom() {
+  return `${new Date().getFullYear()}-01-01`
+}
+
 async function loadDetail() {
   loading.value = true
   error.value = ''
   try {
-    detail.value = await fetchMarketDetail(key.value, { days: days.value })
+    const params = days.value === 'ytd'
+      ? { from: ytdFrom() }
+      : { days: days.value }
+    detail.value = await fetchMarketDetail(key.value, params)
   } catch {
     error.value = '加载失败，请稍后重试'
   } finally {
