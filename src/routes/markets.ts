@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { db } from '../db'
-import { marketIndices, indexPrices } from '../db/schema'
+import { marketIndices, indexPrices, indexMinutes } from '../db/schema'
 import { eq, desc, gte, lte, and, sql } from 'drizzle-orm'
 
 const toNum = (v: string | null) => (v == null ? null : parseFloat(v))
@@ -107,6 +107,80 @@ export async function marketsRoutes(app: FastifyInstance) {
         close:    toNum(h.close),
         volume:   toNum(h.volume),
         turnover: toNum(h.turnover),
+      })),
+    }
+  })
+
+  // ── GET /api/markets/:key/minutes ─────────────────────────────────────────
+  // Returns 1-minute intraday bars for A-share indices (latest trading day by default)
+  // Query params: date=YYYY-MM-DD
+  app.get<{
+    Params: { key: string }
+    Querystring: { date?: string }
+  }>('/api/markets/:key/minutes', async (req, reply) => {
+    const { key } = req.params
+    const { date } = req.query
+
+    const [meta] = await db
+      .select()
+      .from(marketIndices)
+      .where(eq(marketIndices.key, key))
+
+    if (!meta) {
+      return reply.code(404).send({ error: `Index '${key}' not found` })
+    }
+    if (meta.market !== 'A股') {
+      return reply.code(400).send({ error: 'Minute data only available for A-share indices' })
+    }
+
+    // Resolve target date
+    let targetDate = date
+    if (!targetDate) {
+      const [latest] = await db
+        .select({ dt: indexMinutes.dt })
+        .from(indexMinutes)
+        .where(eq(indexMinutes.indexKey, key))
+        .orderBy(desc(indexMinutes.dt))
+        .limit(1)
+      if (!latest) {
+        return { key, name: meta.name, market: meta.market, date: null, minutes: [] }
+      }
+      // dt is stored as China local time — format as YYYY-MM-DD directly
+      const d = latest.dt
+      const pad = (n: number) => String(n).padStart(2, '0')
+      targetDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    }
+
+    const rows = await db
+      .select({
+        time:     sql<string>`to_char(${indexMinutes.dt}, 'YYYY-MM-DD HH24:MI')`,
+        open:     indexMinutes.open,
+        high:     indexMinutes.high,
+        low:      indexMinutes.low,
+        close:    indexMinutes.close,
+        volume:   indexMinutes.volume,
+        turnover: indexMinutes.turnover,
+      })
+      .from(indexMinutes)
+      .where(and(
+        eq(indexMinutes.indexKey, key),
+        sql`DATE(${indexMinutes.dt}) = ${targetDate}::date`,
+      ))
+      .orderBy(indexMinutes.dt)
+
+    return {
+      key,
+      name:    meta.name,
+      market:  meta.market,
+      date:    targetDate,
+      minutes: rows.map(m => ({
+        time:     m.time,
+        open:     toNum(m.open),
+        high:     toNum(m.high),
+        low:      toNum(m.low),
+        close:    toNum(m.close),
+        volume:   toNum(m.volume),
+        turnover: toNum(m.turnover),
       })),
     }
   })

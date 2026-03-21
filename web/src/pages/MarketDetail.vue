@@ -11,36 +11,37 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
-import { fetchMarketDetail } from '@/api/markets'
-import type { MarketDetail } from '@/types/market'
+import { fetchMarketDetail, fetchMarketMinutes } from '@/api/markets'
+import type { MarketDetail, MarketMinutes } from '@/types/market'
 
-use([
-  CanvasRenderer,
-  LineChart,
-  TitleComponent,
-  TooltipComponent,
-  GridComponent,
-  DataZoomComponent,
-])
+use([CanvasRenderer, LineChart, TitleComponent, TooltipComponent, GridComponent, DataZoomComponent])
 
-const route = useRoute()
+const route  = useRoute()
 const router = useRouter()
 
 const key = computed(() => route.params.key as string)
+
+// ── Daily chart state ──────────────────────────────────────────────────────
 const loading = ref(false)
-const error = ref('')
-const detail = ref<MarketDetail | null>(null)
-const days = ref<number | 'ytd'>(365)
+const error   = ref('')
+const detail  = ref<MarketDetail | null>(null)
+const days    = ref<number | 'ytd'>(365)
 
 const daysOptions: { label: string; value: number | 'ytd' }[] = [
-  { label: '今年来', value: 'ytd' },
-  { label: '30天',  value: 30 },
-  { label: '90天',  value: 90 },
-  { label: '180天', value: 180 },
-  { label: '1年',   value: 365 },
-  { label: '2年',   value: 730 },
-  { label: '5年',   value: 1825 },
+  { label: '今年来', value: 'ytd'  },
+  { label: '30天',   value: 30    },
+  { label: '90天',   value: 90    },
+  { label: '180天',  value: 180   },
+  { label: '1年',    value: 365   },
+  { label: '2年',    value: 730   },
+  { label: '5年',    value: 1825  },
 ]
+
+// ── Intraday state ─────────────────────────────────────────────────────────
+const isAShare       = computed(() => detail.value?.market === 'A股')
+const showIntraday   = ref(false)
+const minuteLoading  = ref(false)
+const minuteData     = ref<MarketMinutes | null>(null)
 
 function ytdFrom() {
   return `${new Date().getFullYear()}-01-01`
@@ -48,7 +49,7 @@ function ytdFrom() {
 
 async function loadDetail() {
   loading.value = true
-  error.value = ''
+  error.value   = ''
   try {
     const params = days.value === 'ytd'
       ? { from: ytdFrom() }
@@ -61,25 +62,70 @@ async function loadDetail() {
   }
 }
 
-onMounted(loadDetail)
-watch([key, days], loadDetail)
+async function loadMinutes() {
+  minuteLoading.value = true
+  error.value         = ''
+  try {
+    minuteData.value = await fetchMarketMinutes(key.value)
+  } catch {
+    error.value = '分时数据加载失败，请稍后重试'
+  } finally {
+    minuteLoading.value = false
+  }
+}
 
+function switchToIntraday() {
+  showIntraday.value = true
+  if (!minuteData.value) loadMinutes()
+}
+
+function switchToDaily(val: number | 'ytd') {
+  showIntraday.value = false
+  days.value = val
+}
+
+onMounted(loadDetail)
+watch(key, () => {
+  showIntraday.value = false
+  minuteData.value   = null
+  loadDetail()
+})
+watch(days, loadDetail)
+
+// ── Computed helpers ───────────────────────────────────────────────────────
 const isFlow = computed(() => detail.value?.market === '资金流向')
 
+function fmt(v: number | null, decimals = 2) {
+  if (v == null) return '—'
+  return v.toLocaleString('zh-CN', { maximumFractionDigits: decimals })
+}
+function latestClose() {
+  const h = detail.value?.history
+  return h?.length ? h[0].close : null
+}
+function rangeChange() {
+  const h = detail.value?.history
+  if (!h || h.length < 2) return null
+  const latest = h[0].close
+  const prev   = h[h.length - 1].close
+  if (latest == null || prev == null || prev === 0) return null
+  return ((latest - prev) / prev) * 100
+}
+
+// ── Daily chart option ─────────────────────────────────────────────────────
 const chartOption = computed(() => {
   if (!detail.value) return {}
-
-  const sorted = [...detail.value.history].reverse()
-  const dates = sorted.map(p => p.date)
-  const closes = sorted.map(p => p.close)
-
-  const valid = closes.filter((v): v is number => v !== null)
-  const minVal = valid.length ? Math.min(...valid) : 0
-  const maxVal = valid.length ? Math.max(...valid) : 0
+  const sorted  = [...detail.value.history].reverse()
+  const dates   = sorted.map(p => p.date)
+  const closes  = sorted.map(p => p.close)
+  const valid   = closes.filter((v): v is number => v !== null)
+  const minVal  = valid.length ? Math.min(...valid) : 0
+  const maxVal  = valid.length ? Math.max(...valid) : 0
   const padding = (maxVal - minVal) * 0.1
-
-  const unitLabel = detail.value.unit ?? (isFlow.value ? '亿元' : '点')
-  const lineColor = isFlow.value ? '#f56c6c' : '#409eff'
+  const unitLabel  = detail.value.unit ?? (isFlow.value ? '亿元' : '点')
+  const lineColor  = isFlow.value ? '#f56c6c' : '#409eff'
+  const areaStart  = isFlow.value ? 'rgba(245,108,108,0.2)' : 'rgba(64,158,255,0.2)'
+  const areaEnd    = isFlow.value ? 'rgba(245,108,108,0)'   : 'rgba(64,158,255,0)'
 
   return {
     tooltip: {
@@ -87,9 +133,7 @@ const chartOption = computed(() => {
       formatter: (params: { axisValue: string; value: number | null }[]) => {
         const p = params[0]
         if (!p) return ''
-        const val = p.value != null
-          ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
-          : '—'
+        const val = p.value != null ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
         return `${p.axisValue}<br/><b>${val}</b> ${unitLabel}`
       },
     },
@@ -105,8 +149,7 @@ const chartOption = computed(() => {
       min: Math.max(0, minVal - padding),
       max: maxVal + padding,
       axisLabel: {
-        fontSize: 11,
-        color: '#888',
+        fontSize: 11, color: '#888',
         formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 0 }),
       },
       splitLine: { lineStyle: { color: '#f0f0f0' } },
@@ -115,48 +158,85 @@ const chartOption = computed(() => {
       { type: 'inside', start: 0, end: 100 },
       { type: 'slider', start: 0, end: 100, height: 24, bottom: 4 },
     ],
-    series: [
-      {
-        name: detail.value.name,
-        type: 'line',
-        data: closes,
-        smooth: false,
-        symbol: 'none',
-        lineStyle: { color: lineColor, width: 2 },
-        areaStyle: {
-          color: {
-            type: 'linear',
-            x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: isFlow.value ? 'rgba(245,108,108,0.2)' : 'rgba(64,158,255,0.2)' },
-              { offset: 1, color: isFlow.value ? 'rgba(245,108,108,0)' : 'rgba(64,158,255,0)' },
-            ],
-          },
+    series: [{
+      name: detail.value.name,
+      type: 'line',
+      data: closes,
+      smooth: false,
+      symbol: 'none',
+      lineStyle: { color: lineColor, width: 2 },
+      areaStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: areaStart }, { offset: 1, color: areaEnd }],
         },
       },
-    ],
+    }],
   }
 })
 
-function fmt(v: number | null, decimals = 2) {
-  if (v == null) return '—'
-  return v.toLocaleString('zh-CN', { maximumFractionDigits: decimals })
-}
+// ── Intraday chart option ──────────────────────────────────────────────────
+const intradayOption = computed(() => {
+  const data = minuteData.value
+  if (!data?.minutes.length) return {}
 
-function latestClose() {
-  const h = detail.value?.history
-  if (!h || !h.length) return null
-  return h[0].close
-}
+  const times  = data.minutes.map(m => m.time.slice(11, 16))   // HH:MM
+  const closes = data.minutes.map(m => m.close)
+  const valid  = closes.filter((v): v is number => v !== null)
+  const minVal  = valid.length ? Math.min(...valid) : 0
+  const maxVal  = valid.length ? Math.max(...valid) : 0
+  const padding = (maxVal - minVal) * 0.05 || minVal * 0.001
 
-function rangeChange() {
-  const h = detail.value?.history
-  if (!h || h.length < 2) return null
-  const latest = h[0].close
-  const prev = h[h.length - 1].close
-  if (latest == null || prev == null || prev === 0) return null
-  return ((latest - prev) / prev) * 100
-}
+  return {
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: { axisValue: string; value: number | null }[]) => {
+        const p = params[0]
+        if (!p) return ''
+        const val = p.value != null ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
+        return `${data.date} ${p.axisValue}<br/><b>${val}</b> 点`
+      },
+    },
+    grid: { top: 20, right: 24, bottom: 60, left: 80 },
+    xAxis: {
+      type: 'category',
+      data: times,
+      axisLabel: { fontSize: 11, color: '#888', interval: 29 },
+      axisLine: { lineStyle: { color: '#ddd' } },
+    },
+    yAxis: {
+      type: 'value',
+      min: minVal - padding,
+      max: maxVal + padding,
+      axisLabel: {
+        fontSize: 11, color: '#888',
+        formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }),
+      },
+      splitLine: { lineStyle: { color: '#f0f0f0' } },
+    },
+    dataZoom: [
+      { type: 'inside', start: 0, end: 100 },
+      { type: 'slider', start: 0, end: 100, height: 24, bottom: 4 },
+    ],
+    series: [{
+      name: detail.value?.name,
+      type: 'line',
+      data: closes,
+      smooth: false,
+      symbol: 'none',
+      lineStyle: { color: '#e8534a', width: 1.5 },
+      areaStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(232,83,74,0.15)' },
+            { offset: 1, color: 'rgba(232,83,74,0)' },
+          ],
+        },
+      },
+    }],
+  }
+})
 </script>
 
 <template>
@@ -179,11 +259,11 @@ function rangeChange() {
 
         <div class="price-block">
           <div class="latest-price">
-            {{ fmt(latestClose(), isFlow ? 2 : 2) }}
+            {{ fmt(latestClose()) }}
             <span class="unit">{{ detail.unit ?? (isFlow ? '亿元' : '点') }}</span>
           </div>
           <div
-            v-if="rangeChange() != null"
+            v-if="!showIntraday && rangeChange() != null"
             class="change"
             :class="rangeChange()! >= 0 ? 'up' : 'down'"
           >
@@ -194,15 +274,46 @@ function rangeChange() {
         </div>
       </div>
 
+      <!-- 工具栏：分时按钮 + 时间范围 -->
       <div class="chart-toolbar">
-        <el-radio-group v-model="days" size="small">
-          <el-radio-button v-for="opt in daysOptions" :key="opt.value" :value="opt.value">
+        <!-- 分时按钮（仅 A股） -->
+        <el-button
+          v-if="isAShare"
+          size="small"
+          :type="showIntraday ? 'primary' : 'default'"
+          class="intraday-btn"
+          @click="switchToIntraday"
+        >
+          分时
+        </el-button>
+
+        <el-radio-group
+          :model-value="showIntraday ? null : days"
+          size="small"
+          @update:model-value="val => switchToDaily(val as number | 'ytd')"
+        >
+          <el-radio-button v-for="opt in daysOptions" :key="String(opt.value)" :value="opt.value">
             {{ opt.label }}
           </el-radio-button>
         </el-radio-group>
       </div>
 
-      <div class="chart-wrap" v-loading="loading">
+      <!-- 分时图 -->
+      <div v-if="showIntraday" class="chart-wrap" v-loading="minuteLoading">
+        <div v-if="minuteData?.date" class="intraday-date">
+          {{ minuteData.date }} 分时走势（{{ minuteData.minutes.length }} 根 1分钟 K线）
+        </div>
+        <v-chart
+          v-if="minuteData?.minutes.length"
+          :option="intradayOption"
+          autoresize
+          style="width:100%;height:380px"
+        />
+        <div v-else-if="!minuteLoading" class="no-data">暂无分时数据，请先运行 fetch_market_minutes.py</div>
+      </div>
+
+      <!-- 日线走势图 -->
+      <div v-else class="chart-wrap" v-loading="loading">
         <v-chart :option="chartOption" autoresize style="width:100%;height:380px" />
       </div>
 
@@ -295,10 +406,20 @@ h1 {
   color: #999;
 }
 
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
 .chart-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
+.intraday-btn {
+  flex-shrink: 0;
+}
+
+/* ── Chart ──────────────────────────────────────────────────────────────── */
 .chart-wrap {
   background: #fff;
   border: 1px solid #eee;
@@ -306,6 +427,22 @@ h1 {
   padding: 12px;
   margin-bottom: 24px;
   min-height: 400px;
+}
+
+.intraday-date {
+  font-size: 13px;
+  color: #888;
+  margin-bottom: 4px;
+  padding-left: 4px;
+}
+
+.no-data {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  color: #aaa;
+  font-size: 14px;
 }
 
 .desc-card {

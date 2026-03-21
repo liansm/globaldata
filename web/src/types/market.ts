@@ -27,3 +27,21 @@ export interface MarketDetail {
   updatedAt: string | null
   history:   IndexPoint[]
 }
+
+export interface MinutePoint {
+  time:     string        // "YYYY-MM-DD HH:MM"
+  open:     number | null
+  high:     number | null
+  low:      number | null
+  close:    number | null
+  volume:   number | null
+  turnover: number | null
+}
+
+export interface MarketMinutes {
+  key:     string
+  name:    string
+  market:  string
+  date:    string | null
+  minutes: MinutePoint[]
+}
