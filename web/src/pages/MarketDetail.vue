@@ -39,7 +39,7 @@ const daysOptions: { label: string; value: number | 'ytd' }[] = [
 
 // ── Intraday state ─────────────────────────────────────────────────────────
 const isAShare       = computed(() => detail.value?.market === 'A股')
-const showIntraday   = ref(false)
+const showIntraday   = ref(true)   // default to intraday; switched off for non-A-share
 const minuteLoading  = ref(false)
 const minuteData     = ref<MarketMinutes | null>(null)
 
@@ -55,6 +55,8 @@ async function loadDetail() {
       ? { from: ytdFrom() }
       : { days: days.value }
     detail.value = await fetchMarketDetail(key.value, params)
+    // Non-A-share indices have no minute data — fall back to daily view
+    if (detail.value?.market !== 'A股') showIntraday.value = false
   } catch {
     error.value = '加载失败，请稍后重试'
   } finally {
@@ -64,11 +66,10 @@ async function loadDetail() {
 
 async function loadMinutes() {
   minuteLoading.value = true
-  error.value         = ''
   try {
     minuteData.value = await fetchMarketMinutes(key.value)
   } catch {
-    error.value = '分时数据加载失败，请稍后重试'
+    minuteData.value = null   // silently fail (non-A-share returns 400)
   } finally {
     minuteLoading.value = false
   }
@@ -84,11 +85,12 @@ function switchToDaily(val: number | 'ytd') {
   days.value = val
 }
 
-onMounted(loadDetail)
+onMounted(() => { loadDetail(); loadMinutes() })
 watch(key, () => {
-  showIntraday.value = false
+  showIntraday.value = true
   minuteData.value   = null
   loadDetail()
+  loadMinutes()
 })
 watch(days, loadDetail)
 
