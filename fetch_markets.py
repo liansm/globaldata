@@ -70,10 +70,6 @@ GLOBAL_CONFIGS = [
      "sina_fn": "global", "sina_symbol": "首尔综合指数"},
     {"key": "idx_sensex", "name": "印度SENSEX", "symbol": "印度孟买SENSEX",    "market": "亚太", "unit": "点",
      "sina_fn": "global", "sina_symbol": "印度孟买SENSEX指数"},
-    {"key": "idx_sti",    "name": "新加坡海峡时报指数", "symbol": "富时新加坡海峡时报", "market": "亚太", "unit": "点",
-     "sina_fn": "global", "sina_symbol": "新加坡海峡时报指数"},
-    {"key": "idx_vni",    "name": "越南胡志明指数",    "symbol": "越南胡志明",        "market": "亚太", "unit": "点",
-     "sina_fn": "global", "sina_symbol": "越南胡志明指数"},
     # 欧洲
     {"key": "idx_ftse",   "name": "英国富时100","symbol": "英国富时100",       "market": "欧洲", "unit": "点",
      "sina_fn": "global", "sina_symbol": "英国富时100指数"},
