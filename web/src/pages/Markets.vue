@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { fetchMarkets } from '@/api/markets'
 import type { MarketIndex } from '@/types/market'
 
+const router = useRouter()
 const loading = ref(false)
 const error   = ref('')
 const list    = ref<MarketIndex[]>([])
@@ -94,6 +96,10 @@ function isFlow(item: MarketIndex) {
   return item.market === '资金流向'
 }
 
+function goDetail(item: MarketIndex) {
+  router.push(`/market/${item.key}`)
+}
+
 function fmtChangePct(v: number | null | undefined) {
   if (v == null) return null
   const sign = v >= 0 ? '+' : ''
@@ -137,7 +143,13 @@ function changePctClass(v: number | null | undefined) {
         </div>
 
         <div class="card-grid">
-          <div v-for="item in sec.items" :key="item.key" class="card">
+          <div
+            v-for="item in sec.items"
+            :key="item.key"
+            class="card"
+            :class="{ clickable: !isFlow(item) }"
+            @click="!isFlow(item) && goDetail(item)"
+          >
             <div class="card-top">
               <span class="card-name">{{ item.name }}</span>
               <el-tag size="small" type="info" class="card-tag">{{ item.key }}</el-tag>
@@ -247,10 +259,14 @@ h1 {
   transition: box-shadow 0.18s, transform 0.18s, border-color 0.18s;
 }
 
-.card:hover {
+.card.clickable {
+  cursor: pointer;
+}
+
+.card.clickable:hover {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
   transform: translateY(-2px);
-  border-color: #c0c4d6;
+  border-color: #409eff;
 }
 
 .card-top {
