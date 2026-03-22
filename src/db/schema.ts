@@ -93,6 +93,24 @@ export const cryptoPrices = pgTable('crypto_prices', {
 ])
 
 // --------------------------------------------------------------------------
+// index_minutes — 1-minute intraday bars for A-share indices
+// --------------------------------------------------------------------------
+export const indexMinutes = pgTable('index_minutes', {
+  id:       bigserial('id', { mode: 'number' }).primaryKey(),
+  indexKey: varchar('index_key', { length: 60 }).notNull(),
+  dt:       timestamp('dt').notNull(),            // China local time (no TZ)
+  open:     numeric('open',     { precision: 16, scale: 4 }),
+  high:     numeric('high',     { precision: 16, scale: 4 }),
+  low:      numeric('low',      { precision: 16, scale: 4 }),
+  close:    numeric('close',    { precision: 16, scale: 4 }),
+  volume:   numeric('volume',   { precision: 24, scale: 4 }),
+  turnover: numeric('turnover', { precision: 24, scale: 4 }),
+}, (t) => [
+  unique('index_minutes_uniq').on(t.indexKey, t.dt),
+  index('idx_index_minutes_key_dt').on(t.indexKey, t.dt),
+])
+
+// --------------------------------------------------------------------------
 // fetch_log — one row per commodity per run (audit trail)
 // --------------------------------------------------------------------------
 export const fetchLog = pgTable('fetch_log', {

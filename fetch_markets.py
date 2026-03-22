@@ -29,7 +29,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-HISTORY_LIMIT = 250
+HISTORY_LIMIT = 365*20
 DATABASE_URL  = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata")
 
 INDEX_CONFIGS = [
@@ -70,8 +70,6 @@ GLOBAL_CONFIGS = [
      "sina_fn": "global", "sina_symbol": "首尔综合指数"},
     {"key": "idx_sensex", "name": "印度SENSEX", "symbol": "印度孟买SENSEX",    "market": "亚太", "unit": "点",
      "sina_fn": "global", "sina_symbol": "印度孟买SENSEX指数"},
-    {"key": "idx_sti",    "name": "新加坡STI",  "symbol": "富时新加坡海峡时报", "market": "亚太", "unit": "点"},  # EM only
-    {"key": "idx_vni",    "name": "越南VN指数", "symbol": "越南胡志明",        "market": "亚太", "unit": "点"},  # EM only
     # 欧洲
     {"key": "idx_ftse",   "name": "英国富时100","symbol": "英国富时100",       "market": "欧洲", "unit": "点",
      "sina_fn": "global", "sina_symbol": "英国富时100指数"},
