@@ -171,7 +171,7 @@ def fetch_astock_index(cfg):
     symbol = cfg["symbol"]
     label  = cfg["name"]
     end    = datetime.now().strftime("%Y%m%d")
-    start  = (datetime.now() - timedelta(days=365 * 5)).strftime("%Y%m%d")
+    start  = (datetime.now() - timedelta(days=365 * 20)).strftime("%Y%m%d")
 
     df = None
     # ── Try EastMoney first ──────────────────────────────────────────────

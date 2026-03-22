@@ -146,9 +146,8 @@ function changePctClass(v: number | null | undefined) {
           <div
             v-for="item in sec.items"
             :key="item.key"
-            class="card"
-            :class="{ clickable: !isFlow(item) }"
-            @click="!isFlow(item) && goDetail(item)"
+            class="card clickable"
+            @click="goDetail(item)"
           >
             <div class="card-top">
               <span class="card-name">{{ item.name }}</span>
@@ -159,6 +158,10 @@ function changePctClass(v: number | null | undefined) {
             <template v-if="isFlow(item)">
               <div class="card-price" :class="flowClass(item.latestClose)">
                 {{ fmtFlow(item.latestClose) }}
+              </div>
+              <div class="card-footer">
+                <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
+                <span class="card-arrow">→</span>
               </div>
             </template>
 

@@ -87,12 +87,17 @@ function switchToDaily(val: number | 'ytd') {
   days.value = val
 }
 
-onMounted(() => { loadDetail(); loadMinutes() })
+function isFlowKey(k: string) { return k.startsWith('flow_') }
+
+onMounted(() => {
+  loadDetail()
+  if (!isFlowKey(key.value)) loadMinutes()
+})
 watch(key, () => {
-  showIntraday.value = true
+  showIntraday.value = !isFlowKey(key.value)
   minuteData.value   = null
   loadDetail()
-  loadMinutes()
+  if (!isFlowKey(key.value)) loadMinutes()
 })
 watch(days, loadDetail)
 
@@ -321,7 +326,7 @@ const intradayOption = computed(() => {
         <v-chart :option="chartOption" autoresize style="width:100%;height:380px" />
       </div>
 
-      <el-descriptions title="指数信息" :column="3" border size="small" class="desc-card">
+      <el-descriptions :title="isFlow ? '资金流向信息' : '指数信息'" :column="3" border size="small" class="desc-card">
         <el-descriptions-item label="市场">{{ detail.market }}</el-descriptions-item>
         <el-descriptions-item label="代码">{{ detail.symbol ?? '—' }}</el-descriptions-item>
         <el-descriptions-item label="数据更新">
