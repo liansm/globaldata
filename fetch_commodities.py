@@ -43,7 +43,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-HISTORY_LIMIT = 250     # ~1 year of trading days to keep
+HISTORY_LIMIT = 365*20     # ~1 year of trading days to keep
 DATABASE_URL  = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata")
 SXCOAL_URL    = "https://www.sxcoal.com/hub/thermalcoal"
 CCTD_URL      = "https://www.cctd.com.cn/"
@@ -290,7 +290,7 @@ def futures_main_fetch(symbol: str, label: str):
     Returns (entries_list, source_str) or (None, None).
     """
     end_date   = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=365 * 5)).strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=365 * 20)).strftime("%Y%m%d")
 
     try:
         df = ak.futures_main_sina(symbol=symbol, start_date=start_date, end_date=end_date)

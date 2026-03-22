@@ -68,7 +68,7 @@ export async function commoditiesRoutes(app: FastifyInstance) {
     const toDate   = to   ? to   : new Date().toISOString().split('T')[0]
     const fromDate = from ? from : (() => {
       const d = new Date(toDate)
-      d.setDate(d.getDate() - Math.min(parseInt(days), 365))
+      d.setDate(d.getDate() - Math.min(parseInt(days), 3650))
       return d.toISOString().split('T')[0]
     })()
 
