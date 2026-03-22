@@ -76,7 +76,7 @@ export async function marketsRoutes(app: FastifyInstance) {
     const toDate   = to   ? to   : new Date().toISOString().split('T')[0]
     const fromDate = from ? from : (() => {
       const d = new Date(toDate)
-      d.setDate(d.getDate() - Math.min(parseInt(days), 3650))
+      d.setDate(d.getDate() - Math.min(parseInt(days), 7300))
       return d.toISOString().split('T')[0]
     })()
 

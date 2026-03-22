@@ -43,6 +43,7 @@ const daysOptions: { label: string; value: DaysOption }[] = [
   { label: '2年',    value: 730  },
   { label: '5年',    value: 1825 },
   { label: '10年',   value: 3650 },
+  { label: '20年',   value: 7300 },
 ]
 
 function ytdFrom() {
