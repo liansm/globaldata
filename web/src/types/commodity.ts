@@ -39,4 +39,4 @@ export interface LatestPrice {
 }
 
 // 时间范围选项
-export type DaysOption = 7 | 30 | 90 | 180 | 365
+export type DaysOption = 'ytd' | 7 | 30 | 90 | 180 | 365 | 730 | 1825 | 3650
