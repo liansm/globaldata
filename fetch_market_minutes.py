@@ -27,11 +27,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata
 
 # Full exchange-prefixed symbols — required by stock_zh_a_minute (Sina format)
 ASTOCK_MINUTE_CONFIGS = [
-    {"key": "idx_sh",   "name": "上证指数", "symbol": "sh000001"},
-    {"key": "idx_sz",   "name": "深证成指", "symbol": "sz399001"},
-    {"key": "idx_cyb",  "name": "创业板指", "symbol": "sz399006"},
-    {"key": "idx_kc50", "name": "科创50",   "symbol": "sh000688"},
-    {"key": "idx_bz50", "name": "北证50",   "symbol": "bj899050"},
+    {"key": "idx_sh",    "name": "上证指数", "symbol": "sh000001"},
+    {"key": "idx_sz",    "name": "深证成指", "symbol": "sz399001"},
+    {"key": "idx_hs300", "name": "沪深300",  "symbol": "sh000300"},
+    {"key": "idx_cyb",   "name": "创业板指", "symbol": "sz399006"},
+    {"key": "idx_kc50",  "name": "科创50",   "symbol": "sh000688"},
+    {"key": "idx_bz50",  "name": "北证50",   "symbol": "bj899050"},
 ]
 
 # ---------------------------------------------------------------------------

@@ -49,6 +49,7 @@ INDEX_CONFIGS = [
     # A股 — ak.stock_zh_index_daily
     {"key": "idx_sh",    "name": "上证指数", "symbol": "sh000001", "market": "A股",  "unit": "点"},
     {"key": "idx_sz",    "name": "深证成指", "symbol": "sz399001", "market": "A股",  "unit": "点"},
+    {"key": "idx_hs300", "name": "沪深300",  "symbol": "sh000300", "market": "A股",  "unit": "点"},
     {"key": "idx_cyb",   "name": "创业板指", "symbol": "sz399006", "market": "A股",  "unit": "点"},
     {"key": "idx_kc50",  "name": "科创50",   "symbol": "sh000688", "market": "A股",  "unit": "点"},
     {"key": "idx_bz50",  "name": "北证50",   "symbol": "bj899050", "market": "A股",  "unit": "点"},

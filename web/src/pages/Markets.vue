@@ -24,7 +24,7 @@ const SECTIONS = [
   {
     title: 'A股',
     icon:  '🇨🇳',
-    keys:  ['idx_sh', 'idx_sz', 'idx_cyb', 'idx_kc50', 'idx_bz50'],
+    keys:  ['idx_sh', 'idx_sz', 'idx_hs300', 'idx_cyb', 'idx_kc50', 'idx_bz50'],
   },
   {
     title: '港股',
