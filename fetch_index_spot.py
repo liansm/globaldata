@@ -1,10 +1,13 @@
 """
-A-Share Index Spot Data Fetcher
+Index Spot Data Fetcher (A股 + 港股)
 
-Uses akshare.stock_zh_index_spot_sina — real-time snapshot for all A-share indices.
-  ak.stock_zh_index_spot_sina()
-  Returns columns: 代码, 名称, 最新价, 涨跌额, 涨跌幅, 成交量, 成交额, 振幅, 最高, 最低, 今开, 昨收
-  成交额 unit: 元，与 index_prices.turnover 单位一致，直接存储
+A股: akshare.stock_zh_index_spot_sina()
+  Columns: 代码, 名称, 最新价, 涨跌额, 涨跌幅, 成交量, 成交额, 振幅, 最高, 最低, 今开, 昨收
+  成交额 unit: 元，直接存储
+
+港股: akshare.stock_hk_index_spot_sina()
+  Columns: 指数名称, 最新价, 涨跌额, 涨跌幅, 昨收, 今开, 最高, 最低, 成交量, 成交额
+  成交额 unit: 港元，直接存储；matched by 指数名称
 
 Writes to index_spot (one row per index, upserted on every run).
 Run any time during or after market hours for fresh data.
@@ -24,14 +27,21 @@ load_dotenv()
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata")
 
-# Maps index_key → sina symbol code (e.g. "sh000001")
-SPOT_CONFIGS = [
+# A股: index_key → sina code (e.g. "sh000001")
+AH_SPOT_CONFIGS = [
     {"key": "idx_sh",    "symbol": "sh000001", "name": "上证指数"},
     {"key": "idx_sz",    "symbol": "sz399001", "name": "深证成指"},
     {"key": "idx_hs300", "symbol": "sh000300", "name": "沪深300"},
     {"key": "idx_cyb",   "symbol": "sz399006", "name": "创业板指"},
     {"key": "idx_kc50",  "symbol": "sh000688", "name": "科创50"},
     # 北证50 (bj899050) 不在 stock_zh_index_spot_sina 覆盖范围内，跳过
+]
+
+# 港股: index_key → 指数名称 (matched by 指数名称 column in stock_hk_index_spot_sina)
+HK_SPOT_CONFIGS = [
+    {"key": "idx_hsi",    "hk_name": "恒生指数",       "name": "恒生指数"},
+    {"key": "idx_hscei",  "hk_name": "恒生中国企业指数", "name": "恒生国企"},
+    {"key": "idx_hstech", "hk_name": "恒生科技指数",    "name": "恒生科技"},
 ]
 
 # ---------------------------------------------------------------------------
@@ -84,26 +94,41 @@ def _safe_float(val):
 
 
 # ---------------------------------------------------------------------------
-# Fetch spot snapshot
+# Fetch spot snapshots
 # ---------------------------------------------------------------------------
-def fetch_spot() -> dict | None:
-    """Call stock_zh_index_spot_sina and return dict keyed by sina code."""
+def fetch_a_spot() -> dict | None:
+    """Call stock_zh_index_spot_sina → dict keyed by sina code (e.g. 'sh000001')."""
     try:
         df = ak.stock_zh_index_spot_sina()
     except Exception as exc:
         print(f"[ERROR] stock_zh_index_spot_sina: {exc}")
         return None
-
     if df is None or df.empty:
         print("[ERROR] stock_zh_index_spot_sina: empty response")
         return None
-
     result = {}
     for _, row in df.iterrows():
         code = str(row.get("代码", "")).strip()
-        if not code:
-            continue
-        result[code] = row
+        if code:
+            result[code] = row
+    return result
+
+
+def fetch_hk_spot() -> dict | None:
+    """Call stock_hk_index_spot_sina → dict keyed by 指数名称."""
+    try:
+        df = ak.stock_hk_index_spot_sina()
+    except Exception as exc:
+        print(f"[ERROR] stock_hk_index_spot_sina: {exc}")
+        return None
+    if df is None or df.empty:
+        print("[ERROR] stock_hk_index_spot_sina: empty response")
+        return None
+    result = {}
+    for _, row in df.iterrows():
+        name_key = str(row.get("指数名称", "")).strip()
+        if name_key:
+            result[name_key] = row
     return result
 
 
@@ -120,36 +145,62 @@ def main() -> int:
         print(f"  [FATAL] Cannot connect: {exc}")
         return 1
 
-    print("Fetching stock_zh_index_spot_sina...")
-    spot_map = fetch_spot()
-    if spot_map is None:
+    today = date.today().isoformat()
+    rows: list = []
+    failed: list = []
+
+    # ── A股 ─────────────────────────────────────────────────────────────────
+    print("Fetching stock_zh_index_spot_sina (A股)...")
+    a_map = fetch_a_spot()
+    if a_map is None:
         conn.close()
         return 1
-    print(f"  [OK] {len(spot_map)} indices in snapshot\n")
+    print(f"  [OK] {len(a_map)} entries in A-share snapshot\n")
 
-    today = date.today().isoformat()
-    rows = []
-    failed = []
-
-    for cfg in SPOT_CONFIGS:
+    for cfg in AH_SPOT_CONFIGS:
         key    = cfg["key"]
         symbol = cfg["symbol"]
         name   = cfg["name"]
-
-        row = spot_map.get(symbol)
+        row = a_map.get(symbol)
         if row is None:
-            print(f"  [{name}] NOT FOUND in snapshot (symbol={symbol})")
+            print(f"  [{name}] NOT FOUND (symbol={symbol})")
             failed.append(key)
             continue
-
         price      = _safe_float(row.get("最新价"))
-        change_pct = _safe_float(row.get("涨跌幅"))   # already in %, e.g. 1.23
-        turnover   = _safe_float(row.get("成交额"))    # 元
+        change_pct = _safe_float(row.get("涨跌幅"))
+        turnover   = _safe_float(row.get("成交额"))   # 元
         prev_close = _safe_float(row.get("昨收"))
-
         print(f"  {name:8s}  price={price}  chg={change_pct}%  turnover={turnover}  昨收={prev_close}")
         rows.append((key, price, change_pct, turnover, prev_close, today))
 
+    # ── 港股 ─────────────────────────────────────────────────────────────────
+    print("\nFetching stock_hk_index_spot_sina (港股)...")
+    hk_map = fetch_hk_spot()
+    if hk_map is None:
+        print("  [WARN] 港股实时数据获取失败，跳过")
+    else:
+        print(f"  [OK] {len(hk_map)} entries in HK snapshot\n")
+        for cfg in HK_SPOT_CONFIGS:
+            key     = cfg["key"]
+            hk_name = cfg["hk_name"]
+            name    = cfg["name"]
+            row = hk_map.get(hk_name)
+            if row is None:
+                # Try partial match
+                row = next((v for k, v in hk_map.items() if hk_name in k or k in hk_name), None)
+            if row is None:
+                print(f"  [{name}] NOT FOUND (hk_name={hk_name})")
+                print(f"    Available names: {list(hk_map.keys())[:10]}")
+                failed.append(key)
+                continue
+            price      = _safe_float(row.get("最新价"))
+            change_pct = _safe_float(row.get("涨跌幅"))
+            turnover   = _safe_float(row.get("成交额"))   # 港元
+            prev_close = _safe_float(row.get("昨收"))
+            print(f"  {name:8s}  price={price}  chg={change_pct}%  turnover={turnover}  昨收={prev_close}")
+            rows.append((key, price, change_pct, turnover, prev_close, today))
+
+    # ── 写库 ─────────────────────────────────────────────────────────────────
     try:
         db_upsert_spot(conn, rows)
         conn.commit()
@@ -167,7 +218,7 @@ def main() -> int:
         print(f"[WARN] {len(failed)} symbols not found: {', '.join(failed)}")
         return 1
 
-    print(f"\n[SUMMARY] All {len(rows)} A-share index spots updated for {today}.")
+    print(f"\n[SUMMARY] {len(rows)} index spots updated for {today}.")
     return 0
 
 
