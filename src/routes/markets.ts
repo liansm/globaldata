@@ -43,7 +43,7 @@ export async function marketsRoutes(app: FastifyInstance) {
           ORDER BY price_date DESC
           OFFSET 1 LIMIT 1
         )`.as('prev_close'),
-        // Real-time spot fields (index_spot) — A-share only
+        // Real-time spot fields (index_spot) — A股 + 港股
         spotPrice: sql<string>`(
           SELECT price FROM index_spot
           WHERE index_key = ${marketIndices.key}
@@ -77,8 +77,8 @@ export async function marketsRoutes(app: FastifyInstance) {
       const spotChangePct  = toNum(r.spotChangePct)
       const spotTurnover   = toNum(r.spotTurnover)
 
-      // Use real-time spot data when available for A-share indices
-      const useSpot = r.market === 'A股' && spotPrice != null
+      // Use real-time spot data when available for A股 and 港股
+      const useSpot = (r.market === 'A股' || r.market === '港股') && spotPrice != null
 
       const displayClose = useSpot ? spotPrice : latestClose
 
