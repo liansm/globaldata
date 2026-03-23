@@ -1,4 +1,5 @@
 akshare
+tushare
 pandas
 requests
 beautifulsoup4
