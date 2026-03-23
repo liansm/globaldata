@@ -29,7 +29,7 @@ const SECTIONS = [
   {
     title: '港股',
     icon:  '🇭🇰',
-    keys:  ['idx_hsi', 'idx_hscei'],
+    keys:  ['idx_hsi', 'idx_hscei', 'idx_hstech'],
   },
   {
     title: '沪深港通资金流向',

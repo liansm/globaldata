@@ -54,8 +54,9 @@ INDEX_CONFIGS = [
     {"key": "idx_kc50",  "name": "科创50",   "symbol": "sh000688", "market": "A股",  "unit": "点"},
     {"key": "idx_bz50",  "name": "北证50",   "symbol": "bj899050", "market": "A股",  "unit": "点"},
     # 港股 — ak.stock_hk_index_daily_sina
-    {"key": "idx_hsi",   "name": "恒生指数", "symbol": "HSI",      "market": "港股", "unit": "点"},
-    {"key": "idx_hscei", "name": "恒生国企", "symbol": "HSCEI",    "market": "港股", "unit": "点"},
+    {"key": "idx_hsi",    "name": "恒生指数",   "symbol": "HSI",      "market": "港股", "unit": "点"},
+    {"key": "idx_hscei",  "name": "恒生国企",   "symbol": "HSCEI",    "market": "港股", "unit": "点"},
+    {"key": "idx_hstech", "name": "恒生科技",   "symbol": "HSTECH",   "market": "港股", "unit": "点"},
 ]
 
 FLOW_CONFIGS = [
