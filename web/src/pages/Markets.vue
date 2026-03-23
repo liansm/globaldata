@@ -177,12 +177,12 @@ function changePctClass(v: number | null | undefined) {
                   {{ fmtPoint(item.latestClose) }}
                   <span class="card-unit">{{ item.unit ?? '点' }}</span>
                 </span>
-                <span
-                  v-if="fmtChangePct(item.changePct)"
-                  class="card-pct"
-                  :class="changePctClass(item.changePct)"
-                >{{ fmtChangePct(item.changePct) }}</span>
               </div>
+              <div
+                v-if="fmtChangePct(item.changePct)"
+                class="card-pct"
+                :class="changePctClass(item.changePct)"
+              >{{ fmtChangePct(item.changePct) }}</div>
               <div v-if="fmtTurnover(item.latestTurnover, item.market)" class="card-turnover">
                 成交额 {{ fmtTurnover(item.latestTurnover, item.market) }}
               </div>
@@ -300,8 +300,6 @@ h1 {
 .card-price-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 
 .card-price {
@@ -313,9 +311,10 @@ h1 {
 }
 
 .card-pct {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  margin-top: 2px;
 }
 
 .pct-up   { color: #e8534a; }   /* 红色 = 上涨（中国习惯） */
