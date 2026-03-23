@@ -8,10 +8,10 @@ const toNum = (v: string | null) => (v == null ? null : parseFloat(v))
 export async function marketsRoutes(app: FastifyInstance) {
 
   // ── GET /api/markets ──────────────────────────────────────────────────────
-  // Returns all indices with their latest close price and date.
-  // For A-share indices: if intraday (index_minutes) data is more recent than
-  // the latest daily close, the intraday last-bar close is used as the price
-  // and the change% is computed against the previous daily close.
+  // Returns all indices with latest close, turnover, and change%.
+  // For A-share indices: if index_spot has a record (populated by
+  // fetch_index_spot.py via stock_zh_index_spot_sina), use it directly for
+  // price / change_pct / turnover. Otherwise fall back to index_prices.
   app.get('/api/markets', async () => {
     const rows = await db
       .select({
@@ -21,6 +21,7 @@ export async function marketsRoutes(app: FastifyInstance) {
         market:    marketIndices.market,
         unit:      marketIndices.unit,
         updatedAt: marketIndices.updatedAt,
+        // Daily fallback fields (index_prices)
         latestDate: sql<string>`(
           SELECT price_date FROM index_prices
           WHERE index_key = ${marketIndices.key}
@@ -42,65 +43,60 @@ export async function marketsRoutes(app: FastifyInstance) {
           ORDER BY price_date DESC
           OFFSET 1 LIMIT 1
         )`.as('prev_close'),
-        // Intraday: latest minute bar (only populated for A-share indices)
-        latestMinuteClose: sql<string>`(
-          SELECT close FROM index_minutes
+        // Real-time spot fields (index_spot) — A-share only
+        spotPrice: sql<string>`(
+          SELECT price FROM index_spot
           WHERE index_key = ${marketIndices.key}
-          ORDER BY dt DESC LIMIT 1
-        )`.as('latest_minute_close'),
-        latestMinuteDt: sql<string>`(
-          SELECT to_char(dt, 'YYYY-MM-DD HH24:MI') FROM index_minutes
+        )`.as('spot_price'),
+        spotChangePct: sql<string>`(
+          SELECT change_pct FROM index_spot
           WHERE index_key = ${marketIndices.key}
-          ORDER BY dt DESC LIMIT 1
-        )`.as('latest_minute_dt'),
-        // Sum of turnover for all bars on the latest intraday day
-        latestMinuteTurnover: sql<string>`(
-          SELECT SUM(turnover) FROM index_minutes
+        )`.as('spot_change_pct'),
+        spotTurnover: sql<string>`(
+          SELECT turnover FROM index_spot
           WHERE index_key = ${marketIndices.key}
-            AND DATE(dt) = (
-              SELECT DATE(dt) FROM index_minutes
-              WHERE index_key = ${marketIndices.key}
-              ORDER BY dt DESC LIMIT 1
-            )
-        )`.as('latest_minute_turnover'),
+        )`.as('spot_turnover'),
+        spotDate: sql<string>`(
+          SELECT to_char(spot_date, 'YYYY-MM-DD') FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_date'),
+        spotUpdatedAt: sql<string>`(
+          SELECT to_char(updated_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI')
+          FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_updated_at'),
       })
       .from(marketIndices)
       .orderBy(marketIndices.market, marketIndices.key)
 
     return rows.map(r => {
-      const latestClose           = toNum(r.latestClose)
-      const prevClose             = toNum(r.prevClose)
-      const latestTurnover        = toNum(r.latestTurnover)
-      const latestMinuteClose     = toNum(r.latestMinuteClose)
-      const latestMinuteDt        = r.latestMinuteDt ?? null
-      const latestMinuteTurnover  = toNum(r.latestMinuteTurnover)
+      const latestClose    = toNum(r.latestClose)
+      const prevClose      = toNum(r.prevClose)
+      const latestTurnover = toNum(r.latestTurnover)
+      const spotPrice      = toNum(r.spotPrice)
+      const spotChangePct  = toNum(r.spotChangePct)
+      const spotTurnover   = toNum(r.spotTurnover)
 
-      // Use intraday price when: A-share index AND minute date is newer than daily date
-      const minuteDay = latestMinuteDt ? latestMinuteDt.slice(0, 10) : null
-      const dailyDay  = r.latestDate   ? r.latestDate.slice(0, 10)   : null
-      const useMinute = r.market === 'A股'
-                        && latestMinuteClose != null
-                        && minuteDay != null && dailyDay != null
-                        && minuteDay > dailyDay
+      // Use real-time spot data when available for A-share indices
+      const useSpot = r.market === 'A股' && spotPrice != null
 
-      const displayClose = useMinute ? latestMinuteClose : latestClose
-      // Baseline for change%:
-      //   - intraday  → previous daily close (latestClose = last record in index_prices)
-      //   - daily     → the record before that (prevClose = OFFSET 1)
-      const baseClose = useMinute ? latestClose : prevClose
-      const changePct = (displayClose != null && baseClose != null && baseClose !== 0)
-        ? parseFloat(((displayClose - baseClose) / baseClose * 100).toFixed(2))
-        : null
+      const displayClose = useSpot ? spotPrice : latestClose
+
+      // change%: spot provides it directly; daily: compute from prevClose
+      const changePct = useSpot
+        ? (spotChangePct != null ? parseFloat(spotChangePct.toFixed(2)) : null)
+        : (displayClose != null && prevClose != null && prevClose !== 0)
+          ? parseFloat(((displayClose - prevClose) / prevClose * 100).toFixed(2))
+          : null
 
       return {
         ...r,
-        // When using intraday, update latestDate to the intraday day (YYYY-MM-DD)
-        latestDate:     useMinute ? minuteDay : r.latestDate,
+        latestDate:     useSpot ? (r.spotDate ?? r.latestDate) : r.latestDate,
         latestClose:    displayClose,
-        latestTurnover: useMinute ? latestMinuteTurnover : latestTurnover,
+        latestTurnover: useSpot ? spotTurnover : latestTurnover,
         changePct,
-        // Non-null only when intraday data is actually being shown
-        latestMinuteDt: useMinute ? latestMinuteDt : null,
+        // Non-null when spot data is active — used by frontend to show "实时" badge + time
+        latestSpotUpdatedAt: useSpot ? (r.spotUpdatedAt ?? null) : null,
       }
     })
   })

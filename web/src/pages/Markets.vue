@@ -80,8 +80,8 @@ function fmtDate(d: string | null) {
   return d ? d.slice(0, 10) : '—'
 }
 
-/** 分时时间戳 "YYYY-MM-DD HH:MM" → "HH:MM" */
-function fmtMinuteTime(dt: string | null) {
+/** 实时时间戳 "YYYY-MM-DD HH:MM" → "HH:MM" */
+function fmtSpotTime(dt: string | null) {
   return dt ? dt.slice(11, 16) : null
 }
 
@@ -190,10 +190,10 @@ function changePctClass(v: number | null | undefined) {
 
             <div class="card-footer">
               <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-              <template v-if="item.latestMinuteDt">
+              <template v-if="item.latestSpotUpdatedAt">
                 <span class="card-intraday-sep">·</span>
-                <span class="card-intraday-time">{{ fmtMinuteTime(item.latestMinuteDt) }}</span>
-                <span class="card-intraday-badge">分时</span>
+                <span class="card-intraday-time">{{ fmtSpotTime(item.latestSpotUpdatedAt) }}</span>
+                <span class="card-intraday-badge">实时</span>
               </template>
             </div>
           </div>
