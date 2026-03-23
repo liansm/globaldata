@@ -8,7 +8,10 @@ const toNum = (v: string | null) => (v == null ? null : parseFloat(v))
 export async function marketsRoutes(app: FastifyInstance) {
 
   // ── GET /api/markets ──────────────────────────────────────────────────────
-  // Returns all indices with their latest close price and date
+  // Returns all indices with latest close, turnover, and change%.
+  // For A-share indices: if index_spot has a record (populated by
+  // fetch_index_spot.py via stock_zh_index_spot_sina), use it directly for
+  // price / change_pct / turnover. Otherwise fall back to index_prices.
   app.get('/api/markets', async () => {
     const rows = await db
       .select({
@@ -18,6 +21,7 @@ export async function marketsRoutes(app: FastifyInstance) {
         market:    marketIndices.market,
         unit:      marketIndices.unit,
         updatedAt: marketIndices.updatedAt,
+        // Daily fallback fields (index_prices)
         latestDate: sql<string>`(
           SELECT price_date FROM index_prices
           WHERE index_key = ${marketIndices.key}
@@ -39,6 +43,28 @@ export async function marketsRoutes(app: FastifyInstance) {
           ORDER BY price_date DESC
           OFFSET 1 LIMIT 1
         )`.as('prev_close'),
+        // Real-time spot fields (index_spot) — A-share only
+        spotPrice: sql<string>`(
+          SELECT price FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_price'),
+        spotChangePct: sql<string>`(
+          SELECT change_pct FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_change_pct'),
+        spotTurnover: sql<string>`(
+          SELECT turnover FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_turnover'),
+        spotDate: sql<string>`(
+          SELECT to_char(spot_date, 'YYYY-MM-DD') FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_date'),
+        spotUpdatedAt: sql<string>`(
+          SELECT to_char(updated_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI')
+          FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_updated_at'),
       })
       .from(marketIndices)
       .orderBy(marketIndices.market, marketIndices.key)
@@ -47,10 +73,31 @@ export async function marketsRoutes(app: FastifyInstance) {
       const latestClose    = toNum(r.latestClose)
       const prevClose      = toNum(r.prevClose)
       const latestTurnover = toNum(r.latestTurnover)
-      const changePct = (latestClose != null && prevClose != null && prevClose !== 0)
-        ? parseFloat(((latestClose - prevClose) / prevClose * 100).toFixed(2))
-        : null
-      return { ...r, latestClose, latestTurnover, changePct }
+      const spotPrice      = toNum(r.spotPrice)
+      const spotChangePct  = toNum(r.spotChangePct)
+      const spotTurnover   = toNum(r.spotTurnover)
+
+      // Use real-time spot data when available for A-share indices
+      const useSpot = r.market === 'A股' && spotPrice != null
+
+      const displayClose = useSpot ? spotPrice : latestClose
+
+      // change%: spot provides it directly; daily: compute from prevClose
+      const changePct = useSpot
+        ? (spotChangePct != null ? parseFloat(spotChangePct.toFixed(2)) : null)
+        : (displayClose != null && prevClose != null && prevClose !== 0)
+          ? parseFloat(((displayClose - prevClose) / prevClose * 100).toFixed(2))
+          : null
+
+      return {
+        ...r,
+        latestDate:     useSpot ? (r.spotDate ?? r.latestDate) : r.latestDate,
+        latestClose:    displayClose,
+        latestTurnover: useSpot ? spotTurnover : latestTurnover,
+        changePct,
+        // Non-null when spot data is active — used by frontend to show "实时" badge + time
+        latestSpotUpdatedAt: useSpot ? (r.spotUpdatedAt ?? null) : null,
+      }
     })
   })
 

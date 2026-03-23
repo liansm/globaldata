@@ -9,6 +9,9 @@ export interface MarketIndex {
   latestClose:    number | null   // 指数点位 or 净流入亿元
   latestTurnover: number | null   // 成交额（仅指数）
   changePct:      number | null   // 涨跌幅 %（与前一交易日比较）
+  // Non-null when displayed price comes from real-time spot data (index_spot)
+  // Format: "YYYY-MM-DD HH:MM" (China local time)
+  latestSpotUpdatedAt: string | null
 }
 
 export interface IndexPoint {

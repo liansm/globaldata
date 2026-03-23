@@ -111,6 +111,21 @@ export const indexMinutes = pgTable('index_minutes', {
 ])
 
 // --------------------------------------------------------------------------
+// index_spot — latest real-time snapshot for A-share indices (one row per index)
+// Populated by fetch_index_spot.py via stock_zh_index_spot_sina
+// --------------------------------------------------------------------------
+export const indexSpot = pgTable('index_spot', {
+  indexKey:  varchar('index_key',  { length: 60 }).primaryKey(),
+  price:     numeric('price',      { precision: 16, scale: 4 }),
+  changePct: numeric('change_pct', { precision: 8,  scale: 4 }),  // e.g. 1.23 for +1.23%
+  turnover:  numeric('turnover',   { precision: 24, scale: 4 }),  // 元
+  prevClose: numeric('prev_close', { precision: 16, scale: 4 }),
+  spotDate:  date('spot_date'),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+               .default(sql`NOW()`).notNull(),
+})
+
+// --------------------------------------------------------------------------
 // fetch_log — one row per commodity per run (audit trail)
 // --------------------------------------------------------------------------
 export const fetchLog = pgTable('fetch_log', {

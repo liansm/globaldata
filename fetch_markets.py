@@ -3,14 +3,14 @@ Global Market Index & Capital Flow Fetcher
 Fetches Chinese A-share indices, Hong Kong indices, and Stock Connect
 capital flow data via akshare. Persists results to PostgreSQL.
 
-A-share indices (EastMoney):
+A-share indices (Sina):
   sh000001 上证指数  sz399001 深证成指  sz399006 创业板指
   sh000688 科创50   bj899050 北证50
 
 HK indices (Sina):
   HSI 恒生指数  HSCEI 恒生国企指数
 
-Capital flows (EastMoney Stock Connect):
+Capital flows (Tushare moneyflow_hsgt):
   北向资金 (Northbound)  南向资金 (Southbound)
 """
 
@@ -19,12 +19,25 @@ import sys
 from datetime import datetime, timedelta
 
 import akshare as ak
+import tushare as ts
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 
 load_dotenv()
+
+TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
+_ts_pro = None
+
+def _get_ts_pro():
+    global _ts_pro
+    if _ts_pro is None:
+        if not TUSHARE_TOKEN:
+            raise RuntimeError("TUSHARE_TOKEN not set in environment")
+        ts.set_token(TUSHARE_TOKEN)
+        _ts_pro = ts.pro_api()
+    return _ts_pro
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -33,15 +46,17 @@ HISTORY_LIMIT = 365*20
 DATABASE_URL  = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata")
 
 INDEX_CONFIGS = [
-    # A股 — ak.stock_zh_index_daily_em
+    # A股 — ak.stock_zh_index_daily
     {"key": "idx_sh",    "name": "上证指数", "symbol": "sh000001", "market": "A股",  "unit": "点"},
     {"key": "idx_sz",    "name": "深证成指", "symbol": "sz399001", "market": "A股",  "unit": "点"},
+    {"key": "idx_hs300", "name": "沪深300",  "symbol": "sh000300", "market": "A股",  "unit": "点"},
     {"key": "idx_cyb",   "name": "创业板指", "symbol": "sz399006", "market": "A股",  "unit": "点"},
     {"key": "idx_kc50",  "name": "科创50",   "symbol": "sh000688", "market": "A股",  "unit": "点"},
     {"key": "idx_bz50",  "name": "北证50",   "symbol": "bj899050", "market": "A股",  "unit": "点"},
     # 港股 — ak.stock_hk_index_daily_sina
-    {"key": "idx_hsi",   "name": "恒生指数", "symbol": "HSI",      "market": "港股", "unit": "点"},
-    {"key": "idx_hscei", "name": "恒生国企", "symbol": "HSCEI",    "market": "港股", "unit": "点"},
+    {"key": "idx_hsi",    "name": "恒生指数",   "symbol": "HSI",      "market": "港股", "unit": "点"},
+    {"key": "idx_hscei",  "name": "恒生国企",   "symbol": "HSCEI",    "market": "港股", "unit": "点"},
+    {"key": "idx_hstech", "name": "恒生科技",   "symbol": "HSTECH",   "market": "港股", "unit": "点"},
 ]
 
 FLOW_CONFIGS = [
@@ -50,11 +65,9 @@ FLOW_CONFIGS = [
 ]
 
 # 海外指数
-# Primary:  ak.index_global_hist_em(symbol)   — 东方财富，symbol 是 index_global_em_symbol_map 的键
-# Fallback: ak.index_us_stock_sina / ak.index_global_hist_sina — 不同域名，更易访问
+# Source: ak.index_us_stock_sina / ak.index_global_hist_sina
 #   sina_fn: "us"     → ak.index_us_stock_sina(sina_symbol)       列: date,open,high,low,close,volume,amount
 #   sina_fn: "global" → ak.index_global_hist_sina(sina_symbol)    列: date,open,high,low,close,volume
-#   sina_fn: None     → 仅 EastMoney（越南/新加坡在新浪无数据）
 GLOBAL_CONFIGS = [
     # 美股
     {"key": "idx_dji",    "name": "道琼斯",     "symbol": "道琼斯",            "market": "美股", "unit": "点",
@@ -164,46 +177,12 @@ def _find_col(df: "pd.DataFrame", candidates: list) -> str | None:
 
 # ---------------------------------------------------------------------------
 # A-share index fetcher
-# Primary:  ak.stock_zh_index_daily_em  (EastMoney — has volume/turnover)
-# Fallback: ak.stock_zh_index_daily     (Sina — date/open/close/low/high only)
+# Source: ak.stock_zh_index_daily (Sina)
 # ---------------------------------------------------------------------------
 def fetch_astock_index(cfg):
     symbol = cfg["symbol"]
     label  = cfg["name"]
-    end    = datetime.now().strftime("%Y%m%d")
-    start  = (datetime.now() - timedelta(days=365 * 20)).strftime("%Y%m%d")
 
-    df = None
-    # ── Try EastMoney first ──────────────────────────────────────────────
-    try:
-        df = ak.stock_zh_index_daily_em(symbol=symbol, start_date=start, end_date=end)
-        if df is not None and not df.empty:
-            # stock_zh_index_daily_em returns: date, open, close, high, low, volume, amount
-            # (EastMoney uses "amount" for 成交额, NOT "成交额")
-            date_col     = _find_col(df, ["date", "日期"])
-            close_col    = _find_col(df, ["close", "收盘"])
-            volume_col   = _find_col(df, ["volume", "成交量", "vol"])
-            turnover_col = _find_col(df, ["amount", "成交额", "turnover"])
-            if date_col and close_col:
-                entries = []
-                for _, row in df.iterrows():
-                    date_val = row.get(date_col)
-                    close    = _safe_float(row.get(close_col))
-                    volume   = _safe_float(row.get(volume_col)) if volume_col else None
-                    turnover = _safe_float(row.get(turnover_col)) if turnover_col else None
-                    if date_val is None or close is None:
-                        continue
-                    date_str = (date_val.strftime("%Y-%m-%d")
-                                if hasattr(date_val, "strftime") else str(date_val)[:10])
-                    entries.append({"date": date_str, "close": close,
-                                    "volume": volume, "turnover": turnover})
-                if entries:
-                    entries.sort(key=lambda x: x["date"], reverse=True)
-                    return entries[:HISTORY_LIMIT]
-    except Exception:
-        pass  # fall through to Sina
-
-    # ── Fallback: Sina (no volume/turnover) ─────────────────────────────
     try:
         df = ak.stock_zh_index_daily(symbol=symbol)
     except Exception as exc:
@@ -211,13 +190,13 @@ def fetch_astock_index(cfg):
         return None
 
     if df is None or df.empty:
-        print(f"  [ERROR] {label}: empty data (both sources failed)")
+        print(f"  [ERROR] {label}: empty data")
         return None
 
     date_col  = _find_col(df, ["date", "日期"])
     close_col = _find_col(df, ["close", "收盘"])
     if not date_col or not close_col:
-        print(f"  [ERROR] {label}: unexpected columns from Sina: {list(df.columns)}")
+        print(f"  [ERROR] {label}: unexpected columns: {list(df.columns)}")
         return None
 
     entries = []
@@ -277,8 +256,7 @@ def fetch_hk_index(cfg):
 
 # ---------------------------------------------------------------------------
 # Global index fetcher
-# Source: ak.index_global_hist_em (EastMoney)
-# Returns: 日期, 代码, 名称, 今开, 最新价, 最高, 最低, 振幅
+# Source: ak.index_us_stock_sina / ak.index_global_hist_sina
 # ---------------------------------------------------------------------------
 def _parse_global_df(df, label) -> list | None:
     """Parse a DataFrame with columns date/close (or 日期/最新价) into entries list."""
@@ -307,25 +285,11 @@ def _parse_global_df(df, label) -> list | None:
 
 
 def fetch_global_index(cfg):
-    symbol = cfg["symbol"]
-    label  = cfg["name"]
-
-    # ── Primary: EastMoney ──────────────────────────────────────────────
-    try:
-        df = ak.index_global_hist_em(symbol=symbol)
-        if df is not None and not df.empty:
-            entries = _parse_global_df(df, label)
-            if entries:
-                entries.sort(key=lambda x: x["date"], reverse=True)
-                return entries[:HISTORY_LIMIT]
-    except Exception:
-        pass  # fall through to Sina
-
-    # ── Fallback: Sina ───────────────────────────────────────────────────
+    label       = cfg["name"]
     sina_fn     = cfg.get("sina_fn")
     sina_symbol = cfg.get("sina_symbol")
     if not sina_fn or not sina_symbol:
-        print(f"  [ERROR] {label}: EastMoney unavailable, no Sina fallback configured")
+        print(f"  [ERROR] {label}: no Sina source configured")
         return None
 
     try:
@@ -334,32 +298,39 @@ def fetch_global_index(cfg):
         else:  # "global"
             df = ak.index_global_hist_sina(symbol=sina_symbol)
     except Exception as exc:
-        print(f"  [ERROR] {label}: Sina fallback also failed: {exc}")
+        print(f"  [ERROR] {label}: {exc}")
         return None
 
     if df is None or df.empty:
-        print(f"  [ERROR] {label}: Sina returned empty data")
+        print(f"  [ERROR] {label}: empty data")
         return None
 
     entries = _parse_global_df(df, label)
     if not entries:
-        print(f"  [ERROR] {label}: no valid rows from Sina")
+        print(f"  [ERROR] {label}: no valid rows")
         return None
 
     entries.sort(key=lambda x: x["date"], reverse=True)
-    print(f"    [FALLBACK→Sina]", end=" ")
     return entries[:HISTORY_LIMIT]
 
 
 # ---------------------------------------------------------------------------
 # Capital flow fetcher (Stock Connect 沪深港通)
+# Source: tushare moneyflow_hsgt
+# Returns north_money / south_money in 万元 → converted to 亿元 (/10000)
 # ---------------------------------------------------------------------------
 def fetch_capital_flow(cfg):
-    symbol = cfg["symbol"]
-    label  = cfg["name"]
+    label      = cfg["name"]
+    flow_key   = cfg["symbol"]  # "北向资金" or "南向资金"
+    net_col    = "north_money" if flow_key == "北向资金" else "south_money"
+
+    start = (datetime.now() - timedelta(days=365 * 20)).strftime("%Y%m%d")
+    end   = datetime.now().strftime("%Y%m%d")
 
     try:
-        df = ak.stock_hsgt_hist_em(symbol=symbol)
+        pro = _get_ts_pro()
+        df  = pro.moneyflow_hsgt(start_date=start, end_date=end,
+                                  fields="trade_date,north_money,south_money")
     except Exception as exc:
         print(f"  [ERROR] {label}: {exc}")
         return None
@@ -368,34 +339,16 @@ def fetch_capital_flow(cfg):
         print(f"  [ERROR] {label}: empty data")
         return None
 
-    # Column name varies by akshare version — find net inflow column
-    net_col = None
-    for candidate in ["当日成交净买额", "当日净流入", "净流入", "当日净流入（亿元）"]:
-        if candidate in df.columns:
-            net_col = candidate
-            break
-    if net_col is None:
-        # fallback: pick first numeric column after date
-        for col in df.columns[1:]:
-            if pd.api.types.is_numeric_dtype(df[col]):
-                net_col = col
-                break
-
-    if net_col is None:
-        print(f"  [ERROR] {label}: cannot find net inflow column. Columns: {list(df.columns)}")
-        return None
-
-    date_col = "日期" if "日期" in df.columns else df.columns[0]
-
     entries = []
     for _, row in df.iterrows():
-        date_val = row.get(date_col)
+        date_val = row.get("trade_date")
         net_val  = _safe_float(row.get(net_col))
         if date_val is None or net_val is None:
             continue
-        date_str = (date_val.strftime("%Y-%m-%d")
-                    if hasattr(date_val, "strftime") else str(date_val)[:10])
-        entries.append({"date": date_str, "close": net_val})
+        date_str = str(date_val)[:10]
+        if len(date_str) == 8:  # YYYYMMDD → YYYY-MM-DD
+            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+        entries.append({"date": date_str, "close": round(net_val / 10000, 4)})
 
     if not entries:
         print(f"  [ERROR] {label}: no valid rows")

@@ -24,12 +24,12 @@ const SECTIONS = [
   {
     title: 'A股',
     icon:  '🇨🇳',
-    keys:  ['idx_sh', 'idx_sz', 'idx_cyb', 'idx_kc50', 'idx_bz50'],
+    keys:  ['idx_sh', 'idx_sz', 'idx_hs300', 'idx_cyb', 'idx_kc50', 'idx_bz50'],
   },
   {
     title: '港股',
     icon:  '🇭🇰',
-    keys:  ['idx_hsi', 'idx_hscei'],
+    keys:  ['idx_hsi', 'idx_hscei', 'idx_hstech'],
   },
   {
     title: '沪深港通资金流向',
@@ -78,6 +78,11 @@ function fmtTurnover(v: number | null, market = '') {
 
 function fmtDate(d: string | null) {
   return d ? d.slice(0, 10) : '—'
+}
+
+/** 实时时间戳 "YYYY-MM-DD HH:MM" → "HH:MM" */
+function fmtSpotTime(dt: string | null) {
+  return dt ? dt.slice(11, 16) : null
 }
 
 // 资金流向正负颜色
@@ -172,12 +177,12 @@ function changePctClass(v: number | null | undefined) {
                   {{ fmtPoint(item.latestClose) }}
                   <span class="card-unit">{{ item.unit ?? '点' }}</span>
                 </span>
-                <span
-                  v-if="fmtChangePct(item.changePct)"
-                  class="card-pct"
-                  :class="changePctClass(item.changePct)"
-                >{{ fmtChangePct(item.changePct) }}</span>
               </div>
+              <div
+                v-if="fmtChangePct(item.changePct)"
+                class="card-pct"
+                :class="changePctClass(item.changePct)"
+              >{{ fmtChangePct(item.changePct) }}</div>
               <div v-if="fmtTurnover(item.latestTurnover, item.market)" class="card-turnover">
                 成交额 {{ fmtTurnover(item.latestTurnover, item.market) }}
               </div>
@@ -185,6 +190,11 @@ function changePctClass(v: number | null | undefined) {
 
             <div class="card-footer">
               <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
+              <template v-if="item.latestSpotUpdatedAt">
+                <span class="card-intraday-sep">·</span>
+                <span class="card-intraday-time">{{ fmtSpotTime(item.latestSpotUpdatedAt) }}</span>
+                <span class="card-intraday-badge">实时</span>
+              </template>
             </div>
           </div>
         </div>
@@ -290,8 +300,6 @@ h1 {
 .card-price-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 
 .card-price {
@@ -303,9 +311,10 @@ h1 {
 }
 
 .card-pct {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  margin-top: 2px;
 }
 
 .pct-up   { color: #e8534a; }   /* 红色 = 上涨（中国习惯） */
@@ -333,6 +342,31 @@ h1 {
 .card-date {
   font-size: 12px;
   color: #bbb;
+}
+
+.card-intraday-sep {
+  font-size: 12px;
+  color: #ddd;
+  margin: 0 3px;
+}
+
+.card-intraday-time {
+  font-size: 12px;
+  color: #bbb;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-intraday-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 4px;
+  background: #e8f4ff;
+  color: #409eff;
+  font-weight: 500;
+  vertical-align: middle;
 }
 
 /* ── Skeleton ─────────────────────────────────────────────────────────── */
