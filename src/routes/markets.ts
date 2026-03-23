@@ -8,7 +8,10 @@ const toNum = (v: string | null) => (v == null ? null : parseFloat(v))
 export async function marketsRoutes(app: FastifyInstance) {
 
   // ── GET /api/markets ──────────────────────────────────────────────────────
-  // Returns all indices with their latest close price and date
+  // Returns all indices with their latest close price and date.
+  // For A-share indices: if intraday (index_minutes) data is more recent than
+  // the latest daily close, the intraday last-bar close is used as the price
+  // and the change% is computed against the previous daily close.
   app.get('/api/markets', async () => {
     const rows = await db
       .select({
@@ -39,18 +42,66 @@ export async function marketsRoutes(app: FastifyInstance) {
           ORDER BY price_date DESC
           OFFSET 1 LIMIT 1
         )`.as('prev_close'),
+        // Intraday: latest minute bar (only populated for A-share indices)
+        latestMinuteClose: sql<string>`(
+          SELECT close FROM index_minutes
+          WHERE index_key = ${marketIndices.key}
+          ORDER BY dt DESC LIMIT 1
+        )`.as('latest_minute_close'),
+        latestMinuteDt: sql<string>`(
+          SELECT to_char(dt, 'YYYY-MM-DD HH24:MI') FROM index_minutes
+          WHERE index_key = ${marketIndices.key}
+          ORDER BY dt DESC LIMIT 1
+        )`.as('latest_minute_dt'),
+        // Sum of turnover for all bars on the latest intraday day
+        latestMinuteTurnover: sql<string>`(
+          SELECT SUM(turnover) FROM index_minutes
+          WHERE index_key = ${marketIndices.key}
+            AND DATE(dt) = (
+              SELECT DATE(dt) FROM index_minutes
+              WHERE index_key = ${marketIndices.key}
+              ORDER BY dt DESC LIMIT 1
+            )
+        )`.as('latest_minute_turnover'),
       })
       .from(marketIndices)
       .orderBy(marketIndices.market, marketIndices.key)
 
     return rows.map(r => {
-      const latestClose    = toNum(r.latestClose)
-      const prevClose      = toNum(r.prevClose)
-      const latestTurnover = toNum(r.latestTurnover)
-      const changePct = (latestClose != null && prevClose != null && prevClose !== 0)
-        ? parseFloat(((latestClose - prevClose) / prevClose * 100).toFixed(2))
+      const latestClose           = toNum(r.latestClose)
+      const prevClose             = toNum(r.prevClose)
+      const latestTurnover        = toNum(r.latestTurnover)
+      const latestMinuteClose     = toNum(r.latestMinuteClose)
+      const latestMinuteDt        = r.latestMinuteDt ?? null
+      const latestMinuteTurnover  = toNum(r.latestMinuteTurnover)
+
+      // Use intraday price when: A-share index AND minute date is newer than daily date
+      const minuteDay = latestMinuteDt ? latestMinuteDt.slice(0, 10) : null
+      const dailyDay  = r.latestDate   ? r.latestDate.slice(0, 10)   : null
+      const useMinute = r.market === 'A股'
+                        && latestMinuteClose != null
+                        && minuteDay != null && dailyDay != null
+                        && minuteDay > dailyDay
+
+      const displayClose = useMinute ? latestMinuteClose : latestClose
+      // Baseline for change%:
+      //   - intraday  → previous daily close (latestClose = last record in index_prices)
+      //   - daily     → the record before that (prevClose = OFFSET 1)
+      const baseClose = useMinute ? latestClose : prevClose
+      const changePct = (displayClose != null && baseClose != null && baseClose !== 0)
+        ? parseFloat(((displayClose - baseClose) / baseClose * 100).toFixed(2))
         : null
-      return { ...r, latestClose, latestTurnover, changePct }
+
+      return {
+        ...r,
+        // When using intraday, update latestDate to the intraday day (YYYY-MM-DD)
+        latestDate:     useMinute ? minuteDay : r.latestDate,
+        latestClose:    displayClose,
+        latestTurnover: useMinute ? latestMinuteTurnover : latestTurnover,
+        changePct,
+        // Non-null only when intraday data is actually being shown
+        latestMinuteDt: useMinute ? latestMinuteDt : null,
+      }
     })
   })
 

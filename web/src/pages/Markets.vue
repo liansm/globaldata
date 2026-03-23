@@ -80,6 +80,11 @@ function fmtDate(d: string | null) {
   return d ? d.slice(0, 10) : '—'
 }
 
+/** 分时时间戳 "YYYY-MM-DD HH:MM" → "HH:MM" */
+function fmtMinuteTime(dt: string | null) {
+  return dt ? dt.slice(11, 16) : null
+}
+
 // 资金流向正负颜色
 function flowClass(v: number | null) {
   if (v == null) return ''
@@ -185,6 +190,11 @@ function changePctClass(v: number | null | undefined) {
 
             <div class="card-footer">
               <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
+              <template v-if="item.latestMinuteDt">
+                <span class="card-intraday-sep">·</span>
+                <span class="card-intraday-time">{{ fmtMinuteTime(item.latestMinuteDt) }}</span>
+                <span class="card-intraday-badge">分时</span>
+              </template>
             </div>
           </div>
         </div>
@@ -333,6 +343,31 @@ h1 {
 .card-date {
   font-size: 12px;
   color: #bbb;
+}
+
+.card-intraday-sep {
+  font-size: 12px;
+  color: #ddd;
+  margin: 0 3px;
+}
+
+.card-intraday-time {
+  font-size: 12px;
+  color: #bbb;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-intraday-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 4px;
+  background: #e8f4ff;
+  color: #409eff;
+  font-weight: 500;
+  vertical-align: middle;
 }
 
 /* ── Skeleton ─────────────────────────────────────────────────────────── */

@@ -9,6 +9,9 @@ export interface MarketIndex {
   latestClose:    number | null   // 指数点位 or 净流入亿元
   latestTurnover: number | null   // 成交额（仅指数）
   changePct:      number | null   // 涨跌幅 %（与前一交易日比较）
+  // Non-null when the displayed price comes from intraday (分时) data
+  // Format: "YYYY-MM-DD HH:MM"
+  latestMinuteDt: string | null
 }
 
 export interface IndexPoint {
