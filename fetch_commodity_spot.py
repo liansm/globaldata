@@ -155,10 +155,12 @@ def fetch_domestic(mark_to_symbol: dict) -> dict:
 # Fetch SGE spot data (domestic gold & silver)
 # ---------------------------------------------------------------------------
 
-# commodity_key → SGE symbol
+# commodity_key → (SGE symbol, price_divisor)
+# Au99.99 is quoted in yuan/gram  → divisor 1    (matches prices table unit)
+# Ag99.99 is quoted in yuan/kg    → divisor 1000 (convert to yuan/gram)
 SGE_MAP = {
-    "gold":   "Au99.99",
-    "silver": "Ag99.99",
+    "gold":   ("Au99.99", 1),
+    "silver": ("Ag99.99", 1000),
 }
 
 
@@ -186,7 +188,7 @@ def fetch_sge(conn) -> dict:
     results = {}
     today = date.today().isoformat()
 
-    for key, sge_symbol in SGE_MAP.items():
+    for key, (sge_symbol, divisor) in SGE_MAP.items():
         try:
             df = ak.spot_quotations_sge(symbol=sge_symbol)
         except Exception as exc:
@@ -200,10 +202,11 @@ def fetch_sge(conn) -> dict:
         # Columns (positional, names are garbled on Windows):
         #   col[0] = 品种, col[1] = 时间, col[2] = 最新价, col[3] = 更新时间
         last = df.iloc[-1]
-        price = _safe_float(last.iloc[2])
-        if price is None:
+        raw_price = _safe_float(last.iloc[2])
+        if raw_price is None:
             print(f"  [WARN] {key} ({sge_symbol}): no price in last row: {last.to_dict()}")
             continue
+        price = round(raw_price / divisor, 6)  # normalise to prices table unit
 
         prev_close = fetch_prev_close_from_db(conn, key)
         change_pct = None
