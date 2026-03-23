@@ -27,11 +27,13 @@ BASE_DIR     = Path(__file__).parent
 
 # 刷新脚本执行顺序
 FETCH_SCRIPTS = [
-    ("fetch_markets.py",        "A股/港股指数 + 沪深港通资金流向（历史日线）"),
-    ("fetch_index_spot.py",     "A股指数实时快照（stock_zh_index_spot_sina）"),
-    ("fetch_market_minutes.py", "A股指数分时 1 分钟 K 线"),
-    ("fetch_commodities.py",    "大宗商品价格（黄金/铜/油/煤炭等）"),
-    ("fetch_crypto.py",         "加密货币价格（CoinGecko）"),
+    ("fetch_markets.py",           "A股/港股指数 + 沪深港通资金流向（历史日线）"),
+    ("fetch_index_spot.py",        "A股/港股指数实时快照（stock_zh/hk_index_spot_sina）"),
+    ("fetch_market_minutes.py",    "A股指数分时 1 分钟 K 线"),
+    ("fetch_commodities.py",       "大宗商品价格（黄金/铜/油/煤炭等）"),
+    ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
+    ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
+    ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +118,29 @@ STATUS_QUERIES = [
             FROM index_minutes
         """,
         "cols": ["rows", "indices", "earliest_day", "latest_day", "latest_dt"],
+        "optional": True,
+    },
+    {
+        "title": "commodity_spot  (期货实时快照)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   MAX(spot_date)::text AS spot_date,
+                   MAX(updated_at AT TIME ZONE 'Asia/Shanghai')::text AS last_updated
+            FROM commodity_spot
+        """,
+        "cols": ["rows", "spot_date", "last_updated"],
+        "optional": True,
+    },
+    {
+        "title": "commodity_minutes  (期货分时 1 分钟)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT commodity_key) AS commodities,
+                   MAX(DATE(dt))::text AS latest_day,
+                   MAX(dt)::text AS latest_dt
+            FROM commodity_minutes
+        """,
+        "cols": ["rows", "commodities", "latest_day", "latest_dt"],
         "optional": True,
     },
     {
@@ -239,6 +264,8 @@ CLEAR_TABLES = [
     "index_spot",
     "index_prices",
     "market_indices",
+    "commodity_minutes",
+    "commodity_spot",
     "prices",
     "commodities",
 ]
