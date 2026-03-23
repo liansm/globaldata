@@ -31,7 +31,7 @@ SPOT_CONFIGS = [
     {"key": "idx_hs300", "symbol": "sh000300", "name": "沪深300"},
     {"key": "idx_cyb",   "symbol": "sz399006", "name": "创业板指"},
     {"key": "idx_kc50",  "symbol": "sh000688", "name": "科创50"},
-    {"key": "idx_bz50",  "symbol": "bj899050", "name": "北证50"},
+    # 北证50 (bj899050) 不在 stock_zh_index_spot_sina 覆盖范围内，跳过
 ]
 
 # ---------------------------------------------------------------------------
