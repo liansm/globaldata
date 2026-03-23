@@ -12,8 +12,8 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
-import { fetchCommodityDetail } from '@/api/commodities'
-import type { CommodityDetail, DaysOption } from '@/types/commodity'
+import { fetchCommodityDetail, fetchCommodityMinutes } from '@/api/commodities'
+import type { CommodityDetail, CommodityMinutes, DaysOption } from '@/types/commodity'
 
 use([
   CanvasRenderer,
@@ -25,14 +25,20 @@ use([
   MarkLineComponent,
 ])
 
-const route = useRoute()
+const route  = useRoute()
 const router = useRouter()
 
-const key = computed(() => route.params.key as string)
-const loading = ref(false)
-const error = ref('')
-const detail = ref<CommodityDetail | null>(null)
-const days = ref<DaysOption>('ytd')
+const key       = computed(() => route.params.key as string)
+const loading   = ref(false)
+const error     = ref('')
+const detail    = ref<CommodityDetail | null>(null)
+const days      = ref<DaysOption>('ytd')
+
+// Intraday tab
+const activeTab    = ref<'history' | 'minutes'>('history')
+const minutesData  = ref<CommodityMinutes | null>(null)
+const minutesLoading = ref(false)
+const minutesError   = ref('')
 
 const daysOptions: { label: string; value: DaysOption }[] = [
   { label: '今年来', value: 'ytd' },
@@ -58,26 +64,44 @@ async function loadDetail() {
       ? { from: ytdFrom() }
       : { days: days.value as number }
     detail.value = await fetchCommodityDetail(key.value, params)
-  } catch (e) {
+  } catch {
     error.value = '加载失败，请稍后重试'
   } finally {
     loading.value = false
   }
 }
 
+async function loadMinutes() {
+  minutesLoading.value = true
+  minutesError.value = ''
+  try {
+    minutesData.value = await fetchCommodityMinutes(key.value)
+  } catch {
+    minutesError.value = '分时数据加载失败'
+  } finally {
+    minutesLoading.value = false
+  }
+}
+
+function onTabChange(tab: string) {
+  activeTab.value = tab as 'history' | 'minutes'
+  if (tab === 'minutes' && minutesData.value === null) {
+    loadMinutes()
+  }
+}
+
 onMounted(loadDetail)
 watch([key, days], loadDetail)
 
-// ECharts 配置
+// ── Historical chart option ──────────────────────────────────────────────
 const chartOption = computed(() => {
   if (!detail.value) return {}
 
-  // history 是按日期降序排列的，图表需要升序
   const sorted = [...detail.value.history].reverse()
-  const dates = sorted.map(p => p.date)
-  const prices = sorted.map(p => p.price)
+  const dates  = sorted.map(p => p.date)
+  const pricesArr = sorted.map(p => p.price)
 
-  const validPrices = prices.filter((p): p is number => p !== null)
+  const validPrices = pricesArr.filter((p): p is number => p !== null)
   const minVal = validPrices.length ? Math.min(...validPrices) : 0
   const maxVal = validPrices.length ? Math.max(...validPrices) : 0
   const padding = (maxVal - minVal) * 0.1
@@ -88,7 +112,9 @@ const chartOption = computed(() => {
       formatter: (params: { axisValue: string; value: number | null }[]) => {
         const p = params[0]
         if (!p) return ''
-        return `${p.axisValue}<br/><b>${p.value != null ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 4 }) : '—'}</b> ${detail.value?.unit ?? ''}`
+        return `${p.axisValue}<br/><b>${p.value != null
+          ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+          : '—'}</b> ${detail.value?.unit ?? ''}`
       },
     },
     grid: { top: 20, right: 24, bottom: 60, left: 70 },
@@ -105,7 +131,8 @@ const chartOption = computed(() => {
       axisLabel: {
         fontSize: 11,
         color: '#888',
-        formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }),
+        formatter: (v: number) =>
+          v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }),
       },
       splitLine: { lineStyle: { color: '#f0f0f0' } },
     },
@@ -113,49 +140,142 @@ const chartOption = computed(() => {
       { type: 'inside', start: 0, end: 100 },
       { type: 'slider', start: 0, end: 100, height: 24, bottom: 4 },
     ],
+    series: [{
+      name: detail.value.commodity,
+      type: 'line',
+      data: pricesArr,
+      smooth: false,
+      symbol: 'none',
+      lineStyle: { color: '#409eff', width: 2 },
+      areaStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(64,158,255,0.2)' },
+            { offset: 1, color: 'rgba(64,158,255,0)' },
+          ],
+        },
+      },
+    }],
+  }
+})
+
+// ── Intraday (minutes) chart option ─────────────────────────────────────
+const minutesChartOption = computed(() => {
+  const md = minutesData.value
+  if (!md || !md.minutes.length) return {}
+
+  const times  = md.minutes.map(m => m.time.slice(11, 16))  // "HH:MM"
+  const closes = md.minutes.map(m => m.close)
+
+  const validCloses = closes.filter((c): c is number => c !== null)
+  const minVal = validCloses.length ? Math.min(...validCloses) : 0
+  const maxVal = validCloses.length ? Math.max(...validCloses) : 0
+  const padding = (maxVal - minVal) * 0.05
+
+  // Baseline: yesterday's close from spot, or first bar's open
+  const baseline = detail.value?.spot?.prevClose ?? md.minutes[0]?.open ?? null
+
+  return {
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: { axisValue: string; value: number | null }[]) => {
+        const p = params[0]
+        if (!p) return ''
+        return `${p.axisValue}<br/><b>${p.value != null
+          ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+          : '—'}</b> ${md.unit ?? ''}`
+      },
+    },
+    grid: { top: 20, right: 24, bottom: 40, left: 80 },
+    xAxis: {
+      type: 'category',
+      data: times,
+      axisLabel: {
+        interval: Math.floor(times.length / 8),
+        fontSize: 11,
+        color: '#888',
+      },
+      axisLine: { lineStyle: { color: '#ddd' } },
+    },
+    yAxis: {
+      type: 'value',
+      min: Math.max(0, minVal - padding),
+      max: maxVal + padding,
+      axisLabel: {
+        fontSize: 11,
+        color: '#888',
+        formatter: (v: number) =>
+          v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }),
+      },
+      splitLine: { lineStyle: { color: '#f0f0f0' } },
+    },
     series: [
       {
-        name: detail.value.commodity,
+        name: '最新价',
         type: 'line',
-        data: prices,
+        data: closes,
         smooth: false,
         symbol: 'none',
-        lineStyle: { color: '#409eff', width: 2 },
+        lineStyle: { color: '#409eff', width: 1.5 },
         areaStyle: {
           color: {
-            type: 'linear',
-            x: 0, y: 0, x2: 0, y2: 1,
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
             colorStops: [
-              { offset: 0, color: 'rgba(64,158,255,0.2)' },
+              { offset: 0, color: 'rgba(64,158,255,0.15)' },
               { offset: 1, color: 'rgba(64,158,255,0)' },
             ],
           },
         },
+        ...(baseline != null ? {
+          markLine: {
+            silent: true,
+            symbol: 'none',
+            lineStyle: { color: '#aaa', type: 'dashed', width: 1 },
+            data: [{ yAxis: baseline, name: '昨结算' }],
+            label: {
+              formatter: `昨结算 ${baseline.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`,
+              fontSize: 10,
+              color: '#aaa',
+            },
+          },
+        } : {}),
       },
     ],
   }
 })
 
-// 格式化辅助
+// ── Helpers ─────────────────────────────────────────────────────────────
 function fmt(v: number | null, decimals = 2) {
   if (v == null) return '—'
   return v.toLocaleString('zh-CN', { maximumFractionDigits: decimals })
 }
 
 function latestPrice() {
+  // Prefer spot price
+  if (detail.value?.spot?.price != null) return detail.value.spot.price
   const h = detail.value?.history
   if (!h || !h.length) return null
-  return h[0].price   // history 降序，第一条是最新
+  return h[0].price
 }
 
-function priceChange() {
-  const h = detail.value?.history
-  if (!h || h.length < 2) return null
-  const latest = h[0].price
-  const prev = h[h.length - 1].price
-  if (latest == null || prev == null || prev === 0) return null
-  return ((latest - prev) / prev) * 100
+function spotChangePct() {
+  return detail.value?.spot?.changePct ?? null
 }
+
+function changePctClass(v: number | null) {
+  if (v == null) return ''
+  return v >= 0 ? 'up' : 'down'
+}
+
+function fmtSpotTime(dt: string | null) {
+  return dt ? dt.slice(11, 16) : null
+}
+
+// Whether intraday tab should be shown
+const hasMinutesTab = computed(() =>
+  minutesData.value !== null || (detail.value !== null)
+)
 </script>
 
 <template>
@@ -190,35 +310,84 @@ function priceChange() {
             {{ fmt(latestPrice(), 4) }}
             <span class="unit">{{ detail.unit }}</span>
           </div>
+
+          <!-- 实时涨跌幅（来自 spot） -->
           <div
-            v-if="priceChange() != null"
+            v-if="spotChangePct() != null"
             class="change"
-            :class="priceChange()! >= 0 ? 'up' : 'down'"
+            :class="changePctClass(spotChangePct())"
           >
-            {{ priceChange()! >= 0 ? '▲' : '▼' }}
-            {{ Math.abs(priceChange()!).toFixed(2) }}%
-            <span class="change-label">（区间）</span>
+            {{ spotChangePct()! >= 0 ? '▲' : '▼' }}
+            {{ Math.abs(spotChangePct()!).toFixed(2) }}%
+            <span class="change-label">（今日）</span>
+          </div>
+
+          <!-- 实时更新时间 badge -->
+          <div v-if="detail.spot?.updatedAt" class="spot-time">
+            <span class="spot-badge">实时</span>
+            {{ fmtSpotTime(
+                typeof detail.spot.updatedAt === 'string'
+                  ? detail.spot.updatedAt
+                  : null
+               ) }}
           </div>
         </div>
       </div>
 
-      <!-- 时间范围切换 -->
-      <div class="chart-toolbar">
-        <el-radio-group v-model="days" size="small">
-          <el-radio-button
-            v-for="opt in daysOptions"
-            :key="opt.value"
-            :value="opt.value"
-          >
-            {{ opt.label }}
-          </el-radio-button>
-        </el-radio-group>
-      </div>
+      <!-- Tab 切换：历史走势 / 分时图 -->
+      <el-tabs v-model="activeTab" class="chart-tabs" @tab-change="onTabChange">
+        <el-tab-pane label="历史走势" name="history">
+          <!-- 时间范围切换 -->
+          <div class="chart-toolbar">
+            <el-radio-group v-model="days" size="small">
+              <el-radio-button
+                v-for="opt in daysOptions"
+                :key="opt.value"
+                :value="opt.value"
+              >
+                {{ opt.label }}
+              </el-radio-button>
+            </el-radio-group>
+          </div>
 
-      <!-- ECharts 价格走势图 -->
-      <div class="chart-wrap" v-loading="loading">
-        <v-chart :option="chartOption" autoresize style="width:100%;height:380px" />
-      </div>
+          <div class="chart-wrap" v-loading="loading">
+            <v-chart :option="chartOption" autoresize style="width:100%;height:380px" />
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="分时图" name="minutes">
+          <div v-if="minutesLoading" v-loading="true" style="height:320px" />
+          <el-alert
+            v-else-if="minutesError"
+            :title="minutesError"
+            type="warning"
+            show-icon
+            :closable="false"
+            style="margin-top:12px"
+          />
+          <template v-else-if="minutesData && minutesData.minutes.length">
+            <div class="minutes-meta">
+              {{ minutesData.date }} · {{ minutesData.minutes.length }} 根分钟 bars
+              <template v-if="detail.spot?.prevClose">
+                · 昨结算 {{ fmt(detail.spot.prevClose, 4) }} {{ detail.unit }}
+              </template>
+            </div>
+            <div class="chart-wrap">
+              <v-chart :option="minutesChartOption" autoresize style="width:100%;height:360px" />
+            </div>
+          </template>
+          <el-empty
+            v-else-if="minutesData && !minutesData.minutes.length"
+            description="今日暂无分时数据（仅支持国内期货品种）"
+            style="margin-top:40px"
+          />
+          <el-empty
+            v-else
+            description="点击此 tab 加载分时数据"
+            style="margin-top:40px"
+          />
+        </el-tab-pane>
+      </el-tabs>
 
       <!-- 详细信息卡片 -->
       <el-descriptions title="商品信息" :column="3" border size="small" class="desc-card">
@@ -240,13 +409,24 @@ function priceChange() {
         <el-descriptions-item label="最新日期">
           {{ detail.history.length ? detail.history[0].date : '—' }}
         </el-descriptions-item>
+        <!-- 实时快照信息 -->
+        <template v-if="detail.spot">
+          <el-descriptions-item label="昨结算">
+            {{ fmt(detail.spot.prevClose, 4) }} {{ detail.unit }}
+          </el-descriptions-item>
+          <el-descriptions-item label="今日涨跌">
+            {{ fmt(detail.spot.changeAmt, 4) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="实时更新时间">
+            {{ detail.spot.updatedAt
+               ? String(detail.spot.updatedAt).slice(0, 16)
+               : '—' }}
+          </el-descriptions-item>
+        </template>
       </el-descriptions>
     </template>
 
-    <!-- 加载中占位 -->
     <div v-else-if="loading" v-loading="true" style="height:300px" />
-
-    <!-- 错误 -->
     <el-alert v-else-if="error" :title="error" type="error" show-icon :closable="false" />
   </div>
 </template>
@@ -309,7 +489,6 @@ h1 {
   font-weight: 600;
   margin-top: 4px;
 }
-
 .up   { color: #f56c6c; }
 .down { color: #67c23a; }
 
@@ -317,6 +496,29 @@ h1 {
   font-size: 12px;
   font-weight: 400;
   color: #999;
+}
+
+.spot-time {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #bbb;
+}
+
+.spot-badge {
+  display: inline-block;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 4px;
+  background: #e8f4ff;
+  color: #409eff;
+  font-weight: 600;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.chart-tabs {
+  margin-bottom: 16px;
 }
 
 .chart-toolbar {
@@ -329,7 +531,13 @@ h1 {
   border-radius: 8px;
   padding: 12px;
   margin-bottom: 24px;
-  min-height: 400px;
+  min-height: 360px;
+}
+
+.minutes-meta {
+  font-size: 12px;
+  color: #aaa;
+  margin-bottom: 8px;
 }
 
 .desc-card {

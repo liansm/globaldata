@@ -126,6 +126,42 @@ export const indexSpot = pgTable('index_spot', {
 })
 
 // --------------------------------------------------------------------------
+// commodity_spot — real-time snapshot per commodity (one row, upserted each run)
+// Populated by fetch_commodity_spot.py via futures_zh_spot / futures_foreign_commodity_realtime
+// --------------------------------------------------------------------------
+export const commoditySpot = pgTable('commodity_spot', {
+  commodityKey: varchar('commodity_key', { length: 60 }).primaryKey(),
+  price:        numeric('price',      { precision: 20, scale: 6 }),
+  changePct:    numeric('change_pct', { precision: 8,  scale: 4 }),  // e.g. 1.23 for +1.23%
+  changeAmt:    numeric('change_amt', { precision: 20, scale: 6 }),
+  prevClose:    numeric('prev_close', { precision: 20, scale: 6 }),
+  volume:       numeric('volume',     { precision: 24, scale: 4 }),
+  turnover:     numeric('turnover',   { precision: 24, scale: 4 }),
+  spotDate:     date('spot_date'),
+  updatedAt:    timestamp('updated_at', { withTimezone: true })
+                  .default(sql`NOW()`).notNull(),
+})
+
+// --------------------------------------------------------------------------
+// commodity_minutes — 1-minute intraday OHLCV bars for domestic futures
+// Populated by fetch_commodity_minutes.py via futures_zh_minute_sina
+// --------------------------------------------------------------------------
+export const commodityMinutes = pgTable('commodity_minutes', {
+  id:           bigserial('id', { mode: 'number' }).primaryKey(),
+  commodityKey: varchar('commodity_key', { length: 60 }).notNull(),
+  dt:           timestamp('dt').notNull(),   // China local time (no TZ)
+  open:         numeric('open',     { precision: 20, scale: 6 }),
+  high:         numeric('high',     { precision: 20, scale: 6 }),
+  low:          numeric('low',      { precision: 20, scale: 6 }),
+  close:        numeric('close',    { precision: 20, scale: 6 }),
+  volume:       numeric('volume',   { precision: 24, scale: 4 }),
+  turnover:     numeric('turnover', { precision: 24, scale: 4 }),
+}, (t) => [
+  unique('commodity_minutes_uniq').on(t.commodityKey, t.dt),
+  index('idx_commodity_minutes_key_dt').on(t.commodityKey, t.dt),
+])
+
+// --------------------------------------------------------------------------
 // fetch_log — one row per commodity per run (audit trail)
 // --------------------------------------------------------------------------
 export const fetchLog = pgTable('fetch_log', {

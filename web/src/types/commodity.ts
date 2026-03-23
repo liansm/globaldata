@@ -11,11 +11,36 @@ export interface Commodity {
   updatedAt: string | null
   latestDate: string | null
   latestPrice: number | null
+  // Real-time spot fields (non-null when commodity_spot has a record)
+  spotChangePct: number | null   // e.g. 1.23 for +1.23%
+  spotUpdatedAt: string | null   // "YYYY-MM-DD HH:MM" (Asia/Shanghai)
+  hasMinutes:    boolean         // true when intraday minute bars exist for today
+}
+
+export interface SpotSnapshot {
+  price:     number | null
+  changePct: number | null
+  changeAmt: number | null
+  prevClose: number | null
+  volume:    number | null
+  turnover:  number | null
+  spotDate:  string | null
+  updatedAt: string | null
 }
 
 export interface PricePoint {
   date: string
   price: number | null
+}
+
+export interface MinuteBar {
+  time:     string        // "YYYY-MM-DD HH:MM"
+  open:     number | null
+  high:     number | null
+  low:      number | null
+  close:    number | null
+  volume:   number | null
+  turnover: number | null
 }
 
 export interface CommodityDetail {
@@ -27,7 +52,16 @@ export interface CommodityDetail {
   kcal: number | null
   gradeType: string | null
   updatedAt: string | null
+  spot: SpotSnapshot | null
   history: PricePoint[]
+}
+
+export interface CommodityMinutes {
+  key:       string
+  commodity: string
+  unit:      string | null
+  date:      string | null
+  minutes:   MinuteBar[]
 }
 
 export interface LatestPrice {

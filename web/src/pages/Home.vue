@@ -47,7 +47,7 @@ const sections = computed(() => {
   })).filter(s => s.items.length > 0)
 })
 
-function fmt(price: number | null, unit: string | null) {
+function fmt(price: number | null) {
   if (price == null) return '—'
   return price.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 }
@@ -56,13 +56,28 @@ function fmtDate(d: string | null) {
   return d ? d.slice(0, 10) : '—'
 }
 
+/** 实时更新时间 "YYYY-MM-DD HH:MM" → "HH:MM" */
+function fmtSpotTime(dt: string | null) {
+  return dt ? dt.slice(11, 16) : null
+}
+
+function changePctClass(v: number | null | undefined) {
+  if (v == null) return ''
+  return v >= 0 ? 'up' : 'down'
+}
+
+function fmtChangePct(v: number | null | undefined) {
+  if (v == null) return null
+  const sign = v >= 0 ? '+' : ''
+  return `${sign}${v.toFixed(2)}%`
+}
+
 function goDetail(row: Commodity) {
   router.push({ name: 'detail', params: { key: row.key } })
 }
 
 // Derive display name: strip exchange/symbol suffix for cleaner labels
 function displayName(c: Commodity) {
-  // "碳酸锂 (广期所 LC)" → "碳酸锂"
   return c.commodity.replace(/\s*[（(][^)）]+[)）]/, '').trim() || c.commodity
 }
 </script>
@@ -112,13 +127,30 @@ function displayName(c: Commodity) {
               <span class="card-name">{{ displayName(item) }}</span>
               <el-tag size="small" class="card-tag" type="info">{{ item.key }}</el-tag>
             </div>
+
             <div class="card-price">
-              {{ fmt(item.latestPrice, item.unit) }}
+              {{ fmt(item.latestPrice) }}
               <span class="card-unit">{{ item.unit ?? '' }}</span>
             </div>
+
+            <!-- 涨跌幅（仅实时数据有） -->
+            <div
+              v-if="item.spotChangePct != null"
+              class="card-change"
+              :class="changePctClass(item.spotChangePct)"
+            >
+              {{ fmtChangePct(item.spotChangePct) }}
+            </div>
+
             <div class="card-footer">
               <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-              <span class="card-arrow">→</span>
+              <template v-if="item.spotUpdatedAt">
+                <span class="card-sep">·</span>
+                <span class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
+                <span class="card-spot-badge">实时</span>
+              </template>
+              <span v-if="item.hasMinutes" class="card-minutes-icon" title="有分时图">📈</span>
+              <span v-else class="card-arrow">→</span>
             </div>
           </div>
         </div>
@@ -198,7 +230,7 @@ h1 {
   transition: box-shadow 0.18s, transform 0.18s, border-color 0.18s;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .card:hover {
@@ -243,10 +275,19 @@ h1 {
   margin-left: 3px;
 }
 
+.card-change {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.card-change.up   { color: #f56c6c; }
+.card-change.down { color: #67c23a; }
+
 .card-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 3px;
+  margin-top: auto;
 }
 
 .card-date {
@@ -254,7 +295,38 @@ h1 {
   color: #aaa;
 }
 
+.card-sep {
+  font-size: 12px;
+  color: #ddd;
+  margin: 0 2px;
+}
+
+.card-spot-time {
+  font-size: 12px;
+  color: #bbb;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-spot-badge {
+  display: inline-block;
+  margin-left: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 4px;
+  background: #e8f4ff;
+  color: #409eff;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.card-minutes-icon {
+  margin-left: auto;
+  font-size: 14px;
+}
+
 .card-arrow {
+  margin-left: auto;
   font-size: 13px;
   color: #409eff;
 }
