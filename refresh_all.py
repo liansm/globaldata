@@ -227,13 +227,68 @@ def run_fetches():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Clear all data
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 按依赖顺序 TRUNCATE（先子表再父表，CASCADE 处理外键）
+CLEAR_TABLES = [
+    "fetch_log",
+    "crypto_prices",
+    "crypto_coins",
+    "index_minutes",
+    "index_spot",
+    "index_prices",
+    "market_indices",
+    "prices",
+    "commodities",
+]
+
+
+def clear_all():
+    print(hdr("\n══════════════  清空所有数据  ══════════════\n"))
+    print(warn("  ⚠  此操作将删除数据库中全部数据，且不可恢复！"))
+    confirm = input("  输入 YES 确认清空，其他任意键取消: ").strip()
+    if confirm != "YES":
+        print("  已取消。")
+        return
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+    except psycopg2.OperationalError as exc:
+        print(err(f"[FATAL] 无法连接数据库: {exc}"))
+        return
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                for table in CLEAR_TABLES:
+                    try:
+                        cur.execute(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE")
+                        print(f"  {ok('✔')}  {table}")
+                    except psycopg2.errors.UndefinedTable:
+                        print(f"  {warn('—')}  {table}  （表不存在，跳过）")
+                        conn.rollback()
+        print(f"\n  {ok('全部完成。')}")
+    except Exception as exc:
+        print(err(f"\n[FATAL] {exc}"))
+        import traceback; traceback.print_exc()
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="globaldata 数据刷新工具")
     parser.add_argument("--status", action="store_true", help="仅展示数据库状态")
     parser.add_argument("--fetch",  action="store_true", help="仅运行 fetch 脚本")
+    parser.add_argument("--clear",  action="store_true", help="清空所有表数据（需二次确认）")
     args = parser.parse_args()
+
+    if args.clear:
+        clear_all()
+        return
 
     show_status = not args.fetch   # 默认展示状态
     run_fetch   = not args.status  # 默认运行刷新
