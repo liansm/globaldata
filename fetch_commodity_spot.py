@@ -2,14 +2,28 @@
 """
 Commodity Real-Time Spot Fetcher
 =================================
-Fetches real-time price snapshots for tracked commodities and upserts into
-the commodity_spot table (one row per commodity, overwritten each run).
+Fetches real-time price snapshots for tracked domestic futures via
+akshare.futures_zh_realtime() and upserts into commodity_spot.
 
-Sources
--------
-International futures  : futures_foreign_commodity_realtime(symbol)
-Domestic futures       : futures_zh_spot(symbol, market='CF') with
-                         futures_zh_realtime(symbol) as fallback
+Key design
+----------
+* futures_zh_realtime() looks up symbols via an internal dict built from
+  futures_symbol_mark(). On Windows the Chinese strings in that dict may
+  differ in encoding from literals typed in source code, causing KeyError.
+  → Solution: call futures_symbol_mark() at startup, build mark→symbol map
+    keyed by the ASCII mark value (e.g. "tong_qh"), then look up the exact
+    symbol string from the DataFrame so the encoding always matches.
+
+* futures_zh_realtime() returns English column names:
+    trade         → latest price (最新价)
+    presettlement → previous settlement (昨结算)
+    changepercent → change % (涨跌幅), signed, e.g. 1.23 for +1.23%
+    volume        → trading volume
+    position      → open interest (pick max for main contract)
+
+* futures_foreign_commodity_realtime() is broken in the current akshare
+  version (Length mismatch). International commodities are skipped here;
+  they already have daily close data from fetch_commodities.py.
 """
 
 import os
@@ -27,173 +41,117 @@ load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata")
 
 # ---------------------------------------------------------------------------
-# Commodity → API symbol mappings
+# commodity_key → akshare futures_symbol_mark "mark" value (ASCII, stable)
 # ---------------------------------------------------------------------------
-
-# commodity_key → futures_foreign_commodity_realtime symbol name
-INTL_MAP = {
-    "intl_gold":    "纽约黄金",
-    "intl_silver":  "纽约白银",
-    "intl_copper":  "纽约铜",
-    "intl_alum":    "伦敦铝",
-    "intl_oil_wti": "纽约原油",
-    "intl_gas":     "纽约天然气",
+DOMESTIC_MARK_MAP = {
+    "copper":            "tong_qh",   # 铜  SHFE
+    "aluminum":          "lv_qh",     # 铝  SHFE
+    "lithium_carbonate": "lc_qh",     # 碳酸锂  GFEX
+    "methanol":          "mh_qh",     # 甲醇  CZCE
+    "urea":              "cj_qh",     # 尿素  CZCE
+    "meg":               "dy_qh",     # 乙二醇  DCE
+    "styrene":           "bst_qh",    # 苯乙烯  CZCE / DCE
+    "polypropylene":     "jbx_qh",    # 聚丙烯 (PP)  DCE
+    "natural_rubber":    "lq_qh",     # 橡胶  SHFE
 }
 
-# commodity_key → (Chinese product name for futures_zh_spot, exchange acronym)
-DOMESTIC_MAP = {
-    "copper":            ("铜",   "SHFE"),
-    "aluminum":          ("铝",   "SHFE"),
-    "lithium_carbonate": ("碳酸锂", "GFEX"),
-    "methanol":          ("甲醇", "CZCE"),
-    "urea":              ("尿素", "CZCE"),
-    "meg":               ("乙二醇", "DCE"),
-    "styrene":           ("苯乙烯", "DCE"),
-    "polypropylene":     ("聚丙烯", "DCE"),
-    "natural_rubber":    ("橡胶", "SHFE"),
-}
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _safe_float(val) -> float | None:
     if val is None:
         return None
     try:
-        f = float(str(val).replace(",", "").replace("%", "").strip())
+        f = float(str(val).replace(",", "").strip())
         return None if pd.isna(f) else f
     except (TypeError, ValueError):
         return None
 
 
-def _find_col(row, *candidates):
-    """Return first value from row whose column name is in candidates."""
-    for c in candidates:
-        v = row.get(c)
-        if v is not None and str(v).strip() not in ("", "nan", "None"):
-            return v
-    return None
+# ---------------------------------------------------------------------------
+# Build mark → exact symbol string (encoding-safe)
+# ---------------------------------------------------------------------------
+
+def build_mark_to_symbol() -> dict:
+    """
+    Call futures_symbol_mark() once and return {mark: symbol} dict.
+    The symbol values come directly from akshare's DataFrame so their
+    encoding always matches what futures_zh_realtime() expects.
+    """
+    try:
+        df = ak.futures_symbol_mark()
+        return dict(zip(df["mark"], df["symbol"]))
+    except Exception as exc:
+        print(f"  [ERROR] futures_symbol_mark(): {exc}")
+        return {}
 
 
 # ---------------------------------------------------------------------------
-# International futures
+# Fetch domestic futures real-time data
 # ---------------------------------------------------------------------------
 
-def fetch_intl() -> dict:
+def fetch_domestic(mark_to_symbol: dict) -> dict:
     results = {}
     today = date.today().isoformat()
 
-    for key, sina_name in INTL_MAP.items():
+    for key, mark in DOMESTIC_MARK_MAP.items():
+        symbol = mark_to_symbol.get(mark)
+        if symbol is None:
+            print(f"  [WARN] {key}: mark '{mark}' not found in futures_symbol_mark()")
+            continue
+
         try:
-            df = ak.futures_foreign_commodity_realtime(symbol=sina_name)
+            df = ak.futures_zh_realtime(symbol=symbol)
         except Exception as exc:
-            print(f"  [ERROR] {key} ({sina_name}): {exc}")
+            print(f"  [ERROR] {key} (symbol={symbol!r}): {exc}")
             continue
 
         if df is None or df.empty:
-            print(f"  [WARN] {key} ({sina_name}): empty response")
+            print(f"  [WARN] {key}: empty response")
             continue
 
-        # Use first row (there's usually only one per symbol)
-        row = df.iloc[0]
+        # Pick main contract by highest open interest (position)
+        if "position" in df.columns:
+            df = df.copy()
+            df["position"] = pd.to_numeric(df["position"], errors="coerce")
+            row = df.loc[df["position"].idxmax()]
+        else:
+            row = df.iloc[0]
 
-        price      = _safe_float(_find_col(row, "最新价", "现价", "price"))
-        change_pct = _safe_float(_find_col(row, "涨跌幅", "涨跌幅%"))
-        change_amt = _safe_float(_find_col(row, "涨跌额", "涨跌"))
-        prev_close = _safe_float(_find_col(row, "昨收", "昨结算", "前结算"))
-        volume     = _safe_float(_find_col(row, "成交量", "成交手数"))
-        turnover   = _safe_float(_find_col(row, "成交额", "成交额(万元)"))
-        # turnover might be in 万元
-        if turnover is not None and "万元" in str(df.columns.tolist()):
-            turnover *= 10_000
+        # English column names returned by futures_zh_realtime
+        price      = _safe_float(row.get("trade"))
+        prev_close = _safe_float(row.get("presettlement") or row.get("prevsettlement")
+                                 or row.get("preclose"))
+        volume     = _safe_float(row.get("volume"))
+
+        # changepercent is a decimal ratio (e.g. 0.0248 = +2.48%), multiply by 100
+        _cp = _safe_float(row.get("changepercent"))
+        change_pct = round(_cp * 100, 4) if _cp is not None else None
+
+        # Compute change_pct from price / prev_close if not available
+        if change_pct is None and price is not None and prev_close is not None and prev_close != 0:
+            change_pct = round((price - prev_close) / prev_close * 100, 4)
+
+        # change_amt
+        change_amt = None
+        if price is not None and prev_close is not None:
+            change_amt = round(price - prev_close, 6)
 
         if price is None:
-            print(f"  [WARN] {key} ({sina_name}): no price in row {dict(row)}")
+            print(f"  [WARN] {key} (symbol={symbol!r}): no price. cols={list(df.columns)}")
             continue
 
-        results[key] = dict(price=price, change_pct=change_pct,
-                            change_amt=change_amt, prev_close=prev_close,
-                            volume=volume, turnover=turnover, spot_date=today)
-        print(f"  [OK] {key:20s}  price={price}  chg={change_pct}%  昨收={prev_close}")
+        results[key] = dict(
+            price=price, change_pct=change_pct, change_amt=change_amt,
+            prev_close=prev_close, volume=volume, turnover=None,
+            spot_date=today,
+        )
+        print(f"  [OK] {key:20s}  symbol={symbol!r:10s}  "
+              f"price={price}  chg={change_pct}%  昨结算={prev_close}")
 
     return results
 
 
 # ---------------------------------------------------------------------------
-# Domestic futures
-# ---------------------------------------------------------------------------
-
-def _parse_domestic_df(df: pd.DataFrame, key: str, name: str) -> dict | None:
-    """Extract spot snapshot from a futures_zh_spot / futures_zh_realtime DataFrame."""
-    if df is None or df.empty:
-        return None
-
-    # Pick main contract: highest 成交量 row
-    vol_col = next((c for c in df.columns if "成交量" in c), None)
-    if vol_col:
-        df = df.copy()
-        df[vol_col] = pd.to_numeric(df[vol_col], errors="coerce")
-        row = df.loc[df[vol_col].idxmax()]
-    else:
-        row = df.iloc[0]
-
-    price      = _safe_float(_find_col(row, "最新价", "现价"))
-    change_pct = _safe_float(_find_col(row, "涨跌幅"))
-    change_amt = _safe_float(_find_col(row, "涨跌额", "涨跌"))
-    prev_close = _safe_float(_find_col(row, "昨结算", "昨收", "前结算"))
-    volume     = _safe_float(_find_col(row, "成交量(手)", "成交量", "成交手数"))
-
-    turnover_raw = _safe_float(_find_col(row, "成交额(万元)", "成交额"))
-    # Determine unit: if column contains "万元" it's in 万元
-    turnover_col = next((c for c in df.columns
-                         if "成交额" in c and "万" in c), None)
-    turnover = turnover_raw * 10_000 if (turnover_raw is not None and turnover_col) else turnover_raw
-
-    if price is None:
-        print(f"  [WARN] {key} ({name}): no price. Cols: {list(df.columns)}")
-        return None
-
-    today = date.today().isoformat()
-    return dict(price=price, change_pct=change_pct, change_amt=change_amt,
-                prev_close=prev_close, volume=volume, turnover=turnover,
-                spot_date=today)
-
-
-def fetch_domestic() -> dict:
-    results = {}
-
-    for key, (name, exchange) in DOMESTIC_MAP.items():
-        data = None
-
-        # ── Try futures_zh_spot first ──────────────────────────────────────
-        try:
-            df = ak.futures_zh_spot(symbol=name, market="CF", adjust="0")
-            data = _parse_domestic_df(df, key, name)
-        except Exception as exc:
-            print(f"  [INFO] {key} futures_zh_spot failed ({exc}), trying futures_zh_realtime...")
-
-        # ── Fallback: futures_zh_realtime ──────────────────────────────────
-        if data is None:
-            try:
-                df = ak.futures_zh_realtime(symbol=name)
-                data = _parse_domestic_df(df, key, name)
-            except Exception as exc2:
-                print(f"  [ERROR] {key} futures_zh_realtime also failed: {exc2}")
-                continue
-
-        if data is None:
-            continue
-
-        results[key] = data
-        print(f"  [OK] {key:20s}  price={data['price']}  chg={data['change_pct']}%  "
-              f"昨结算={data['prev_close']}")
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Database upsert
+# Database schema + upsert
 # ---------------------------------------------------------------------------
 
 SCHEMA_SQL = """
@@ -256,13 +214,12 @@ def main() -> int:
         print(f"  [FATAL] Cannot connect: {exc}")
         return 1
 
-    spots: dict = {}
+    print("Building futures symbol mark map...")
+    mark_to_symbol = build_mark_to_symbol()
+    print(f"  [OK] {len(mark_to_symbol)} symbols loaded.\n")
 
-    print("── International futures (futures_foreign_commodity_realtime) ──────────")
-    spots.update(fetch_intl())
-
-    print("\n── Domestic futures (futures_zh_spot / futures_zh_realtime) ────────────")
-    spots.update(fetch_domestic())
+    print("── Domestic futures (futures_zh_realtime) ──────────────────────────────")
+    spots = fetch_domestic(mark_to_symbol)
 
     print(f"\nTotal real-time data fetched: {len(spots)} commodities")
 
