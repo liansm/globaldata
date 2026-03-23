@@ -4,7 +4,7 @@ A-Share Index Spot Data Fetcher
 Uses akshare.stock_zh_index_spot_sina — real-time snapshot for all A-share indices.
   ak.stock_zh_index_spot_sina()
   Returns columns: 代码, 名称, 最新价, 涨跌额, 涨跌幅, 成交量, 成交额, 振幅, 最高, 最低, 今开, 昨收
-  成交额 unit: 万元  → stored as 元 (×10000) to match index_prices.turnover
+  成交额 unit: 元，与 index_prices.turnover 单位一致，直接存储
 
 Writes to index_spot (one row per index, upserted on every run).
 Run any time during or after market hours for fresh data.
@@ -144,12 +144,10 @@ def main() -> int:
 
         price      = _safe_float(row.get("最新价"))
         change_pct = _safe_float(row.get("涨跌幅"))   # already in %, e.g. 1.23
-        turnover_w = _safe_float(row.get("成交额"))    # 万元
+        turnover   = _safe_float(row.get("成交额"))    # 元
         prev_close = _safe_float(row.get("昨收"))
 
-        turnover = round(turnover_w * 10000, 4) if turnover_w is not None else None
-
-        print(f"  {name:8s}  price={price}  chg={change_pct}%  turnover={turnover_w}万  昨收={prev_close}")
+        print(f"  {name:8s}  price={price}  chg={change_pct}%  turnover={turnover}  昨收={prev_close}")
         rows.append((key, price, change_pct, turnover, prev_close, today))
 
     try:
