@@ -61,7 +61,7 @@ def db_upsert_spot(conn, rows):
     if not rows:
         return
     sql = """
-    INSERT INTO index_spot (index_key, price, change_pct, turnover, prev_close, spot_date, updated_at)
+    INSERT INTO index_spot (index_key, price, change_pct, turnover, prev_close, spot_date)
     VALUES %s
     ON CONFLICT (index_key) DO UPDATE SET
         price      = EXCLUDED.price,
