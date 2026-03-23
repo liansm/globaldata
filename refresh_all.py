@@ -244,13 +244,14 @@ CLEAR_TABLES = [
 ]
 
 
-def clear_all():
+def clear_all(force: bool = False):
     print(hdr("\n══════════════  清空所有数据  ══════════════\n"))
-    print(warn("  ⚠  此操作将删除数据库中全部数据，且不可恢复！"))
-    confirm = input("  输入 YES 确认清空，其他任意键取消: ").strip()
-    if confirm != "YES":
-        print("  已取消。")
-        return
+    if not force:
+        print(warn("  ⚠  此操作将删除数据库中全部数据，且不可恢复！"))
+        confirm = input("  输入 YES 确认清空，其他任意键取消: ").strip()
+        if confirm != "YES":
+            print("  已取消。")
+            return
 
     try:
         conn = psycopg2.connect(DATABASE_URL)
@@ -283,11 +284,16 @@ def main():
     parser = argparse.ArgumentParser(description="globaldata 数据刷新工具")
     parser.add_argument("--status", action="store_true", help="仅展示数据库状态")
     parser.add_argument("--fetch",  action="store_true", help="仅运行 fetch 脚本")
-    parser.add_argument("--clear",  action="store_true", help="清空所有表数据（需二次确认）")
+    parser.add_argument("--clear",       action="store_true", help="清空所有表数据（需二次确认）")
+    parser.add_argument("--force_clear", action="store_true", help="强制清空所有表数据（无需确认）")
     args = parser.parse_args()
 
+    if args.force_clear:
+        clear_all(force=True)
+        return
+
     if args.clear:
-        clear_all()
+        clear_all(force=False)
         return
 
     show_status = not args.fetch   # 默认展示状态
