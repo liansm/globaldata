@@ -3,11 +3,11 @@ Index Spot Data Fetcher (A股 + 港股)
 
 A股: akshare.stock_zh_index_spot_sina()
   Columns: 代码, 名称, 最新价, 涨跌额, 涨跌幅, 成交量, 成交额, 振幅, 最高, 最低, 今开, 昨收
-  成交额 unit: 元，直接存储
+  成交额 unit: 元，直接存储；matched by 代码 (e.g. "sh000001")
 
 港股: akshare.stock_hk_index_spot_sina()
-  Columns: 指数名称, 最新价, 涨跌额, 涨跌幅, 昨收, 今开, 最高, 最低, 成交量, 成交额
-  成交额 unit: 港元，直接存储；matched by 指数名称
+  Columns: 指数(code), 名称, 最新价, 涨跌额, 涨跌幅, 昨收, 今开, 最高, 最低
+  无成交额列；matched by 指数 code (e.g. "HSI", "HSCEI", "HSTECH")
 
 Writes to index_spot (one row per index, upserted on every run).
 Run any time during or after market hours for fresh data.
@@ -37,11 +37,11 @@ AH_SPOT_CONFIGS = [
     # 北证50 (bj899050) 不在 stock_zh_index_spot_sina 覆盖范围内，跳过
 ]
 
-# 港股: index_key → 指数名称 (matched by 指数名称 column in stock_hk_index_spot_sina)
+# 港股: index_key → 指数 code (matched by 指数 column in stock_hk_index_spot_sina)
 HK_SPOT_CONFIGS = [
-    {"key": "idx_hsi",    "hk_name": "恒生指数",       "name": "恒生指数"},
-    {"key": "idx_hscei",  "hk_name": "恒生中国企业指数", "name": "恒生国企"},
-    {"key": "idx_hstech", "hk_name": "恒生科技指数",    "name": "恒生科技"},
+    {"key": "idx_hsi",    "hk_code": "HSI",    "name": "恒生指数"},
+    {"key": "idx_hscei",  "hk_code": "HSCEI",  "name": "恒生国企"},
+    {"key": "idx_hstech", "hk_code": "HSTECH", "name": "恒生科技"},
 ]
 
 # ---------------------------------------------------------------------------
@@ -115,7 +115,7 @@ def fetch_a_spot() -> dict | None:
 
 
 def fetch_hk_spot() -> dict | None:
-    """Call stock_hk_index_spot_sina → dict keyed by 指数名称."""
+    """Call stock_hk_index_spot_sina → dict keyed by 指数 code (e.g. 'HSI')."""
     try:
         df = ak.stock_hk_index_spot_sina()
     except Exception as exc:
@@ -124,11 +124,13 @@ def fetch_hk_spot() -> dict | None:
     if df is None or df.empty:
         print("[ERROR] stock_hk_index_spot_sina: empty response")
         return None
+    # First column is the index code (HSI, HSCEI, HSTECH, ...)
+    code_col = df.columns[0]
     result = {}
     for _, row in df.iterrows():
-        name_key = str(row.get("指数名称", "")).strip()
-        if name_key:
-            result[name_key] = row
+        code = str(row.iloc[0]).strip()
+        if code:
+            result[code] = row
     return result
 
 
@@ -182,22 +184,20 @@ def main() -> int:
         print(f"  [OK] {len(hk_map)} entries in HK snapshot\n")
         for cfg in HK_SPOT_CONFIGS:
             key     = cfg["key"]
-            hk_name = cfg["hk_name"]
+            hk_code = cfg["hk_code"]
             name    = cfg["name"]
-            row = hk_map.get(hk_name)
+            row = hk_map.get(hk_code)
             if row is None:
-                # Try partial match
-                row = next((v for k, v in hk_map.items() if hk_name in k or k in hk_name), None)
-            if row is None:
-                print(f"  [{name}] NOT FOUND (hk_name={hk_name})")
-                print(f"    Available names: {list(hk_map.keys())[:10]}")
+                print(f"  [{name}] NOT FOUND (hk_code={hk_code})")
+                print(f"    Available codes: {list(hk_map.keys())[:10]}")
                 failed.append(key)
                 continue
             price      = _safe_float(row.get("最新价"))
             change_pct = _safe_float(row.get("涨跌幅"))
-            turnover   = _safe_float(row.get("成交额"))   # 港元
+            # stock_hk_index_spot_sina 无成交额列
+            turnover   = None
             prev_close = _safe_float(row.get("昨收"))
-            print(f"  {name:8s}  price={price}  chg={change_pct}%  turnover={turnover}  昨收={prev_close}")
+            print(f"  {name:8s}  price={price}  chg={change_pct}%  昨收={prev_close}")
             rows.append((key, price, change_pct, turnover, prev_close, today))
 
     # ── 写库 ─────────────────────────────────────────────────────────────────
