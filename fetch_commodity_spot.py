@@ -29,6 +29,7 @@ Key design
 import os
 import sys
 from datetime import date
+from typing import Optional
 
 import akshare as ak
 import pandas as pd
@@ -151,6 +152,78 @@ def fetch_domestic(mark_to_symbol: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Fetch SGE spot data (domestic gold & silver)
+# ---------------------------------------------------------------------------
+
+# commodity_key → SGE symbol
+SGE_MAP = {
+    "gold":   "Au99.99",
+    "silver": "Ag99.99",
+}
+
+
+def fetch_prev_close_from_db(conn, commodity_key: str) -> Optional[float]:
+    """Query the most recent daily close price from the prices table."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT price FROM prices WHERE commodity_key = %s "
+            "ORDER BY price_date DESC LIMIT 1",
+            (commodity_key,)
+        )
+        row = cur.fetchone()
+    if row and row[0] is not None:
+        return float(row[0])
+    return None
+
+
+def fetch_sge(conn) -> dict:
+    """
+    Fetch real-time spot prices from Shanghai Gold Exchange via
+    spot_quotations_sge().  Returns a series of minute bars for the
+    current session; we take the last row as the latest price.
+    prev_close is read from the local prices table (most recent daily close).
+    """
+    results = {}
+    today = date.today().isoformat()
+
+    for key, sge_symbol in SGE_MAP.items():
+        try:
+            df = ak.spot_quotations_sge(symbol=sge_symbol)
+        except Exception as exc:
+            print(f"  [ERROR] {key} spot_quotations_sge({sge_symbol}): {exc}")
+            continue
+
+        if df is None or df.empty:
+            print(f"  [WARN] {key} ({sge_symbol}): empty response (outside trading hours?)")
+            continue
+
+        # Columns (positional, names are garbled on Windows):
+        #   col[0] = 品种, col[1] = 时间, col[2] = 最新价, col[3] = 更新时间
+        last = df.iloc[-1]
+        price = _safe_float(last.iloc[2])
+        if price is None:
+            print(f"  [WARN] {key} ({sge_symbol}): no price in last row: {last.to_dict()}")
+            continue
+
+        prev_close = fetch_prev_close_from_db(conn, key)
+        change_pct = None
+        change_amt = None
+        if prev_close and prev_close != 0:
+            change_amt = round(price - prev_close, 6)
+            change_pct = round(change_amt / prev_close * 100, 4)
+
+        results[key] = dict(
+            price=price, change_pct=change_pct, change_amt=change_amt,
+            prev_close=prev_close, volume=None, turnover=None,
+            spot_date=today,
+        )
+        print(f"  [OK] {key:8s}  symbol={sge_symbol}  "
+              f"price={price}  昨收={prev_close}  chg={change_pct}%")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Database schema + upsert
 # ---------------------------------------------------------------------------
 
@@ -220,6 +293,9 @@ def main() -> int:
 
     print("── Domestic futures (futures_zh_realtime) ──────────────────────────────")
     spots = fetch_domestic(mark_to_symbol)
+
+    print("\n── SGE spot (spot_quotations_sge) — 国内黄金/白银 ──────────────────────")
+    spots.update(fetch_sge(conn))
 
     print(f"\nTotal real-time data fetched: {len(spots)} commodities")
 
