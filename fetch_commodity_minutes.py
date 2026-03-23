@@ -7,8 +7,11 @@ akshare.futures_zh_minute_sina(symbol) and upserts into commodity_minutes.
 
 Strategy
 --------
-1. For each tracked domestic commodity, call futures_zh_spot to find the
-   main contract (highest-volume row) and read its contract code.
+1. For each tracked domestic commodity, call futures_zh_realtime to find the
+   main contract (highest open-interest row) and read its contract code.
+   Some product names cause KeyError in futures_zh_realtime on Windows due to
+   encoding mismatches in the internal symbol_mark dict — for those we look up
+   the exact symbol string from futures_symbol_mark() using the ASCII mark value.
 2. Call futures_zh_minute_sina(symbol=<contract_code>) for intraday bars.
 3. Upsert only today's bars (to avoid overwriting historical data with stale
    after-hours ticks from rolled contracts).
@@ -30,18 +33,45 @@ load_dotenv()
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata")
 
-# commodity_key → Chinese product name for futures_zh_spot
+# commodity_key → (chinese_name, sina_mark_value_or_None)
+# mark value is used for products whose Chinese name causes KeyError in
+# futures_zh_realtime (encoding mismatch on Windows).  None = direct name works.
 DOMESTIC_MAP = {
-    "copper":            "铜",
-    "aluminum":          "铝",
-    "lithium_carbonate": "碳酸锂",
-    "methanol":          "甲醇",
-    "urea":              "尿素",
-    "meg":               "乙二醇",
-    "styrene":           "苯乙烯",
-    "polypropylene":     "聚丙烯",
-    "natural_rubber":    "橡胶",
+    "copper":            ("铜",    "tong_qh"),
+    "aluminum":          ("铝",    "lv_qh"),
+    "lithium_carbonate": ("碳酸锂", "lc_qh"),
+    "methanol":          ("甲醇",   "mh_qh"),
+    "urea":              ("尿素",   None),
+    "meg":               ("乙二醇", None),
+    "styrene":           ("苯乙烯", None),
+    "polypropylene":     ("聚丙烯", "jbx_qh"),
+    "natural_rubber":    ("橡胶",   None),
 }
+
+# ---------------------------------------------------------------------------
+# Symbol mark table (loaded once)
+# ---------------------------------------------------------------------------
+
+_mark_df: pd.DataFrame | None = None
+
+def _get_mark_df() -> pd.DataFrame:
+    global _mark_df
+    if _mark_df is None:
+        try:
+            _mark_df = ak.futures_symbol_mark()
+        except Exception as exc:
+            print(f"  [WARN] futures_symbol_mark() failed: {exc}")
+            _mark_df = pd.DataFrame(columns=["symbol", "mark"])
+    return _mark_df
+
+
+def _symbol_from_mark(mark: str) -> str | None:
+    """Return the exact symbol string for a given ASCII mark value (encoding-safe)."""
+    df = _get_mark_df()
+    if df.empty:
+        return None
+    rows = df[df["mark"] == mark]
+    return str(rows["symbol"].iloc[0]) if not rows.empty else None
 
 
 def _safe_float(val) -> float | None:
@@ -56,36 +86,43 @@ def _safe_float(val) -> float | None:
 # Step 1: determine main contract code for each product
 # ---------------------------------------------------------------------------
 
-def get_main_contract_code(product_name: str) -> str | None:
+def get_main_contract_code(product_name: str, mark: str | None) -> str | None:
     """
-    Call futures_zh_spot to find the main (highest-volume) contract code.
-    Returns a lowercase contract code like 'cu2505', or None on failure.
+    Use futures_zh_realtime to list all active contracts for a product,
+    pick the one with the highest open interest (position), and return its
+    lowercase contract code (e.g. 'cu2506').
+
+    For products whose Chinese name causes a KeyError in futures_zh_realtime
+    (encoding mismatch on Windows), supply the ASCII mark value so we can
+    look up the exact symbol string from futures_symbol_mark().
     """
+    # Resolve the symbol string to pass to futures_zh_realtime
+    if mark:
+        symbol = _symbol_from_mark(mark)
+        if not symbol:
+            print(f"    [WARN] mark '{mark}' not found in futures_symbol_mark(); "
+                  f"falling back to '{product_name}'")
+            symbol = product_name
+    else:
+        symbol = product_name
+
     try:
-        df = ak.futures_zh_spot(symbol=product_name, market="CF", adjust="0")
+        df = ak.futures_zh_realtime(symbol=symbol)
     except Exception as exc:
-        print(f"    [WARN] futures_zh_spot({product_name}): {exc}")
+        print(f"    [WARN] futures_zh_realtime({symbol!r}): {exc}")
         return None
 
     if df is None or df.empty:
+        print(f"    [WARN] futures_zh_realtime({symbol!r}): empty")
         return None
 
-    # Find contract code column (first column, or one containing "代码"/"合约")
-    code_col = next(
-        (c for c in df.columns if "代码" in c or "合约" in c),
-        df.columns[0]
-    )
-    # Find volume column to pick main contract
-    vol_col = next((c for c in df.columns if "成交量" in c), None)
-
-    if vol_col:
+    # Sort by open interest (position) descending → main contract is first row
+    if "position" in df.columns:
         df = df.copy()
-        df[vol_col] = pd.to_numeric(df[vol_col], errors="coerce")
-        main_row = df.loc[df[vol_col].idxmax()]
-    else:
-        main_row = df.iloc[0]
+        df["position"] = pd.to_numeric(df["position"], errors="coerce")
+        df = df.sort_values("position", ascending=False)
 
-    code = str(main_row[code_col]).strip().lower()
+    code = str(df.iloc[0]["symbol"]).strip().lower()
     return code if code and code != "nan" else None
 
 
@@ -229,11 +266,11 @@ def main() -> int:
     total_bars = 0
     failures = []
 
-    for key, product_name in DOMESTIC_MAP.items():
+    for key, (product_name, mark) in DOMESTIC_MAP.items():
         print(f"── {key} ({product_name}) ─────────────────────────────────")
 
-        # 1. Get main contract code
-        contract = get_main_contract_code(product_name)
+        # 1. Get main contract code via futures_zh_realtime
+        contract = get_main_contract_code(product_name, mark)
         if not contract:
             print(f"    [SKIP] Could not determine main contract for {product_name}")
             failures.append(key)
