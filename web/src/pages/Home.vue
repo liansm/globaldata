@@ -30,7 +30,7 @@ const SECTIONS = [
   {
     title: '能源',
     icon: '⛽',
-    keys: ['intl_oil_wti', 'intl_gas', 'natural_gas', 'coal_port_5500', 'lithium_carbonate'],
+    keys: ['intl_oil_wti', 'intl_oil_brent', 'intl_gas', 'natural_gas', 'coal_port_5500', 'lithium_carbonate'],
   },
   {
     title: '化工品',
@@ -80,6 +80,24 @@ function goDetail(row: Commodity) {
 function displayName(c: Commodity) {
   return c.commodity.replace(/\s*[（(][^)）]+[)）]/, '').trim() || c.commodity
 }
+
+// Extract exchange label from commodity name parentheses, or infer from key
+function exchangeLabel(c: Commodity): string | null {
+  const match = c.commodity.match(/[（(]([^)）]+)[)）]/)
+  if (match) {
+    // "COMEX GC" → "COMEX", "LME AHD" → "LME", "上期所 CU" → "上期所"
+    return match[1].trim().split(/\s+/)[0]
+  }
+  if (c.key === 'gold' || c.key === 'silver') return 'SGE'
+  return null
+}
+
+function exchangeTagType(label: string | null) {
+  if (!label) return 'info'
+  if (label === 'SGE') return 'warning'
+  if (label === 'COMEX' || label === 'LME' || label === 'NYMEX' || label === 'ICE') return 'danger'
+  return 'info'
+}
 </script>
 
 <template>
@@ -125,7 +143,12 @@ function displayName(c: Commodity) {
           >
             <div class="card-top">
               <span class="card-name">{{ displayName(item) }}</span>
-              <el-tag size="small" class="card-tag" type="info">{{ item.key }}</el-tag>
+              <el-tag
+                v-if="exchangeLabel(item)"
+                size="small"
+                class="card-tag"
+                :type="exchangeTagType(exchangeLabel(item))"
+              >{{ exchangeLabel(item) }}</el-tag>
             </div>
 
             <div class="card-price">

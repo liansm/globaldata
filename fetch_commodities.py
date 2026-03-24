@@ -75,8 +75,9 @@ INTL_CONFIGS = [
     {"key": "intl_silver",  "commodity": "白银 (COMEX SI)",       "symbol": "SI",  "unit": "USD/oz"},
     {"key": "intl_copper",  "commodity": "铜 (COMEX HG)",         "symbol": "HG",  "unit": "美分/磅"},
     {"key": "intl_alum",    "commodity": "铝 (LME AHD)",          "symbol": "AHD", "unit": "USD/吨"},
-    {"key": "intl_oil_wti", "commodity": "原油 WTI (NYMEX CL)",   "symbol": "CL",  "unit": "USD/桶"},
-    {"key": "intl_gas",     "commodity": "天然气 (NYMEX NG)",     "symbol": "NG",  "unit": "USD/MMBtu"},
+    {"key": "intl_oil_wti",   "commodity": "原油 WTI (NYMEX CL)",    "symbol": "CL",  "unit": "USD/桶"},
+    {"key": "intl_oil_brent", "commodity": "原油 Brent (ICE OIL)",  "symbol": "OIL", "unit": "USD/桶"},
+    {"key": "intl_gas",       "commodity": "天然气 (NYMEX NG)",     "symbol": "NG",  "unit": "USD/MMBtu"},
 ]
 
 # CCI name  →  (file_key, human_label, calorific_kcal, grade_type)
