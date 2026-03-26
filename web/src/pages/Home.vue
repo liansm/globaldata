@@ -39,9 +39,14 @@ const SECTIONS = [
   {
     title: '有色金属',
     icon: '⚙️',
-    keys: ['copper', 'aluminum', 'zinc', 'lead', 'tin', 'nickel',
-           'intl_copper',
-           'intl_alum', 'lme_copper', 'lme_zinc', 'lme_lead', 'lme_tin', 'lme_nickel'],
+    keys: [
+      'copper',   'lme_copper',
+      'aluminum', 'intl_alum',
+      'zinc',     'lme_zinc',
+      'lead',     'lme_lead',
+      'tin',      'lme_tin',
+      'nickel',   'lme_nickel',
+    ],
   },
   {
     title: '化工品',
