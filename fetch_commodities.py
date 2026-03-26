@@ -61,12 +61,17 @@ FUTURES_CONFIGS = [
     {"key": "copper",             "commodity": "铜 (上期所 CU)",         "symbol": "CU0", "unit": "元/吨"},
     {"key": "aluminum",           "commodity": "铝 (上期所 AL)",         "symbol": "AL0", "unit": "元/吨"},
     {"key": "lithium_carbonate",  "commodity": "碳酸锂 (广期所 LC)",     "symbol": "LC0", "unit": "元/吨"},
+    {"key": "polysilicon",        "commodity": "多晶硅 (广期所 PS)",      "symbol": "PS0", "unit": "元/吨"},
     {"key": "methanol",           "commodity": "甲醇 (郑商所 MA)",       "symbol": "MA0", "unit": "元/吨"},
     {"key": "urea",               "commodity": "尿素 (郑商所 UR)",       "symbol": "UR0", "unit": "元/吨"},
     {"key": "meg",                "commodity": "乙二醇 (大商所 EG)",     "symbol": "EG0", "unit": "元/吨"},
     {"key": "styrene",            "commodity": "苯乙烯 (大商所 EB)",     "symbol": "EB0", "unit": "元/吨"},
     {"key": "polypropylene",      "commodity": "聚丙烯 (大商所 PP)",     "symbol": "PP0", "unit": "元/吨"},
     {"key": "natural_rubber",     "commodity": "天然橡胶 (上期所 RU)",   "symbol": "RU0", "unit": "元/吨"},
+    {"key": "zinc",               "commodity": "锌 (上期所 ZN)",          "symbol": "ZN0", "unit": "元/吨"},
+    {"key": "lead",               "commodity": "铅 (上期所 PB)",          "symbol": "PB0", "unit": "元/吨"},
+    {"key": "tin",                "commodity": "锡 (上期所 SN)",          "symbol": "SN0", "unit": "元/吨"},
+    {"key": "nickel",             "commodity": "镍 (上期所 NI)",          "symbol": "NI0", "unit": "元/吨"},
 ]
 
 # International futures configs (via ak.futures_foreign_hist, 新浪财经)
@@ -82,6 +87,10 @@ INTL_CONFIGS = [
     {"key": "lme_gold",   "commodity": "黄金 (伦敦 XAU)",  "symbol": "XAU", "unit": "USD/oz"},
     {"key": "lme_silver", "commodity": "白银 (伦敦 XAG)",  "symbol": "XAG", "unit": "USD/oz"},
     {"key": "lme_copper", "commodity": "铜 (LME CAD)",     "symbol": "CAD", "unit": "USD/吨"},
+    {"key": "lme_zinc",   "commodity": "锌 (LME ZSD)",     "symbol": "ZSD", "unit": "USD/吨"},
+    {"key": "lme_lead",   "commodity": "铅 (LME PBD)",     "symbol": "PBD", "unit": "USD/吨"},
+    {"key": "lme_tin",    "commodity": "锡 (LME SND)",     "symbol": "SND", "unit": "USD/吨"},
+    {"key": "lme_nickel", "commodity": "镍 (LME NID)",     "symbol": "NID", "unit": "USD/吨"},
 ]
 
 # CCI name  →  (file_key, human_label, calorific_kcal, grade_type)

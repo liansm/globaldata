@@ -30,12 +30,18 @@ const SECTIONS = [
   {
     title: '能源',
     icon: '⛽',
-    keys: ['intl_oil_wti', 'intl_oil_brent', 'intl_gas', 'natural_gas', 'coal_port_5500', 'lithium_carbonate'],
+    keys: ['intl_oil_wti', 'intl_oil_brent', 'intl_gas', 'natural_gas',
+           '__row_break__',
+           'coal_port_5500', 'coal_port_5000', 'coal_port_4500',
+           '__row_break__',
+           'lithium_carbonate', 'polysilicon'],
   },
   {
     title: '有色金属',
     icon: '⚙️',
-    keys: ['copper', 'aluminum', 'intl_copper', 'intl_alum', 'lme_copper'],
+    keys: ['copper', 'aluminum', 'zinc', 'lead', 'tin', 'nickel',
+           'intl_copper',
+           'intl_alum', 'lme_copper', 'lme_zinc', 'lme_lead', 'lme_tin', 'lme_nickel'],
   },
   {
     title: '化工品',
@@ -48,7 +54,9 @@ const sections = computed(() => {
   const map = new Map(list.value.map(c => [c.key, c]))
   return SECTIONS.map(s => ({
     ...s,
-    items: s.keys.map(k => map.get(k)).filter(Boolean) as Commodity[],
+    items: s.keys
+      .map(k => k === '__row_break__' ? { key: '__row_break__' } as Commodity : map.get(k))
+      .filter(Boolean) as Commodity[],
   })).filter(s => s.items.length > 0)
 })
 
@@ -136,51 +144,53 @@ function exchangeTagType(label: string | null) {
         <div class="section-header">
           <span class="section-icon">{{ sec.icon }}</span>
           <h2 class="section-title">{{ sec.title }}</h2>
-          <span class="section-count">{{ sec.items.length }} 个品种</span>
+          <span class="section-count">{{ sec.items.filter(i => i.key !== '__row_break__').length }} 个品种</span>
         </div>
 
         <div class="card-grid">
-          <div
-            v-for="item in sec.items"
-            :key="item.key"
-            class="card"
-            @click="goDetail(item)"
-          >
-            <div class="card-top">
-              <span class="card-name">{{ displayName(item) }}</span>
-              <el-tag
-                v-if="exchangeLabel(item)"
-                size="small"
-                class="card-tag"
-                :type="exchangeTagType(exchangeLabel(item))"
-              >{{ exchangeLabel(item) }}</el-tag>
-            </div>
-
-            <div class="card-price">
-              {{ fmt(item.latestPrice) }}
-              <span class="card-unit">{{ item.unit ?? '' }}</span>
-            </div>
-
-            <!-- 涨跌幅（仅实时数据有） -->
+          <template v-for="item in sec.items" :key="item.key">
+            <div v-if="item.key === '__row_break__'" class="grid-row-break" />
             <div
-              v-if="item.spotChangePct != null"
-              class="card-change"
-              :class="changePctClass(item.spotChangePct)"
+              v-else
+              class="card"
+              @click="goDetail(item)"
             >
-              {{ fmtChangePct(item.spotChangePct) }}
-            </div>
+              <div class="card-top">
+                <span class="card-name">{{ displayName(item) }}</span>
+                <el-tag
+                  v-if="exchangeLabel(item)"
+                  size="small"
+                  class="card-tag"
+                  :type="exchangeTagType(exchangeLabel(item))"
+                >{{ exchangeLabel(item) }}</el-tag>
+              </div>
 
-            <div class="card-footer">
-              <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-              <template v-if="item.spotUpdatedAt">
-                <span class="card-sep">·</span>
-                <span class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
-                <span class="card-spot-badge">实时</span>
-              </template>
-              <span v-if="item.hasMinutes" class="card-minutes-icon" title="有分时图">📈</span>
-              <span v-else class="card-arrow">→</span>
+              <div class="card-price">
+                {{ fmt(item.latestPrice) }}
+                <span class="card-unit">{{ item.unit ?? '' }}</span>
+              </div>
+
+              <!-- 涨跌幅（仅实时数据有） -->
+              <div
+                v-if="item.spotChangePct != null"
+                class="card-change"
+                :class="changePctClass(item.spotChangePct)"
+              >
+                {{ fmtChangePct(item.spotChangePct) }}
+              </div>
+
+              <div class="card-footer">
+                <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
+                <template v-if="item.spotUpdatedAt">
+                  <span class="card-sep">·</span>
+                  <span class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
+                  <span class="card-spot-badge">实时</span>
+                </template>
+                <span v-if="item.hasMinutes" class="card-minutes-icon" title="有分时图">📈</span>
+                <span v-else class="card-arrow">→</span>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
       </section>
     </template>
@@ -357,6 +367,14 @@ h1 {
   margin-left: auto;
   font-size: 13px;
   color: #409eff;
+}
+
+/* ── Row break (forces coal items onto a new grid row) ───────────── */
+.grid-row-break {
+  grid-column: 1 / -1;
+  height: 0;
+  margin: 0;
+  padding: 0;
 }
 
 /* ── Skeleton ────────────────────────────────────────────────────── */

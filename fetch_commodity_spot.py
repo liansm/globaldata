@@ -48,12 +48,17 @@ DOMESTIC_MARK_MAP = {
     "copper":            "tong_qh",   # 铜  SHFE
     "aluminum":          "lv_qh",     # 铝  SHFE
     "lithium_carbonate": "lc_qh",     # 碳酸锂  GFEX
+    "polysilicon":       "ps_qh",     # 多晶硅  GFEX
     "methanol":          "mh_qh",     # 甲醇  CZCE
     "urea":              "cj_qh",     # 尿素  CZCE
     "meg":               "dy_qh",     # 乙二醇  DCE
     "styrene":           "bst_qh",    # 苯乙烯  CZCE / DCE
     "polypropylene":     "jbx_qh",    # 聚丙烯 (PP)  DCE
     "natural_rubber":    "lq_qh",     # 橡胶  SHFE
+    "zinc":              "xin_qh",   # 锌  SHFE
+    "lead":              "qian_qh",  # 铅  SHFE
+    "tin":               "xi_qh",   # 锡  SHFE
+    "nickel":            "nie_qh",   # 镍  SHFE
 }
 
 

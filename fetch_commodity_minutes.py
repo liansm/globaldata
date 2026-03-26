@@ -40,12 +40,17 @@ DOMESTIC_MAP = {
     "copper":            ("铜",    "tong_qh"),
     "aluminum":          ("铝",    "lv_qh"),
     "lithium_carbonate": ("碳酸锂", "lc_qh"),
+    "polysilicon":       ("多晶硅", "ps_qh"),
     "methanol":          ("甲醇",   "mh_qh"),
     "urea":              ("尿素",   None),
     "meg":               ("乙二醇", None),
     "styrene":           ("苯乙烯", None),
     "polypropylene":     ("聚丙烯", "jbx_qh"),
     "natural_rubber":    ("橡胶",   None),
+    "zinc":              ("锌",    "xin_qh"),
+    "lead":              ("铅",    "qian_qh"),
+    "tin":               ("锡",    "xi_qh"),
+    "nickel":            ("镍",    "nie_qh"),
 }
 
 # ---------------------------------------------------------------------------
