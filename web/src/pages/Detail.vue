@@ -34,11 +34,10 @@ const error     = ref('')
 const detail    = ref<CommodityDetail | null>(null)
 const days      = ref<DaysOption>('ytd')
 
-// Intraday tab
-const activeTab    = ref<'history' | 'minutes'>('history')
-const minutesData  = ref<CommodityMinutes | null>(null)
+// Intraday
+const showIntraday   = ref(false)
+const minutesData    = ref<CommodityMinutes | null>(null)
 const minutesLoading = ref(false)
-const minutesError   = ref('')
 
 const daysOptions: { label: string; value: DaysOption }[] = [
   { label: '今年来', value: 'ytd' },
@@ -73,26 +72,32 @@ async function loadDetail() {
 
 async function loadMinutes() {
   minutesLoading.value = true
-  minutesError.value = ''
   try {
     minutesData.value = await fetchCommodityMinutes(key.value)
-    // 有数据时自动切到分时 tab
     if (minutesData.value?.minutes.length) {
-      activeTab.value = 'minutes'
+      showIntraday.value = true
     }
   } catch {
-    minutesError.value = '分时数据加载失败'
+    minutesData.value = null  // 静默失败
   } finally {
     minutesLoading.value = false
   }
 }
 
-function onTabChange(tab: string) {
-  activeTab.value = tab as 'history' | 'minutes'
+function switchToIntraday() { showIntraday.value = true }
+
+function switchToDaily(val: DaysOption) {
+  showIntraday.value = false
+  days.value = val
 }
 
 onMounted(() => { loadDetail(); loadMinutes() })
-watch(key, () => { loadDetail(); loadMinutes() })
+watch(key, () => {
+  showIntraday.value = false
+  minutesData.value  = null
+  loadDetail()
+  loadMinutes()
+})
 watch(days, loadDetail)
 
 // ── Historical chart option ──────────────────────────────────────────────
@@ -353,44 +358,49 @@ function exchangeTagType(label: string | null) {
         </div>
       </div>
 
-      <!-- Tab 切换：分时图（有数据时在前）/ 历史走势 -->
-      <el-tabs v-model="activeTab" class="chart-tabs" @tab-change="onTabChange">
-        <!-- 分时图：有数据才显示，且置于首位 -->
-        <el-tab-pane
+      <!-- 工具栏：分时按钮（有数据才显示）+ 时间范围 -->
+      <div class="chart-toolbar">
+        <el-button
           v-if="minutesData && minutesData.minutes.length"
-          label="分时图"
-          name="minutes"
+          size="small"
+          :type="showIntraday ? 'primary' : 'default'"
+          class="intraday-btn"
+          @click="switchToIntraday"
         >
-          <div class="minutes-meta">
-            {{ minutesData.date }} · {{ minutesData.minutes.length }} 根分钟 bars
-            <template v-if="detail.spot?.prevClose">
-              · 昨结算 {{ fmt(detail.spot.prevClose, 4) }} {{ detail.unit }}
-            </template>
-          </div>
-          <div class="chart-wrap">
-            <v-chart :option="minutesChartOption" autoresize style="width:100%;height:360px" />
-          </div>
-        </el-tab-pane>
+          分时
+        </el-button>
 
-        <el-tab-pane label="历史走势" name="history">
-          <!-- 时间范围切换 -->
-          <div class="chart-toolbar">
-            <el-radio-group v-model="days" size="small">
-              <el-radio-button
-                v-for="opt in daysOptions"
-                :key="opt.value"
-                :value="opt.value"
-              >
-                {{ opt.label }}
-              </el-radio-button>
-            </el-radio-group>
-          </div>
+        <el-radio-group
+          :model-value="showIntraday ? null : days"
+          size="small"
+          @update:model-value="val => switchToDaily(val as DaysOption)"
+        >
+          <el-radio-button v-for="opt in daysOptions" :key="String(opt.value)" :value="opt.value">
+            {{ opt.label }}
+          </el-radio-button>
+        </el-radio-group>
+      </div>
 
-          <div class="chart-wrap" v-loading="loading">
-            <v-chart :option="chartOption" autoresize style="width:100%;height:380px" />
-          </div>
-        </el-tab-pane>
-      </el-tabs>
+      <!-- 分时图 -->
+      <div v-if="showIntraday" class="chart-wrap" v-loading="minutesLoading">
+        <div v-if="minutesData?.date" class="intraday-date">
+          {{ minutesData.date }} · {{ minutesData.minutes.length }} 根分钟 bars
+          <template v-if="detail.spot?.prevClose">
+            · 昨结算 {{ fmt(detail.spot.prevClose, 4) }} {{ detail.unit }}
+          </template>
+        </div>
+        <v-chart
+          v-if="minutesData?.minutes.length"
+          :option="minutesChartOption"
+          autoresize
+          style="width:100%;height:380px"
+        />
+      </div>
+
+      <!-- 历史走势图 -->
+      <div v-else class="chart-wrap" v-loading="loading">
+        <v-chart :option="chartOption" autoresize style="width:100%;height:380px" />
+      </div>
 
       <!-- 详细信息卡片 -->
       <el-descriptions title="商品信息" :column="3" border size="small" class="desc-card">
@@ -520,12 +530,23 @@ h1 {
   vertical-align: middle;
 }
 
-.chart-tabs {
-  margin-bottom: 16px;
+.chart-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
-.chart-toolbar {
-  margin-bottom: 12px;
+.intraday-btn {
+  flex-shrink: 0;
+}
+
+.intraday-date {
+  font-size: 13px;
+  color: #888;
+  margin-bottom: 4px;
+  padding-left: 4px;
 }
 
 .chart-wrap {
@@ -535,12 +556,6 @@ h1 {
   padding: 12px;
   margin-bottom: 24px;
   min-height: 360px;
-}
-
-.minutes-meta {
-  font-size: 12px;
-  color: #aaa;
-  margin-bottom: 8px;
 }
 
 .desc-card {
