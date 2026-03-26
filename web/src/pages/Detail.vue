@@ -371,7 +371,7 @@ function exchangeTagType(label: string | null) {
         </el-button>
 
         <el-radio-group
-          :model-value="showIntraday ? null : days"
+          :model-value="(showIntraday || minutesLoading) ? null : days"
           size="small"
           @update:model-value="val => switchToDaily(val as DaysOption)"
         >
