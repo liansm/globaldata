@@ -40,12 +40,23 @@ DOMESTIC_MAP = {
     "copper":            ("铜",    "tong_qh"),
     "aluminum":          ("铝",    "lv_qh"),
     "lithium_carbonate": ("碳酸锂", "lc_qh"),
+    "polysilicon":       ("多晶硅", "ps_qh"),
     "methanol":          ("甲醇",   "mh_qh"),
     "urea":              ("尿素",   None),
     "meg":               ("乙二醇", None),
     "styrene":           ("苯乙烯", None),
     "polypropylene":     ("聚丙烯", "jbx_qh"),
     "natural_rubber":    ("橡胶",   None),
+    "zinc":              ("锌",    "xin_qh"),
+    "lead":              ("铅",    "qian_qh"),
+    "tin":               ("锡",    "xi_qh"),
+    "nickel":            ("镍",    "nie_qh"),
+    "corn":              ("玉米",  "yumi_qh"),
+    "soybean_oil":       ("豆油",  "douya_qh"),
+    "eggs":              ("鸡蛋",  "jidan_qh"),
+    "live_hog":          ("生猪",  "shengzhu_qh"),
+    "cotton":            ("棉花",  "mianhua_qh"),
+    "sugar":             ("白糖",  "tang_qh"),
 }
 
 # ---------------------------------------------------------------------------
@@ -146,18 +157,26 @@ def fetch_minutes(contract_code: str) -> pd.DataFrame | None:
         print(f"    [WARN] {contract_code}: empty minute data")
         return None
 
-    # Detect datetime column (usually '时间' or '日期')
+    # Detect datetime column — futures_zh_minute_sina uses 'datetime' (English)
     dt_col = next(
-        (c for c in df.columns if "时间" in c or "日期" in c or "date" in c.lower()),
+        (c for c in df.columns if c == "datetime" or "时间" in c or "日期" in c
+         or "date" in c.lower()),
         df.columns[0]
     )
+    # Support both English (futures_zh_minute_sina) and Chinese column names
     col_map = {
-        "open":  next((c for c in df.columns if "开" in c), None),
-        "high":  next((c for c in df.columns if "高" in c), None),
-        "low":   next((c for c in df.columns if "低" in c), None),
-        "close": next((c for c in df.columns if "收" in c or "价" in c), None),
-        "volume": next((c for c in df.columns if "量" in c or "volume" in c.lower()), None),
-        "turnover": next((c for c in df.columns if "额" in c), None),
+        "open":     next((c for c in df.columns
+                          if c == "open"  or "开" in c), None),
+        "high":     next((c for c in df.columns
+                          if c == "high"  or "高" in c), None),
+        "low":      next((c for c in df.columns
+                          if c == "low"   or "低" in c), None),
+        "close":    next((c for c in df.columns
+                          if c == "close" or "收" in c or "价" in c), None),
+        "volume":   next((c for c in df.columns
+                          if c == "volume" or "量" in c), None),
+        "turnover": next((c for c in df.columns
+                          if c in ("amount", "turnover") or "额" in c), None),
     }
 
     rows = []
@@ -181,6 +200,12 @@ def fetch_minutes(contract_code: str) -> pd.DataFrame | None:
 
         # Only keep today's bars
         if dt.strftime("%Y-%m-%d") != today_str:
+            continue
+
+        # Filter out invalid/non-trading times (e.g. midnight 00:00:00 artifacts)
+        # Domestic futures trade 09:00-15:30 and 21:00-02:30 only
+        hhmm = dt.hour * 100 + dt.minute
+        if not (900 <= hhmm <= 1530 or hhmm >= 2100 or hhmm <= 230):
             continue
 
         rows.append({

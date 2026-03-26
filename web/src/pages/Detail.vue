@@ -276,6 +276,23 @@ function fmtSpotTime(dt: string | null) {
 const hasMinutesTab = computed(() =>
   minutesData.value !== null || (detail.value !== null)
 )
+
+// Extract exchange label from commodity name parentheses, or infer from key
+function exchangeLabel(): string | null {
+  const d = detail.value
+  if (!d) return null
+  const match = d.commodity.match(/[（(]([^)）]+)[)）]/)
+  if (match) return match[1].trim().split(/\s+/)[0]
+  if (d.key === 'gold' || d.key === 'silver') return 'SGE'
+  return null
+}
+
+function exchangeTagType(label: string | null) {
+  if (!label) return 'info'
+  if (label === 'SGE') return 'warning'
+  if (label === 'COMEX' || label === 'LME' || label === 'NYMEX' || label === 'ICE') return 'danger'
+  return 'info'
+}
 </script>
 
 <template>
@@ -293,6 +310,11 @@ const hasMinutesTab = computed(() =>
           <div class="meta-tags">
             <el-tag size="small" type="info">{{ detail.key }}</el-tag>
             <el-tag v-if="detail.symbol" size="small">{{ detail.symbol }}</el-tag>
+            <el-tag
+              v-if="exchangeLabel()"
+              size="small"
+              :type="exchangeTagType(exchangeLabel())"
+            >{{ exchangeLabel() }}</el-tag>
             <el-tag
               v-if="detail.priceType"
               size="small"

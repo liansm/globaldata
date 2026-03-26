@@ -5,6 +5,10 @@ const router = createRouter({
   routes: [
     {
       path: '/',
+      redirect: '/commodities',
+    },
+    {
+      path: '/commodities',
       name: 'home',
       component: () => import('@/pages/Home.vue'),
     },

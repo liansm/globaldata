@@ -23,19 +23,40 @@ onMounted(async () => {
 // Section definitions — order matters, first match wins
 const SECTIONS = [
   {
-    title: '贵金属 & 有色金属',
-    icon: '⚙️',
-    keys: ['gold', 'silver', 'copper', 'aluminum', 'intl_gold', 'intl_silver', 'intl_copper', 'intl_alum'],
+    title: '贵金属',
+    icon: '🥇',
+    keys: ['gold', 'silver', 'intl_gold', 'intl_silver', 'lme_gold', 'lme_silver'],
   },
   {
     title: '能源',
     icon: '⛽',
-    keys: ['intl_oil_wti', 'intl_gas', 'natural_gas', 'coal_port_5500', 'lithium_carbonate'],
+    keys: ['intl_oil_wti', 'intl_oil_brent', 'intl_gas', 'natural_gas',
+           '__row_break__',
+           'coal_port_5500', 'coal_port_5000', 'coal_port_4500',
+           '__row_break__',
+           'lithium_carbonate', 'polysilicon'],
+  },
+  {
+    title: '有色金属',
+    icon: '⚙️',
+    keys: [
+      'copper',   'lme_copper',
+      'aluminum', 'intl_alum',
+      'zinc',     'lme_zinc',
+      'lead',     'lme_lead',
+      'tin',      'lme_tin',
+      'nickel',   'lme_nickel',
+    ],
   },
   {
     title: '化工品',
     icon: '🧪',
     keys: ['methanol', 'urea', 'meg', 'styrene', 'polypropylene', 'natural_rubber'],
+  },
+  {
+    title: '农产品',
+    icon: '🌾',
+    keys: ['corn', 'soybean_oil', 'eggs', 'live_hog', 'cotton', 'sugar'],
   },
 ]
 
@@ -43,7 +64,9 @@ const sections = computed(() => {
   const map = new Map(list.value.map(c => [c.key, c]))
   return SECTIONS.map(s => ({
     ...s,
-    items: s.keys.map(k => map.get(k)).filter(Boolean) as Commodity[],
+    items: s.keys
+      .map(k => k === '__row_break__' ? { key: '__row_break__' } as Commodity : map.get(k))
+      .filter(Boolean) as Commodity[],
   })).filter(s => s.items.length > 0)
 })
 
@@ -80,6 +103,24 @@ function goDetail(row: Commodity) {
 function displayName(c: Commodity) {
   return c.commodity.replace(/\s*[（(][^)）]+[)）]/, '').trim() || c.commodity
 }
+
+// Extract exchange label from commodity name parentheses, or infer from key
+function exchangeLabel(c: Commodity): string | null {
+  const match = c.commodity.match(/[（(]([^)）]+)[)）]/)
+  if (match) {
+    // "COMEX GC" → "COMEX", "LME AHD" → "LME", "上期所 CU" → "上期所"
+    return match[1].trim().split(/\s+/)[0]
+  }
+  if (c.key === 'gold' || c.key === 'silver') return 'SGE'
+  return null
+}
+
+function exchangeTagType(label: string | null) {
+  if (!label) return 'info'
+  if (label === 'SGE') return 'warning'
+  if (label === 'COMEX' || label === 'LME' || label === 'NYMEX' || label === 'ICE') return 'danger'
+  return 'info'
+}
 </script>
 
 <template>
@@ -113,46 +154,53 @@ function displayName(c: Commodity) {
         <div class="section-header">
           <span class="section-icon">{{ sec.icon }}</span>
           <h2 class="section-title">{{ sec.title }}</h2>
-          <span class="section-count">{{ sec.items.length }} 个品种</span>
+          <span class="section-count">{{ sec.items.filter(i => i.key !== '__row_break__').length }} 个品种</span>
         </div>
 
         <div class="card-grid">
-          <div
-            v-for="item in sec.items"
-            :key="item.key"
-            class="card"
-            @click="goDetail(item)"
-          >
-            <div class="card-top">
-              <span class="card-name">{{ displayName(item) }}</span>
-              <el-tag size="small" class="card-tag" type="info">{{ item.key }}</el-tag>
-            </div>
-
-            <div class="card-price">
-              {{ fmt(item.latestPrice) }}
-              <span class="card-unit">{{ item.unit ?? '' }}</span>
-            </div>
-
-            <!-- 涨跌幅（仅实时数据有） -->
+          <template v-for="item in sec.items" :key="item.key">
+            <div v-if="item.key === '__row_break__'" class="grid-row-break" />
             <div
-              v-if="item.spotChangePct != null"
-              class="card-change"
-              :class="changePctClass(item.spotChangePct)"
+              v-else
+              class="card"
+              @click="goDetail(item)"
             >
-              {{ fmtChangePct(item.spotChangePct) }}
-            </div>
+              <div class="card-top">
+                <span class="card-name">{{ displayName(item) }}</span>
+                <el-tag
+                  v-if="exchangeLabel(item)"
+                  size="small"
+                  class="card-tag"
+                  :type="exchangeTagType(exchangeLabel(item))"
+                >{{ exchangeLabel(item) }}</el-tag>
+              </div>
 
-            <div class="card-footer">
-              <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-              <template v-if="item.spotUpdatedAt">
-                <span class="card-sep">·</span>
-                <span class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
-                <span class="card-spot-badge">实时</span>
-              </template>
-              <span v-if="item.hasMinutes" class="card-minutes-icon" title="有分时图">📈</span>
-              <span v-else class="card-arrow">→</span>
+              <div class="card-price">
+                {{ fmt(item.latestPrice) }}
+                <span class="card-unit">{{ item.unit ?? '' }}</span>
+              </div>
+
+              <!-- 涨跌幅（仅实时数据有） -->
+              <div
+                v-if="item.spotChangePct != null"
+                class="card-change"
+                :class="changePctClass(item.spotChangePct)"
+              >
+                {{ fmtChangePct(item.spotChangePct) }}
+              </div>
+
+              <div class="card-footer">
+                <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
+                <template v-if="item.spotUpdatedAt">
+                  <span class="card-sep">·</span>
+                  <span class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
+                  <span class="card-spot-badge">实时</span>
+                </template>
+                <span v-if="item.hasMinutes" class="card-minutes-icon" title="有分时图">📈</span>
+                <span v-else class="card-arrow">→</span>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
       </section>
     </template>
@@ -329,6 +377,14 @@ h1 {
   margin-left: auto;
   font-size: 13px;
   color: #409eff;
+}
+
+/* ── Row break (forces coal items onto a new grid row) ───────────── */
+.grid-row-break {
+  grid-column: 1 / -1;
+  height: 0;
+  margin: 0;
+  padding: 0;
 }
 
 /* ── Skeleton ────────────────────────────────────────────────────── */

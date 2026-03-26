@@ -29,6 +29,7 @@ Key design
 import os
 import sys
 from datetime import date
+from typing import Optional
 
 import akshare as ak
 import pandas as pd
@@ -47,12 +48,23 @@ DOMESTIC_MARK_MAP = {
     "copper":            "tong_qh",   # 铜  SHFE
     "aluminum":          "lv_qh",     # 铝  SHFE
     "lithium_carbonate": "lc_qh",     # 碳酸锂  GFEX
+    "polysilicon":       "ps_qh",     # 多晶硅  GFEX
     "methanol":          "mh_qh",     # 甲醇  CZCE
     "urea":              "cj_qh",     # 尿素  CZCE
     "meg":               "dy_qh",     # 乙二醇  DCE
     "styrene":           "bst_qh",    # 苯乙烯  CZCE / DCE
     "polypropylene":     "jbx_qh",    # 聚丙烯 (PP)  DCE
     "natural_rubber":    "lq_qh",     # 橡胶  SHFE
+    "zinc":              "xin_qh",   # 锌  SHFE
+    "lead":              "qian_qh",  # 铅  SHFE
+    "tin":               "xi_qh",   # 锡  SHFE
+    "nickel":            "nie_qh",   # 镍  SHFE
+    "corn":              "yumi_qh",      # 玉米  DCE
+    "soybean_oil":       "douya_qh",     # 豆油  DCE
+    "eggs":              "jidan_qh",     # 鸡蛋  DCE
+    "live_hog":          "shengzhu_qh",  # 生猪  DCE
+    "cotton":            "mianhua_qh",   # 棉花  CZCE
+    "sugar":             "tang_qh",      # 白糖  CZCE
 }
 
 
@@ -151,6 +163,81 @@ def fetch_domestic(mark_to_symbol: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Fetch SGE spot data (domestic gold & silver)
+# ---------------------------------------------------------------------------
+
+# commodity_key → (SGE symbol, price_divisor)
+# Au99.99 is quoted in yuan/gram  → divisor 1    (matches prices table unit)
+# Ag99.99 is quoted in yuan/kg    → divisor 1000 (convert to yuan/gram)
+SGE_MAP = {
+    "gold":   ("Au99.99", 1),
+    "silver": ("Ag99.99", 1000),
+}
+
+
+def fetch_prev_close_from_db(conn, commodity_key: str) -> Optional[float]:
+    """Query the most recent daily close price from the prices table."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT price FROM prices WHERE commodity_key = %s "
+            "ORDER BY price_date DESC LIMIT 1",
+            (commodity_key,)
+        )
+        row = cur.fetchone()
+    if row and row[0] is not None:
+        return float(row[0])
+    return None
+
+
+def fetch_sge(conn) -> dict:
+    """
+    Fetch real-time spot prices from Shanghai Gold Exchange via
+    spot_quotations_sge().  Returns a series of minute bars for the
+    current session; we take the last row as the latest price.
+    prev_close is read from the local prices table (most recent daily close).
+    """
+    results = {}
+    today = date.today().isoformat()
+
+    for key, (sge_symbol, divisor) in SGE_MAP.items():
+        try:
+            df = ak.spot_quotations_sge(symbol=sge_symbol)
+        except Exception as exc:
+            print(f"  [ERROR] {key} spot_quotations_sge({sge_symbol}): {exc}")
+            continue
+
+        if df is None or df.empty:
+            print(f"  [WARN] {key} ({sge_symbol}): empty response (outside trading hours?)")
+            continue
+
+        # Columns (positional, names are garbled on Windows):
+        #   col[0] = 品种, col[1] = 时间, col[2] = 最新价, col[3] = 更新时间
+        last = df.iloc[-1]
+        raw_price = _safe_float(last.iloc[2])
+        if raw_price is None:
+            print(f"  [WARN] {key} ({sge_symbol}): no price in last row: {last.to_dict()}")
+            continue
+        price = round(raw_price / divisor, 6)  # normalise to prices table unit
+
+        prev_close = fetch_prev_close_from_db(conn, key)
+        change_pct = None
+        change_amt = None
+        if prev_close and prev_close != 0:
+            change_amt = round(price - prev_close, 6)
+            change_pct = round(change_amt / prev_close * 100, 4)
+
+        results[key] = dict(
+            price=price, change_pct=change_pct, change_amt=change_amt,
+            prev_close=prev_close, volume=None, turnover=None,
+            spot_date=today,
+        )
+        print(f"  [OK] {key:8s}  symbol={sge_symbol}  "
+              f"price={price}  昨收={prev_close}  chg={change_pct}%")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Database schema + upsert
 # ---------------------------------------------------------------------------
 
@@ -220,6 +307,9 @@ def main() -> int:
 
     print("── Domestic futures (futures_zh_realtime) ──────────────────────────────")
     spots = fetch_domestic(mark_to_symbol)
+
+    print("\n── SGE spot (spot_quotations_sge) — 国内黄金/白银 ──────────────────────")
+    spots.update(fetch_sge(conn))
 
     print(f"\nTotal real-time data fetched: {len(spots)} commodities")
 
