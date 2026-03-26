@@ -51,6 +51,12 @@ DOMESTIC_MAP = {
     "lead":              ("铅",    "qian_qh"),
     "tin":               ("锡",    "xi_qh"),
     "nickel":            ("镍",    "nie_qh"),
+    "corn":              ("玉米",  "yumi_qh"),
+    "soybean_oil":       ("豆油",  "douya_qh"),
+    "eggs":              ("鸡蛋",  "jidan_qh"),
+    "live_hog":          ("生猪",  "shengzhu_qh"),
+    "cotton":            ("棉花",  "mianhua_qh"),
+    "sugar":             ("白糖",  "tang_qh"),
 }
 
 # ---------------------------------------------------------------------------

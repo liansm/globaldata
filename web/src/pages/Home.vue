@@ -53,6 +53,11 @@ const SECTIONS = [
     icon: '🧪',
     keys: ['methanol', 'urea', 'meg', 'styrene', 'polypropylene', 'natural_rubber'],
   },
+  {
+    title: '农产品',
+    icon: '🌾',
+    keys: ['corn', 'soybean_oil', 'eggs', 'live_hog', 'cotton', 'sugar'],
+  },
 ]
 
 const sections = computed(() => {

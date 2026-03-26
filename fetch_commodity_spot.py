@@ -59,6 +59,12 @@ DOMESTIC_MARK_MAP = {
     "lead":              "qian_qh",  # 铅  SHFE
     "tin":               "xi_qh",   # 锡  SHFE
     "nickel":            "nie_qh",   # 镍  SHFE
+    "corn":              "yumi_qh",      # 玉米  DCE
+    "soybean_oil":       "douya_qh",     # 豆油  DCE
+    "eggs":              "jidan_qh",     # 鸡蛋  DCE
+    "live_hog":          "shengzhu_qh",  # 生猪  DCE
+    "cotton":            "mianhua_qh",   # 棉花  CZCE
+    "sugar":             "tang_qh",      # 白糖  CZCE
 }
 
 

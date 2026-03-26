@@ -72,6 +72,14 @@ FUTURES_CONFIGS = [
     {"key": "lead",               "commodity": "铅 (上期所 PB)",          "symbol": "PB0", "unit": "元/吨"},
     {"key": "tin",                "commodity": "锡 (上期所 SN)",          "symbol": "SN0", "unit": "元/吨"},
     {"key": "nickel",             "commodity": "镍 (上期所 NI)",          "symbol": "NI0", "unit": "元/吨"},
+    # 大商所农产品
+    {"key": "corn",               "commodity": "玉米 (大商所 C)",          "symbol": "C0",  "unit": "元/吨"},
+    {"key": "soybean_oil",        "commodity": "豆油 (大商所 Y)",          "symbol": "Y0",  "unit": "元/吨"},
+    {"key": "eggs",               "commodity": "鸡蛋 (大商所 JD)",         "symbol": "JD0", "unit": "元/500克"},
+    {"key": "live_hog",           "commodity": "生猪 (大商所 LH)",         "symbol": "LH0", "unit": "元/吨"},
+    # 郑商所农产品
+    {"key": "cotton",             "commodity": "棉花 (郑商所 CF)",         "symbol": "CF0", "unit": "元/吨"},
+    {"key": "sugar",              "commodity": "白糖 (郑商所 SR)",         "symbol": "SR0", "unit": "元/吨"},
 ]
 
 # International futures configs (via ak.futures_foreign_hist, 新浪财经)
