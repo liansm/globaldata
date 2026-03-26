@@ -76,6 +76,10 @@ async function loadMinutes() {
   minutesError.value = ''
   try {
     minutesData.value = await fetchCommodityMinutes(key.value)
+    // 有数据时自动切到分时 tab
+    if (minutesData.value?.minutes.length) {
+      activeTab.value = 'minutes'
+    }
   } catch {
     minutesError.value = '分时数据加载失败'
   } finally {
@@ -85,13 +89,11 @@ async function loadMinutes() {
 
 function onTabChange(tab: string) {
   activeTab.value = tab as 'history' | 'minutes'
-  if (tab === 'minutes' && minutesData.value === null) {
-    loadMinutes()
-  }
 }
 
-onMounted(loadDetail)
-watch([key, days], loadDetail)
+onMounted(() => { loadDetail(); loadMinutes() })
+watch(key, () => { loadDetail(); loadMinutes() })
+watch(days, loadDetail)
 
 // ── Historical chart option ──────────────────────────────────────────────
 const chartOption = computed(() => {
@@ -272,11 +274,6 @@ function fmtSpotTime(dt: string | null) {
   return dt ? dt.slice(11, 16) : null
 }
 
-// Whether intraday tab should be shown
-const hasMinutesTab = computed(() =>
-  minutesData.value !== null || (detail.value !== null)
-)
-
 // Extract exchange label from commodity name parentheses, or infer from key
 function exchangeLabel(): string | null {
   const d = detail.value
@@ -356,8 +353,25 @@ function exchangeTagType(label: string | null) {
         </div>
       </div>
 
-      <!-- Tab 切换：历史走势 / 分时图 -->
+      <!-- Tab 切换：分时图（有数据时在前）/ 历史走势 -->
       <el-tabs v-model="activeTab" class="chart-tabs" @tab-change="onTabChange">
+        <!-- 分时图：有数据才显示，且置于首位 -->
+        <el-tab-pane
+          v-if="minutesData && minutesData.minutes.length"
+          label="分时图"
+          name="minutes"
+        >
+          <div class="minutes-meta">
+            {{ minutesData.date }} · {{ minutesData.minutes.length }} 根分钟 bars
+            <template v-if="detail.spot?.prevClose">
+              · 昨结算 {{ fmt(detail.spot.prevClose, 4) }} {{ detail.unit }}
+            </template>
+          </div>
+          <div class="chart-wrap">
+            <v-chart :option="minutesChartOption" autoresize style="width:100%;height:360px" />
+          </div>
+        </el-tab-pane>
+
         <el-tab-pane label="历史走势" name="history">
           <!-- 时间范围切换 -->
           <div class="chart-toolbar">
@@ -375,39 +389,6 @@ function exchangeTagType(label: string | null) {
           <div class="chart-wrap" v-loading="loading">
             <v-chart :option="chartOption" autoresize style="width:100%;height:380px" />
           </div>
-        </el-tab-pane>
-
-        <el-tab-pane label="分时图" name="minutes">
-          <div v-if="minutesLoading" v-loading="true" style="height:320px" />
-          <el-alert
-            v-else-if="minutesError"
-            :title="minutesError"
-            type="warning"
-            show-icon
-            :closable="false"
-            style="margin-top:12px"
-          />
-          <template v-else-if="minutesData && minutesData.minutes.length">
-            <div class="minutes-meta">
-              {{ minutesData.date }} · {{ minutesData.minutes.length }} 根分钟 bars
-              <template v-if="detail.spot?.prevClose">
-                · 昨结算 {{ fmt(detail.spot.prevClose, 4) }} {{ detail.unit }}
-              </template>
-            </div>
-            <div class="chart-wrap">
-              <v-chart :option="minutesChartOption" autoresize style="width:100%;height:360px" />
-            </div>
-          </template>
-          <el-empty
-            v-else-if="minutesData && !minutesData.minutes.length"
-            description="今日暂无分时数据（仅支持国内期货品种）"
-            style="margin-top:40px"
-          />
-          <el-empty
-            v-else
-            description="点击此 tab 加载分时数据"
-            style="margin-top:40px"
-          />
         </el-tab-pane>
       </el-tabs>
 
