@@ -78,6 +78,10 @@ INTL_CONFIGS = [
     {"key": "intl_oil_wti",   "commodity": "原油 WTI (NYMEX CL)",    "symbol": "CL",  "unit": "USD/桶"},
     {"key": "intl_oil_brent", "commodity": "原油 Brent (ICE OIL)",  "symbol": "OIL", "unit": "USD/桶"},
     {"key": "intl_gas",       "commodity": "天然气 (NYMEX NG)",     "symbol": "NG",  "unit": "USD/MMBtu"},
+    # 伦敦金属 (LME / LBMA via 新浪财经)
+    {"key": "lme_gold",   "commodity": "黄金 (伦敦 XAU)",  "symbol": "XAU", "unit": "USD/oz"},
+    {"key": "lme_silver", "commodity": "白银 (伦敦 XAG)",  "symbol": "XAG", "unit": "USD/oz"},
+    {"key": "lme_copper", "commodity": "铜 (LME CAD)",     "symbol": "CAD", "unit": "USD/吨"},
 ]
 
 # CCI name  →  (file_key, human_label, calorific_kcal, grade_type)

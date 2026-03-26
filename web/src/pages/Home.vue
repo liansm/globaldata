@@ -23,14 +23,19 @@ onMounted(async () => {
 // Section definitions — order matters, first match wins
 const SECTIONS = [
   {
-    title: '贵金属 & 有色金属',
-    icon: '⚙️',
-    keys: ['gold', 'silver', 'copper', 'aluminum', 'intl_gold', 'intl_silver', 'intl_copper', 'intl_alum'],
+    title: '贵金属',
+    icon: '🥇',
+    keys: ['gold', 'silver', 'intl_gold', 'intl_silver', 'lme_gold', 'lme_silver'],
   },
   {
     title: '能源',
     icon: '⛽',
     keys: ['intl_oil_wti', 'intl_oil_brent', 'intl_gas', 'natural_gas', 'coal_port_5500', 'lithium_carbonate'],
+  },
+  {
+    title: '有色金属',
+    icon: '⚙️',
+    keys: ['copper', 'aluminum', 'intl_copper', 'intl_alum', 'lme_copper'],
   },
   {
     title: '化工品',
