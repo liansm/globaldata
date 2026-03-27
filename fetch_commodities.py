@@ -383,6 +383,36 @@ def futures_foreign_fetch(symbol: str, label: str):
 
 
 # ---------------------------------------------------------------------------
+# 金油比（派生指标）：lme_gold / intl_oil_brent
+# ---------------------------------------------------------------------------
+def compute_gold_oil_ratio(conn) -> list | None:
+    """
+    Derive gold/oil ratio from already-stored lme_gold and intl_oil_brent prices.
+    Returns list of {date, price} dicts (price = gold_price / oil_price, unit: 倍),
+    or None if source data is unavailable.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT g.price_date, g.price, o.price
+            FROM prices g
+            JOIN prices o
+              ON o.commodity_key = 'intl_oil_brent'
+             AND o.price_date    = g.price_date
+            WHERE g.commodity_key = 'lme_gold'
+              AND o.price > 0
+            ORDER BY g.price_date DESC
+            LIMIT %s
+        """, (HISTORY_LIMIT,))
+        rows = cur.fetchall()
+    if not rows:
+        return None
+    return [
+        {"date": str(r[0])[:10], "price": round(float(r[1]) / float(r[2]), 4)}
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
 # sxcoal / 汾渭CCI fetcher
 # ---------------------------------------------------------------------------
 def sxcoal_cci_fetch(label: str = "sxcoal CCI"):
@@ -644,6 +674,19 @@ def main() -> int:
             saved_count += 1
             print(f"  [OK] {cfg['commodity']}: {latest.get('date')} "
                   f"@ {latest.get('price')} {cfg['unit']}")
+
+        # ── 金油比（派生指标）────────────────────────────────────────────────
+        print()
+        print("Computing gold/oil ratio (lme_gold / intl_oil_brent)...")
+        ratio_entries = compute_gold_oil_ratio(conn)
+        if ratio_entries is None:
+            print("  [SKIP] gold_oil_ratio: missing source data (lme_gold or intl_oil_brent)")
+            failed.append("gold_oil_ratio")
+        else:
+            latest = _db_save(conn, "gold_oil_ratio", None, "金油比 (XAU/Brent)", "倍",
+                              "computed (lme_gold / intl_oil_brent)", ratio_entries)
+            saved_count += 1
+            print(f"  [OK] 金油比: {latest.get('date')} @ {latest.get('price')} 倍")
 
         # ── sxcoal / 汾渭CCI (coal by calorific grade) ──────────────────────
         print()

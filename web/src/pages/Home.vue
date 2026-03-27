@@ -30,7 +30,7 @@ const SECTIONS = [
   {
     title: '能源',
     icon: '⛽',
-    keys: ['intl_oil_wti', 'intl_oil_brent', 'intl_gas', 'natural_gas',
+    keys: ['intl_oil_wti', 'intl_oil_brent', 'intl_gas', 'gold_oil_ratio',
            '__row_break__',
            'coal_port_5500', 'coal_port_5000', 'coal_port_4500',
            '__row_break__',
