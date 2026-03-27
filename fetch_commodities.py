@@ -683,7 +683,7 @@ def main() -> int:
             print("  [SKIP] gold_oil_ratio: missing source data (lme_gold or intl_oil_brent)")
             failed.append("gold_oil_ratio")
         else:
-            latest = _db_save(conn, "gold_oil_ratio", None, "金油比 (XAU/Brent)", "倍",
+            latest = _db_save(conn, "gold_oil_ratio", "XAU/OIL", "金油比 (XAU/Brent)", "倍",
                               "computed (lme_gold / intl_oil_brent)", ratio_entries)
             saved_count += 1
             print(f"  [OK] 金油比: {latest.get('date')} @ {latest.get('price')} 倍")
