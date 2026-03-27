@@ -385,7 +385,7 @@ def futures_foreign_fetch(symbol: str, label: str):
 # ---------------------------------------------------------------------------
 # 金油比（派生指标）：lme_gold / intl_oil_brent
 # ---------------------------------------------------------------------------
-def compute_gold_oil_ratio(conn) -> list | None:
+def compute_gold_oil_ratio(conn):
     """
     Derive gold/oil ratio from already-stored lme_gold and intl_oil_brent prices.
     Returns list of {date, price} dicts (price = gold_price / oil_price, unit: 倍),
