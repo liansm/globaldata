@@ -8,13 +8,14 @@ import {
   TooltipComponent,
   GridComponent,
   DataZoomComponent,
+  MarkLineComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import { fetchMarketDetail, fetchMarketMinutes } from '@/api/markets'
 import type { MarketDetail, MarketMinutes } from '@/types/market'
 
-use([CanvasRenderer, LineChart, TitleComponent, TooltipComponent, GridComponent, DataZoomComponent])
+use([CanvasRenderer, LineChart, TitleComponent, TooltipComponent, GridComponent, DataZoomComponent, MarkLineComponent])
 
 const route  = useRoute()
 const router = useRouter()
@@ -189,12 +190,21 @@ const intradayOption = computed(() => {
   const data = minuteData.value
   if (!data?.minutes.length) return {}
 
-  const times  = data.minutes.map(m => m.time.slice(11, 16))   // HH:MM
-  const closes = data.minutes.map(m => m.close)
-  const valid  = closes.filter((v): v is number => v !== null)
-  const minVal  = valid.length ? Math.min(...valid) : 0
-  const maxVal  = valid.length ? Math.max(...valid) : 0
-  const padding = (maxVal - minVal) * 0.05 || minVal * 0.001
+  const times     = data.minutes.map(m => m.time.slice(11, 16))   // HH:MM
+  const closes    = data.minutes.map(m => m.close)
+  const valid     = closes.filter((v): v is number => v !== null)
+  const minVal    = valid.length ? Math.min(...valid) : 0
+  const maxVal    = valid.length ? Math.max(...valid) : 0
+  const padding   = (maxVal - minVal) * 0.05 || minVal * 0.001
+  const prevClose = data.prevClose
+
+  // 最后一个有效收盘价（兼容旧浏览器，不用 findLast）
+  let lastClose: number | null = null
+  for (let i = closes.length - 1; i >= 0; i--) {
+    if (closes[i] !== null) { lastClose = closes[i] as number; break }
+  }
+  const isUp    = prevClose == null || lastClose == null || lastClose >= prevClose
+  const fillRgb = isUp ? '232,83,74' : '38,161,123'
 
   return {
     tooltip: {
@@ -202,8 +212,25 @@ const intradayOption = computed(() => {
       formatter: (params: any[]) => {
         const p = params[0]
         if (!p) return ''
-        const val = p.value != null ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
-        return `${data.date} ${p.axisValue}<br/><b>${val}</b> 点`
+        const m         = data.minutes[p.dataIndex]
+        const fmt2      = (v: number | null) =>
+          v != null ? v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
+        const close     = m?.close ?? null
+        const changeAmt = close != null && prevClose != null ? close - prevClose : null
+        const changePct = changeAmt != null && prevClose    ? changeAmt / prevClose * 100 : null
+        const vol       = m?.volume ?? null
+        const color     = changeAmt == null ? '#888' : changeAmt >= 0 ? '#e8534a' : '#26a17b'
+        const sign      = changeAmt != null && changeAmt >= 0 ? '+' : ''
+        const volStr    = vol == null  ? '—'
+          : vol >= 1e8 ? `${(vol / 1e8).toFixed(2)} 亿手`
+          : vol >= 1e4 ? `${(vol / 1e4).toFixed(2)} 万手`
+          : `${vol.toFixed(0)} 手`
+        return [
+          `<span style="color:#888">${data.date} ${p.axisValue}</span>`,
+          `点数：<b>${fmt2(close)}</b>`,
+          `<span style="color:${color}">涨跌额：${sign}${fmt2(changeAmt)}&nbsp;&nbsp;涨跌幅：${sign}${changePct != null ? changePct.toFixed(2) : '—'}%</span>`,
+          `成交量：${volStr}`,
+        ].join('<br/>')
       },
     },
     grid: { top: 20, right: 24, bottom: 60, left: 80 },
@@ -233,16 +260,30 @@ const intradayOption = computed(() => {
       data: closes,
       smooth: false,
       symbol: 'none',
-      lineStyle: { color: '#e8534a', width: 1.5 },
+      lineStyle: { color: `rgb(${fillRgb})`, width: 1.5 },
       areaStyle: {
         color: {
           type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
-            { offset: 0, color: 'rgba(232,83,74,0.15)' },
-            { offset: 1, color: 'rgba(232,83,74,0)' },
+            { offset: 0, color: `rgba(${fillRgb},0.15)` },
+            { offset: 1, color: `rgba(${fillRgb},0)` },
           ],
         },
       },
+      ...(prevClose != null ? {
+        markLine: {
+          silent: true,
+          symbol: 'none',
+          lineStyle: { color: '#aaa', type: 'dashed', width: 1 },
+          label: {
+            formatter: `昨收 ${prevClose.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`,
+            position: 'insideEndTop',
+            fontSize: 11,
+            color: '#888',
+          },
+          data: [{ yAxis: prevClose }],
+        },
+      } : {}),
     }],
   }
 })
