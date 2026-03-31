@@ -109,11 +109,19 @@ CREATE TABLE IF NOT EXISTS index_prices (
     id         BIGSERIAL     PRIMARY KEY,
     index_key  VARCHAR(60)   NOT NULL REFERENCES market_indices(key) ON DELETE CASCADE,
     price_date DATE          NOT NULL,
+    open       NUMERIC(16,4),
+    high       NUMERIC(16,4),
+    low        NUMERIC(16,4),
     close      NUMERIC(16,4),
     volume     NUMERIC(24,4),
     turnover   NUMERIC(24,4),
     UNIQUE (index_key, price_date)
 );
+
+-- Migrate existing tables: add columns if they don't exist yet
+ALTER TABLE index_prices ADD COLUMN IF NOT EXISTS open     NUMERIC(16,4);
+ALTER TABLE index_prices ADD COLUMN IF NOT EXISTS high     NUMERIC(16,4);
+ALTER TABLE index_prices ADD COLUMN IF NOT EXISTS low      NUMERIC(16,4);
 
 CREATE INDEX IF NOT EXISTS idx_index_prices_key_date
     ON index_prices (index_key, price_date DESC);
@@ -144,12 +152,19 @@ def db_upsert_index(conn, key, symbol, name, market, unit):
 def db_upsert_prices(conn, index_key, entries):
     if not entries:
         return 0
-    rows = [(index_key, e["date"], e.get("close"), e.get("volume"), e.get("turnover"))
-            for e in entries]
+    rows = [
+        (index_key, e["date"],
+         e.get("open"), e.get("high"), e.get("low"),
+         e.get("close"), e.get("volume"), e.get("turnover"))
+        for e in entries
+    ]
     sql = """
-    INSERT INTO index_prices (index_key, price_date, close, volume, turnover)
+    INSERT INTO index_prices (index_key, price_date, open, high, low, close, volume, turnover)
     VALUES %s
     ON CONFLICT (index_key, price_date) DO UPDATE SET
+        open     = EXCLUDED.open,
+        high     = EXCLUDED.high,
+        low      = EXCLUDED.low,
         close    = EXCLUDED.close,
         volume   = EXCLUDED.volume,
         turnover = EXCLUDED.turnover
@@ -193,8 +208,13 @@ def fetch_astock_index(cfg):
         print(f"  [ERROR] {label}: empty data")
         return None
 
-    date_col  = _find_col(df, ["date", "日期"])
-    close_col = _find_col(df, ["close", "收盘"])
+    date_col     = _find_col(df, ["date", "日期"])
+    open_col     = _find_col(df, ["open",  "开盘"])
+    high_col     = _find_col(df, ["high",  "最高"])
+    low_col      = _find_col(df, ["low",   "最低"])
+    close_col    = _find_col(df, ["close", "收盘"])
+    volume_col   = _find_col(df, ["volume", "成交量"])
+    turnover_col = _find_col(df, ["amount", "成交额", "turnover"])
     if not date_col or not close_col:
         print(f"  [ERROR] {label}: unexpected columns: {list(df.columns)}")
         return None
@@ -207,7 +227,15 @@ def fetch_astock_index(cfg):
             continue
         date_str = (date_val.strftime("%Y-%m-%d")
                     if hasattr(date_val, "strftime") else str(date_val)[:10])
-        entries.append({"date": date_str, "close": close})
+        entries.append({
+            "date":     date_str,
+            "open":     _safe_float(row.get(open_col))     if open_col     else None,
+            "high":     _safe_float(row.get(high_col))     if high_col     else None,
+            "low":      _safe_float(row.get(low_col))      if low_col      else None,
+            "close":    close,
+            "volume":   _safe_float(row.get(volume_col))   if volume_col   else None,
+            "turnover": _safe_float(row.get(turnover_col)) if turnover_col else None,
+        })
 
     if not entries:
         print(f"  [ERROR] {label}: no valid rows")
@@ -238,13 +266,18 @@ def fetch_hk_index(cfg):
     for _, row in df.iterrows():
         date_val = row.get("date") or row.get("日期")
         close    = _safe_float(row.get("close") or row.get("收盘"))
-        volume   = _safe_float(row.get("volume") or row.get("成交量"))
-
         if date_val is None or close is None:
             continue
         date_str = (date_val.strftime("%Y-%m-%d")
                     if hasattr(date_val, "strftime") else str(date_val)[:10])
-        entries.append({"date": date_str, "close": close, "volume": volume})
+        entries.append({
+            "date":    date_str,
+            "open":    _safe_float(row.get("open")   or row.get("开盘")),
+            "high":    _safe_float(row.get("high")   or row.get("最高")),
+            "low":     _safe_float(row.get("low")    or row.get("最低")),
+            "close":   close,
+            "volume":  _safe_float(row.get("volume") or row.get("成交量")),
+        })
 
     if not entries:
         print(f"  [ERROR] {label}: no valid rows")
@@ -259,9 +292,12 @@ def fetch_hk_index(cfg):
 # Source: ak.index_us_stock_sina / ak.index_global_hist_sina
 # ---------------------------------------------------------------------------
 def _parse_global_df(df, label) -> list | None:
-    """Parse a DataFrame with columns date/close (or 日期/最新价) into entries list."""
-    date_col  = _find_col(df, ["date", "日期"])
-    close_col = _find_col(df, ["close", "最新价"])
+    """Parse a DataFrame with columns date/open/high/low/close/volume into entries list."""
+    date_col     = _find_col(df, ["date", "日期"])
+    open_col     = _find_col(df, ["open",  "开盘"])
+    high_col     = _find_col(df, ["high",  "最高"])
+    low_col      = _find_col(df, ["low",   "最低"])
+    close_col    = _find_col(df, ["close", "最新价"])
     volume_col   = _find_col(df, ["volume", "成交量", "vol"])
     turnover_col = _find_col(df, ["amount", "成交额", "turnover"])
     if not date_col or not close_col:
@@ -277,6 +313,9 @@ def _parse_global_df(df, label) -> list | None:
                     if hasattr(date_val, "strftime") else str(date_val)[:10])
         entries.append({
             "date":     date_str,
+            "open":     _safe_float(row.get(open_col))     if open_col     else None,
+            "high":     _safe_float(row.get(high_col))     if high_col     else None,
+            "low":      _safe_float(row.get(low_col))      if low_col      else None,
             "close":    close,
             "volume":   _safe_float(row.get(volume_col))   if volume_col   else None,
             "turnover": _safe_float(row.get(turnover_col)) if turnover_col else None,
