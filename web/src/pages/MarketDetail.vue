@@ -185,6 +185,7 @@ const chartOption = computed(() => {
 
   // 有成交量：上下双区块布局
   return {
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
     tooltip: {
       trigger: 'axis',
       formatter: (params: any[]) => {
@@ -263,24 +264,31 @@ const intradayOption = computed(() => {
   const fillRgb = isUp ? '232,83,74' : '38,161,123'
 
   return {
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
     tooltip: {
       trigger: 'axis',
       formatter: (params: any[]) => {
-        const p = params[0]
+        const p = params.find((p: any) => p.seriesIndex === 0) || params[0]
         if (!p) return ''
         const m         = data.minutes[p.dataIndex]
         const fmt2      = (v: number | null) =>
           v != null ? v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
         const close     = m?.close ?? null
+        const vol       = m?.volume ?? null
         const changeAmt = close != null && prevClose != null ? close - prevClose : null
         const changePct = changeAmt != null && prevClose    ? changeAmt / prevClose * 100 : null
         const color     = changeAmt == null ? '#888' : changeAmt >= 0 ? '#e8534a' : '#26a17b'
         const sign      = changeAmt != null && changeAmt >= 0 ? '+' : ''
+        const volStr    = vol == null ? '—'
+          : vol >= 1e8 ? `${(vol / 1e8).toFixed(2)} 亿手`
+          : vol >= 1e4 ? `${(vol / 1e4).toFixed(2)} 万手`
+          : `${vol.toFixed(0)} 手`
         return [
           `<span style="color:#888">${data.date} ${p.axisValue}</span>`,
           `点数：<b>${fmt2(close)}</b>`,
           `<span style="color:${color}">涨跌额：${sign}${fmt2(changeAmt)}</span>`,
           `<span style="color:${color}">涨跌幅：${sign}${changePct != null ? changePct.toFixed(2) : '—'}%</span>`,
+          `成交量：${volStr}`,
         ].join('<br/>')
       },
     },
