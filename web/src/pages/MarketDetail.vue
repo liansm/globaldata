@@ -139,10 +139,12 @@ const chartOption = computed(() => {
   const areaEnd   = isFlow.value ? 'rgba(245,108,108,0)'   : 'rgba(64,158,255,0)'
   const hasVolume = !isFlow.value && volumes.some(v => v !== null)
 
-  const fmtVol = (v: number) =>
-    v >= 1e8 ? `${(v / 1e8).toFixed(2)} 亿手`
-    : v >= 1e4 ? `${(v / 1e4).toFixed(2)} 万手`
-    : `${v.toFixed(0)} 手`
+  const fmtVol = (v: number) => {
+    const lots = v / 100
+    return lots >= 1e8 ? `${(lots / 1e8).toFixed(2)} 亿手`
+      : lots >= 1e4 ? `${(lots / 1e4).toFixed(2)} 万手`
+      : `${lots.toFixed(0)} 手`
+  }
 
   if (!hasVolume) {
     // 无成交量：单图布局（资金流向 / volume 全为 null）
@@ -279,10 +281,11 @@ const intradayOption = computed(() => {
         const changePct = changeAmt != null && prevClose    ? changeAmt / prevClose * 100 : null
         const color     = changeAmt == null ? '#888' : changeAmt >= 0 ? '#e8534a' : '#26a17b'
         const sign      = changeAmt != null && changeAmt >= 0 ? '+' : ''
-        const volStr    = vol == null ? '—'
-          : vol >= 1e8 ? `${(vol / 1e8).toFixed(2)} 亿手`
-          : vol >= 1e4 ? `${(vol / 1e4).toFixed(2)} 万手`
-          : `${vol.toFixed(0)} 手`
+        const volLots   = vol != null ? vol / 100 : null
+        const volStr    = volLots == null ? '—'
+          : volLots >= 1e8 ? `${(volLots / 1e8).toFixed(2)} 亿手`
+          : volLots >= 1e4 ? `${(volLots / 1e4).toFixed(2)} 万手`
+          : `${volLots.toFixed(0)} 手`
         return [
           `<span style="color:#888">${data.date} ${p.axisValue}</span>`,
           `点数：<b>${fmt2(close)}</b>`,
