@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { use } from 'echarts/core'
-import { LineChart } from 'echarts/charts'
+import { LineChart, BarChart } from 'echarts/charts'
 import {
   TitleComponent,
   TooltipComponent,
@@ -15,7 +15,7 @@ import VChart from 'vue-echarts'
 import { fetchMarketDetail, fetchMarketMinutes } from '@/api/markets'
 import type { MarketDetail, MarketMinutes } from '@/types/market'
 
-use([CanvasRenderer, LineChart, TitleComponent, TooltipComponent, GridComponent, DataZoomComponent, MarkLineComponent])
+use([CanvasRenderer, LineChart, BarChart, TitleComponent, TooltipComponent, GridComponent, DataZoomComponent, MarkLineComponent])
 
 const route  = useRoute()
 const router = useRouter()
@@ -128,60 +128,116 @@ const chartOption = computed(() => {
   const sorted  = [...detail.value.history].reverse()
   const dates   = sorted.map(p => p.date)
   const closes  = sorted.map(p => p.close)
+  const volumes = sorted.map(p => p.volume)
   const valid   = closes.filter((v): v is number => v !== null)
   const minVal  = valid.length ? Math.min(...valid) : 0
   const maxVal  = valid.length ? Math.max(...valid) : 0
   const padding = (maxVal - minVal) * 0.1
-  const unitLabel  = detail.value.unit ?? (isFlow.value ? '亿元' : '点')
-  const lineColor  = isFlow.value ? '#f56c6c' : '#409eff'
-  const areaStart  = isFlow.value ? 'rgba(245,108,108,0.2)' : 'rgba(64,158,255,0.2)'
-  const areaEnd    = isFlow.value ? 'rgba(245,108,108,0)'   : 'rgba(64,158,255,0)'
+  const unitLabel = detail.value.unit ?? (isFlow.value ? '亿元' : '点')
+  const lineColor = isFlow.value ? '#f56c6c' : '#409eff'
+  const areaStart = isFlow.value ? 'rgba(245,108,108,0.2)' : 'rgba(64,158,255,0.2)'
+  const areaEnd   = isFlow.value ? 'rgba(245,108,108,0)'   : 'rgba(64,158,255,0)'
+  const hasVolume = !isFlow.value && volumes.some(v => v !== null)
 
+  const fmtVol = (v: number) =>
+    v >= 1e8 ? `${(v / 1e8).toFixed(2)} 亿手`
+    : v >= 1e4 ? `${(v / 1e4).toFixed(2)} 万手`
+    : `${v.toFixed(0)} 手`
+
+  if (!hasVolume) {
+    // 无成交量：单图布局（资金流向 / volume 全为 null）
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: any[]) => {
+          const p = params[0]
+          if (!p) return ''
+          const val = p.value != null ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
+          return `${p.axisValue}<br/><b>${val}</b> ${unitLabel}`
+        },
+      },
+      grid: { top: 20, right: 24, bottom: 60, left: 80 },
+      xAxis: {
+        type: 'category', data: dates,
+        axisLabel: { rotate: 30, fontSize: 11, color: '#888' },
+        axisLine: { lineStyle: { color: '#ddd' } },
+      },
+      yAxis: {
+        type: 'value',
+        min: Math.max(0, minVal - padding), max: maxVal + padding,
+        axisLabel: { fontSize: 11, color: '#888',
+          formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) },
+        splitLine: { lineStyle: { color: '#f0f0f0' } },
+      },
+      dataZoom: [
+        { type: 'inside', start: 0, end: 100 },
+        { type: 'slider', start: 0, end: 100, height: 24, bottom: 4 },
+      ],
+      series: [{
+        name: detail.value.name, type: 'line', data: closes,
+        smooth: false, symbol: 'none',
+        lineStyle: { color: lineColor, width: 2 },
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: areaStart }, { offset: 1, color: areaEnd }] } },
+      }],
+    }
+  }
+
+  // 有成交量：上下双区块布局
   return {
     tooltip: {
       trigger: 'axis',
-      formatter: (params: { axisValue: string; value: number | null }[]) => {
-        const p = params[0]
-        if (!p) return ''
-        const val = p.value != null ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
-        return `${p.axisValue}<br/><b>${val}</b> ${unitLabel}`
+      formatter: (params: any[]) => {
+        const price = params.find((p: any) => p.seriesIndex === 0)
+        const vol   = params.find((p: any) => p.seriesIndex === 1)
+        if (!price) return ''
+        const priceStr = price.value != null
+          ? price.value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
+        const lines = [`${price.axisValue}`, `<b>${priceStr}</b> ${unitLabel}`]
+        if (vol?.value != null) lines.push(`成交量：${fmtVol(vol.value)}`)
+        return lines.join('<br/>')
       },
     },
-    grid: { top: 20, right: 24, bottom: 60, left: 80 },
-    xAxis: {
-      type: 'category',
-      data: dates,
-      axisLabel: { rotate: 30, fontSize: 11, color: '#888' },
-      axisLine: { lineStyle: { color: '#ddd' } },
-    },
-    yAxis: {
-      type: 'value',
-      min: Math.max(0, minVal - padding),
-      max: maxVal + padding,
-      axisLabel: {
-        fontSize: 11, color: '#888',
-        formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 0 }),
-      },
-      splitLine: { lineStyle: { color: '#f0f0f0' } },
-    },
-    dataZoom: [
-      { type: 'inside', start: 0, end: 100 },
-      { type: 'slider', start: 0, end: 100, height: 24, bottom: 4 },
+    grid: [
+      { top: 20,  right: 24, bottom: 130, left: 80 },  // 价格区
+      { top: 270, right: 24, bottom: 34,  left: 80 },  // 成交量区
     ],
-    series: [{
-      name: detail.value.name,
-      type: 'line',
-      data: closes,
-      smooth: false,
-      symbol: 'none',
-      lineStyle: { color: lineColor, width: 2 },
-      areaStyle: {
-        color: {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [{ offset: 0, color: areaStart }, { offset: 1, color: areaEnd }],
-        },
+    xAxis: [
+      { gridIndex: 0, type: 'category', data: dates,
+        axisLabel: { show: false }, axisLine: { lineStyle: { color: '#ddd' } } },
+      { gridIndex: 1, type: 'category', data: dates,
+        axisLabel: { rotate: 30, fontSize: 11, color: '#888' },
+        axisLine: { lineStyle: { color: '#ddd' } } },
+    ],
+    yAxis: [
+      { gridIndex: 0, type: 'value',
+        min: Math.max(0, minVal - padding), max: maxVal + padding,
+        axisLabel: { fontSize: 11, color: '#888',
+          formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) },
+        splitLine: { lineStyle: { color: '#f0f0f0' } } },
+      { gridIndex: 1, type: 'value',
+        axisLabel: { show: false }, splitLine: { show: false }, axisLine: { show: false } },
+    ],
+    dataZoom: [
+      { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
+      { type: 'slider', xAxisIndex: [0, 1], start: 0, end: 100, height: 24, bottom: 4 },
+    ],
+    series: [
+      {
+        name: detail.value.name, type: 'line',
+        xAxisIndex: 0, yAxisIndex: 0,
+        data: closes, smooth: false, symbol: 'none',
+        lineStyle: { color: lineColor, width: 2 },
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: areaStart }, { offset: 1, color: areaEnd }] } },
       },
-    }],
+      {
+        name: '成交量', type: 'bar',
+        xAxisIndex: 1, yAxisIndex: 1,
+        data: volumes, barMaxWidth: 8,
+        itemStyle: { color: 'rgba(150,150,150,0.5)' },
+      },
+    ],
   }
 })
 
@@ -228,58 +284,71 @@ const intradayOption = computed(() => {
         ].join('<br/>')
       },
     },
-    grid: { top: 20, right: 24, bottom: 60, left: 80 },
-    xAxis: {
-      type: 'category',
-      data: times,
-      axisLabel: { fontSize: 11, color: '#888', interval: 29 },
-      axisLine: { lineStyle: { color: '#ddd' } },
-    },
-    yAxis: {
-      type: 'value',
-      min: minVal - padding,
-      max: maxVal + padding,
-      axisLabel: {
-        fontSize: 11, color: '#888',
-        formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }),
-      },
-      splitLine: { lineStyle: { color: '#f0f0f0' } },
-    },
-    dataZoom: [
-      { type: 'inside', start: 0, end: 100 },
-      { type: 'slider', start: 0, end: 100, height: 24, bottom: 4 },
+    grid: [
+      { top: 20,  right: 24, bottom: 130, left: 80 },  // 价格区
+      { top: 270, right: 24, bottom: 34,  left: 80 },  // 成交量区
     ],
-    series: [{
-      name: detail.value?.name,
-      type: 'line',
-      data: closes,
-      smooth: false,
-      symbol: 'none',
-      lineStyle: { color: `rgb(${fillRgb})`, width: 1.5 },
-      areaStyle: {
-        color: {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: `rgba(${fillRgb},0.15)` },
-            { offset: 1, color: `rgba(${fillRgb},0)` },
-          ],
-        },
-      },
-      ...(prevClose != null ? {
-        markLine: {
-          silent: true,
-          symbol: 'none',
-          lineStyle: { color: '#aaa', type: 'dashed', width: 1 },
-          label: {
-            formatter: `昨收 ${prevClose.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`,
-            position: 'insideEndTop',
-            fontSize: 11,
-            color: '#888',
+    xAxis: [
+      { gridIndex: 0, type: 'category', data: times,
+        axisLabel: { show: false }, axisLine: { lineStyle: { color: '#ddd' } } },
+      { gridIndex: 1, type: 'category', data: times,
+        axisLabel: { fontSize: 11, color: '#888', interval: 29 },
+        axisLine: { lineStyle: { color: '#ddd' } } },
+    ],
+    yAxis: [
+      { gridIndex: 0, type: 'value',
+        min: minVal - padding, max: maxVal + padding,
+        axisLabel: { fontSize: 11, color: '#888',
+          formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) },
+        splitLine: { lineStyle: { color: '#f0f0f0' } } },
+      { gridIndex: 1, type: 'value',
+        axisLabel: { show: false }, splitLine: { show: false }, axisLine: { show: false } },
+    ],
+    dataZoom: [
+      { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
+      { type: 'slider', xAxisIndex: [0, 1], start: 0, end: 100, height: 24, bottom: 4 },
+    ],
+    series: [
+      {
+        name: detail.value?.name,
+        type: 'line',
+        xAxisIndex: 0, yAxisIndex: 0,
+        data: closes,
+        smooth: false,
+        symbol: 'none',
+        lineStyle: { color: `rgb(${fillRgb})`, width: 1.5 },
+        areaStyle: {
+          color: {
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: `rgba(${fillRgb},0.15)` },
+              { offset: 1, color: `rgba(${fillRgb},0)` },
+            ],
           },
-          data: [{ yAxis: prevClose }],
         },
-      } : {}),
-    }],
+        ...(prevClose != null ? {
+          markLine: {
+            silent: true,
+            symbol: 'none',
+            lineStyle: { color: '#aaa', type: 'dashed', width: 1 },
+            label: {
+              formatter: `昨收 ${prevClose.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`,
+              position: 'insideEndTop',
+              fontSize: 11,
+              color: '#888',
+            },
+            data: [{ yAxis: prevClose }],
+          },
+        } : {}),
+      },
+      {
+        name: '成交量', type: 'bar',
+        xAxisIndex: 1, yAxisIndex: 1,
+        data: data.minutes.map(m => m.volume),
+        barMaxWidth: 4,
+        itemStyle: { color: `rgba(${fillRgb},0.4)` },
+      },
+    ],
   }
 })
 </script>
