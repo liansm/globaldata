@@ -42,9 +42,10 @@ export interface MinutePoint {
 }
 
 export interface MarketMinutes {
-  key:     string
-  name:    string
-  market:  string
-  date:    string | null
-  minutes: MinutePoint[]
+  key:       string
+  name:      string
+  market:    string
+  date:      string | null
+  prevClose: number | null
+  minutes:   MinutePoint[]
 }

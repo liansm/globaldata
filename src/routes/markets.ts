@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { db } from '../db'
-import { marketIndices, indexPrices, indexMinutes } from '../db/schema'
+import { marketIndices, indexPrices, indexMinutes, indexSpot } from '../db/schema'
 import { eq, desc, gte, lte, and, sql } from 'drizzle-orm'
 
 const toNum = (v: string | null) => (v == null ? null : parseFloat(v))
@@ -198,6 +198,27 @@ export async function marketsRoutes(app: FastifyInstance) {
       targetDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
     }
 
+    // Prefer index_spot.prev_close (updated by fetch_index_spot.py from real-time feed)
+    // Fall back to latest record in index_prices before targetDate
+    const [spotRow] = await db
+      .select({ prevClose: indexSpot.prevClose })
+      .from(indexSpot)
+      .where(eq(indexSpot.indexKey, key))
+      .limit(1)
+    let prevClose = spotRow ? toNum(spotRow.prevClose) : null
+    if (prevClose == null) {
+      const [prevRow] = await db
+        .select({ close: indexPrices.close })
+        .from(indexPrices)
+        .where(and(
+          eq(indexPrices.indexKey, key),
+          sql`${indexPrices.priceDate} < ${targetDate}::date`,
+        ))
+        .orderBy(desc(indexPrices.priceDate))
+        .limit(1)
+      prevClose = prevRow ? toNum(prevRow.close) : null
+    }
+
     const rows = await db
       .select({
         time:     sql<string>`to_char(${indexMinutes.dt}, 'YYYY-MM-DD HH24:MI')`,
@@ -217,9 +238,10 @@ export async function marketsRoutes(app: FastifyInstance) {
 
     return {
       key,
-      name:    meta.name,
-      market:  meta.market,
-      date:    targetDate,
+      name:      meta.name,
+      market:    meta.market,
+      date:      targetDate,
+      prevClose,
       minutes: rows.map(m => ({
         time:     m.time,
         open:     toNum(m.open),

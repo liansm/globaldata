@@ -199,7 +199,7 @@ const intradayOption = computed(() => {
   return {
     tooltip: {
       trigger: 'axis',
-      formatter: (params: { axisValue: string; value: number | null }[]) => {
+      formatter: (params: any[]) => {
         const p = params[0]
         if (!p) return ''
         const val = p.value != null ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'
