@@ -39,7 +39,7 @@ const SECTIONS = [
   {
     title: '美股',
     icon:  '🇺🇸',
-    keys:  ['idx_dji', 'idx_sp500', 'idx_nasdaq'],
+    keys:  ['idx_dji', 'idx_nasdaq', 'idx_sp500'],
   },
   {
     title: '亚太',
