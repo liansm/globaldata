@@ -72,10 +72,10 @@ GLOBAL_CONFIGS = [
     # 美股
     {"key": "idx_dji",    "name": "道琼斯",     "symbol": "道琼斯",            "market": "美股", "unit": "点",
      "sina_fn": "us",     "sina_symbol": ".DJI"},
-    {"key": "idx_sp500",  "name": "标普500",    "symbol": "标普500",           "market": "美股", "unit": "点",
-     "sina_fn": "us",     "sina_symbol": ".INX"},
     {"key": "idx_nasdaq", "name": "纳斯达克",   "symbol": "纳斯达克",          "market": "美股", "unit": "点",
      "sina_fn": "us",     "sina_symbol": ".IXIC"},
+    {"key": "idx_sp500",  "name": "标普500",    "symbol": "标普500",           "market": "美股", "unit": "点",
+     "sina_fn": "us",     "sina_symbol": ".INX"},
     # 亚太
     {"key": "idx_nikkei", "name": "日经225",    "symbol": "日经225",           "market": "亚太", "unit": "点",
      "sina_fn": "global", "sina_symbol": "日经225指数"},
