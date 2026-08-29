@@ -30,6 +30,9 @@ FETCH_SCRIPTS = [
     ("fetch_markets.py",           "A股/港股指数 + 沪深港通资金流向（历史日线）"),
     ("fetch_index_spot.py",        "A股/港股指数实时快照（stock_zh/hk_index_spot_sina）"),
     ("fetch_market_minutes.py",    "A股指数分时 1 分钟 K 线"),
+    ("fetch_ccfi.py",              "CCFI 中国出口集装箱运价指数（上海航交所，每周五发布）"),
+    ("fetch_ccfi_history.py",      "CCFI 历史周线回补（GreenPacific，2023-04 起全航线）"),
+    ("fetch_bdi.py",               "BDI 系列航运指数（akshare，日频含历史）"),
     ("fetch_commodities.py",       "大宗商品价格（黄金/铜/油/煤炭等）"),
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
@@ -95,6 +98,32 @@ STATUS_QUERIES = [
             FROM index_prices
         """,
         "cols": ["rows", "indices", "earliest", "latest"],
+    },
+    {
+        "title": "index_prices · 航运 CCFI  (周频，只能滚存)",
+        "sql": """
+            SELECT COUNT(DISTINCT p.index_key) AS routes,
+                   COUNT(p.id) AS rows,
+                   MIN(p.price_date)::text AS earliest,
+                   MAX(p.price_date)::text AS latest
+            FROM index_prices p
+            WHERE p.index_key LIKE 'ccfi_%'
+        """,
+        "cols": ["routes", "rows", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "index_prices · 航运 BDI 系列  (日频，含历史)",
+        "sql": """
+            SELECT COUNT(DISTINCT p.index_key) AS series,
+                   COUNT(p.id) AS rows,
+                   MIN(p.price_date)::text AS earliest,
+                   MAX(p.price_date)::text AS latest
+            FROM index_prices p
+            WHERE p.index_key IN ('bdi', 'bci', 'bsi', 'bcti', 'bdti')
+        """,
+        "cols": ["series", "rows", "earliest", "latest"],
+        "optional": True,
     },
     {
         "title": "index_spot  (A股实时快照)",
