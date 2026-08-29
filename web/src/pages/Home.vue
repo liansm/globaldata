@@ -2,22 +2,50 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchCommodities } from '@/api/commodities'
+import { fetchMarkets } from '@/api/markets'
 import type { Commodity } from '@/types/commodity'
+import type { MarketIndex } from '@/types/market'
 
 const router = useRouter()
 const loading = ref(false)
 const error = ref('')
 const list = ref<Commodity[]>([])
+// 航运运价指数（BDI / BCI / BSI / BCTI / BDTI / CCFI 综合 + 12 条分航线），来自 /api/markets (market='航运')
+const shipping = ref<MarketIndex[]>([])
 
 onMounted(async () => {
   loading.value = true
   try {
-    list.value = await fetchCommodities()
+    const [commodities] = await Promise.all([fetchCommodities()])
+    list.value = commodities
+    // 航运数据拉取失败不应阻断大宗商品页面，单独容错
+    fetchMarkets()
+      .then(rows => { shipping.value = rows.filter(r => r.market === '航运') })
+      .catch(() => { /* 航运 section 静默不显示 */ })
   } catch {
     error.value = '加载失败，请检查后端服务是否启动'
   } finally {
     loading.value = false
   }
+})
+
+// 航运数据拆分为两个 section：CCFI 出口集装箱运价 + BDI 波罗的海/油轮运价
+const CCFI_ORDER = [
+  'ccfi_total', 'ccfi_europe', 'ccfi_med', 'ccfi_wc_america', 'ccfi_ec_america',
+  'ccfi_japan', 'ccfi_korea', 'ccfi_se_asia', 'ccfi_anz',
+  'ccfi_south_africa', 'ccfi_south_america', 'ccfi_we_africa', 'ccfi_persian_gulf',
+]
+const BDI_ORDER = ['bdi', 'bci', 'bsi', 'bcti', 'bdti']
+
+const shippingSections = computed(() => {
+  const map = new Map(shipping.value.map(s => [s.key, s]))
+  return [
+    { title: 'CCFI 出口集装箱运价', icon: '🚢', keys: CCFI_ORDER },
+    { title: 'BDI 波罗的海 / 油轮运价', icon: '⚓', keys: BDI_ORDER },
+  ].map(s => ({
+    ...s,
+    items: s.keys.map(k => map.get(k)).filter(Boolean) as MarketIndex[],
+  })).filter(s => s.items.length > 0)
 })
 
 // Section definitions — order matters, first match wins
@@ -99,6 +127,11 @@ function goDetail(row: Commodity) {
   router.push({ name: 'detail', params: { key: row.key } })
 }
 
+// 航运运价指数走 /market/:key 详情页（与 Markets.vue 一致）
+function goMarketDetail(row: MarketIndex) {
+  router.push({ name: 'market-detail', params: { key: row.key } })
+}
+
 // Derive display name: strip exchange/symbol suffix for cleaner labels
 function displayName(c: Commodity) {
   return c.commodity.replace(/\s*[（(][^)）]+[)）]/, '').trim() || c.commodity
@@ -128,7 +161,7 @@ function exchangeTagType(label: string | null) {
     <div class="page-header">
       <div>
         <h1>全球大宗商品价格</h1>
-        <p class="subtitle">实时追踪主要商品现货 &amp; 期货行情</p>
+        <p class="subtitle">实时追踪主要商品现货 &amp; 期货行情 · 航运运价（BDI / CCFI）</p>
       </div>
     </div>
 
@@ -201,6 +234,47 @@ function exchangeTagType(label: string | null) {
               </div>
             </div>
           </template>
+        </div>
+      </section>
+
+      <!-- 航运数据：拆分为 CCFI 与 BDI 两个 section，来自 market_indices(market='航运') -->
+      <section v-for="sec in shippingSections" :key="sec.title" class="section">
+        <div class="section-header">
+          <span class="section-icon">{{ sec.icon }}</span>
+          <h2 class="section-title">{{ sec.title }}</h2>
+          <span class="section-count">{{ sec.items.length }} 个指数</span>
+        </div>
+
+        <div class="card-grid">
+          <div
+            v-for="item in sec.items"
+            :key="item.key"
+            class="card ship-card clickable"
+            @click="goMarketDetail(item)"
+          >
+            <div class="card-top">
+              <span class="card-name">{{ item.name }}</span>
+              <el-tag size="small" type="info" class="card-tag">{{ item.key }}</el-tag>
+            </div>
+
+            <div class="card-price-row">
+              <span class="card-price">
+                {{ fmt(item.latestClose) }}
+                <span class="card-unit">{{ item.unit ?? '点' }}</span>
+              </span>
+            </div>
+
+            <div
+              v-if="fmtChangePct(item.changePct)"
+              class="card-pct"
+              :class="changePctClass(item.changePct)"
+            >{{ fmtChangePct(item.changePct) }}</div>
+
+            <div class="card-footer">
+              <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
+              <span class="card-arrow">→</span>
+            </div>
+          </div>
         </div>
       </section>
     </template>
@@ -330,6 +404,28 @@ h1 {
 }
 .card-change.up   { color: #f56c6c; }
 .card-change.down { color: #67c23a; }
+
+/* ── Shipping card (航运数据 section, market indices) ─────────────── */
+.ship-card.clickable {
+  cursor: pointer;
+}
+.ship-card.clickable:hover {
+  border-color: #409eff;
+}
+
+.card-price-row {
+  display: flex;
+  align-items: baseline;
+}
+
+.card-pct {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+.pct-up   { color: #f56c6c; }   /* 红色 = 上涨（中国习惯） */
+.pct-down { color: #67c23a; }   /* 绿色 = 下跌 */
 
 .card-footer {
   display: flex;
