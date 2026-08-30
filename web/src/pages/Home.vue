@@ -12,16 +12,21 @@ const error = ref('')
 const list = ref<Commodity[]>([])
 // 航运运价指数（BDI / BCI / BSI / BCTI / BDTI / CCFI 综合 + 12 条分航线），来自 /api/markets (market='航运')
 const shipping = ref<MarketIndex[]>([])
+// 建材指数（水泥价格指数 CEMPI），来自 /api/markets (market='建材')
+const cementIdx = ref<MarketIndex[]>([])
 
 onMounted(async () => {
   loading.value = true
   try {
     const [commodities] = await Promise.all([fetchCommodities()])
     list.value = commodities
-    // 航运数据拉取失败不应阻断大宗商品页面，单独容错
+    // 航运/建材数据拉取失败不应阻断大宗商品页面，单独容错
     fetchMarkets()
-      .then(rows => { shipping.value = rows.filter(r => r.market === '航运') })
-      .catch(() => { /* 航运 section 静默不显示 */ })
+      .then(rows => {
+        shipping.value = rows.filter(r => r.market === '航运')
+        cementIdx.value = rows.filter(r => r.market === '建材')
+      })
+      .catch(() => { /* 航运 / 建材 section 静默不显示 */ })
   } catch {
     error.value = '加载失败，请检查后端服务是否启动'
   } finally {
@@ -86,7 +91,25 @@ const SECTIONS = [
     icon: '🌾',
     keys: ['corn', 'soybean_oil', 'eggs', 'live_hog', 'cotton', 'sugar'],
   },
+  {
+    title: '建材',
+    icon: '🧱',
+    keys: ['cement_po425'],
+  },
 ]
+
+// 建材指数：水泥价格指数 CEMPI。走 /market/:key 详情页（与航运一致）
+const CEMENT_ORDER = ['cement_cempi']
+
+const cementSections = computed(() => {
+  const map = new Map(cementIdx.value.map(s => [s.key, s]))
+  return [
+    { title: '水泥价格指数', icon: '🧱', keys: CEMENT_ORDER },
+  ].map(s => ({
+    ...s,
+    items: s.keys.map(k => map.get(k)).filter(Boolean) as MarketIndex[],
+  })).filter(s => s.items.length > 0)
+})
 
 const sections = computed(() => {
   const map = new Map(list.value.map(c => [c.key, c]))
@@ -161,7 +184,7 @@ function exchangeTagType(label: string | null) {
     <div class="page-header">
       <div>
         <h1>全球大宗商品价格</h1>
-        <p class="subtitle">实时追踪主要商品现货 &amp; 期货行情 · 航运运价（BDI / CCFI）</p>
+        <p class="subtitle">实时追踪主要商品现货 &amp; 期货行情 · 建材水泥 · 航运运价（BDI / CCFI）</p>
       </div>
     </div>
 
@@ -234,6 +257,47 @@ function exchangeTagType(label: string | null) {
               </div>
             </div>
           </template>
+        </div>
+      </section>
+
+      <!-- 建材指数：水泥价格指数 CEMPI，来自 market_indices(market='建材') -->
+      <section v-for="sec in cementSections" :key="sec.title" class="section">
+        <div class="section-header">
+          <span class="section-icon">{{ sec.icon }}</span>
+          <h2 class="section-title">{{ sec.title }}</h2>
+          <span class="section-count">{{ sec.items.length }} 个指数</span>
+        </div>
+
+        <div class="card-grid">
+          <div
+            v-for="item in sec.items"
+            :key="item.key"
+            class="card ship-card clickable"
+            @click="goMarketDetail(item)"
+          >
+            <div class="card-top">
+              <span class="card-name">{{ item.name }}</span>
+              <el-tag size="small" type="info" class="card-tag">{{ item.key }}</el-tag>
+            </div>
+
+            <div class="card-price-row">
+              <span class="card-price">
+                {{ fmt(item.latestClose) }}
+                <span class="card-unit">{{ item.unit ?? '点' }}</span>
+              </span>
+            </div>
+
+            <div
+              v-if="fmtChangePct(item.changePct)"
+              class="card-pct"
+              :class="changePctClass(item.changePct)"
+            >{{ fmtChangePct(item.changePct) }}</div>
+
+            <div class="card-footer">
+              <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
+              <span class="card-arrow">→</span>
+            </div>
+          </div>
         </div>
       </section>
 
