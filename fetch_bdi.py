@@ -189,7 +189,8 @@ def fetch_series() -> dict:
         points = []
         for d, v in zip(df[DATE_COL], df[col]):
             ds, fv = _norm_date(d), _safe_float(v)
-            if ds is None or fv is None:
+            # 运价指数恒为正；源偶发返回 0 占位值, 一律当脏数据跳过
+            if ds is None or fv is None or fv <= 0:
                 continue
             points.append((ds, fv))
         points.sort(key=lambda x: x[0])

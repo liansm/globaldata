@@ -10,12 +10,14 @@ A-share indices (Sina):
 HK indices (Sina):
   HSI 恒生指数  HSCEI 恒生国企指数
 
-Capital flows (Tushare moneyflow_hsgt):
-  北向资金 (Northbound)  南向资金 (Southbound)
+Capital flows (akshare stock_hsgt_hist_em, 东方财富数据中心, 免费无需 token):
+  北向资金 (Northbound) = 沪股通 + 深股通  [注: 港交所2024-08-19起停披露北向每日净买入额, 之后无新值]
+  南向资金 (Southbound) = 港股通(沪) + 港股通(深)
 """
 
 import os
 import sys
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 import akshare as ak
@@ -60,7 +62,9 @@ INDEX_CONFIGS = [
 ]
 
 FLOW_CONFIGS = [
+    # 北向 = 沪股通 + 深股通（港交所2024-08-19起停披露每日净买入额，之后无新值）
     {"key": "flow_north", "name": "北向资金", "symbol": "北向资金", "market": "资金流向", "unit": "亿元"},
+    # 南向 = 港股通(沪) + 港股通(深)，正常披露，可全量更新
     {"key": "flow_south", "name": "南向资金", "symbol": "南向资金", "market": "资金流向", "unit": "亿元"},
 ]
 
@@ -223,7 +227,9 @@ def fetch_astock_index(cfg):
     for _, row in df.iterrows():
         date_val = row.get(date_col)
         close    = _safe_float(row.get(close_col))
-        if date_val is None or close is None:
+        # 指数不可能为 0：新浪等源在个别日期会返回 0 (open/high/low/vol 全 0) 的脏数据占位，
+        # 必须过滤，否则会被画成断崖式 0 尖刺。
+        if date_val is None or close is None or close <= 0:
             continue
         date_str = (date_val.strftime("%Y-%m-%d")
                     if hasattr(date_val, "strftime") else str(date_val)[:10])
@@ -266,7 +272,8 @@ def fetch_hk_index(cfg):
     for _, row in df.iterrows():
         date_val = row.get("date") or row.get("日期")
         close    = _safe_float(row.get("close") or row.get("收盘"))
-        if date_val is None or close is None:
+        # 指数不可能为 0：过滤源返回的 0 脏数据占位 (见 _parse_global_df 注释)
+        if date_val is None or close is None or close <= 0:
             continue
         date_str = (date_val.strftime("%Y-%m-%d")
                     if hasattr(date_val, "strftime") else str(date_val)[:10])
@@ -307,7 +314,9 @@ def _parse_global_df(df, label) -> list | None:
     for _, row in df.iterrows():
         date_val = row.get(date_col)
         close    = _safe_float(row.get(close_col))
-        if date_val is None or close is None:
+        # 指数不可能为 0：新浪等源在个别日期会返回 0 (open/high/low/vol 全 0) 的脏数据占位，
+        # 必须过滤，否则会被画成断崖式 0 尖刺。
+        if date_val is None or close is None or close <= 0:
             continue
         date_str = (date_val.strftime("%Y-%m-%d")
                     if hasattr(date_val, "strftime") else str(date_val)[:10])
@@ -355,39 +364,52 @@ def fetch_global_index(cfg):
 
 # ---------------------------------------------------------------------------
 # Capital flow fetcher (Stock Connect 沪深港通)
-# Source: tushare moneyflow_hsgt
-# Returns north_money / south_money in 万元 → converted to 亿元 (/10000)
+# Source: akshare stock_hsgt_hist_em (东方财富数据中心, 免费, 无需 token)
+#   北向 = 沪股通 + 深股通; 南向 = 港股通(沪) + 港股通(深)
+#   单位: 亿元 (接口已为亿元, 无需换算)
+# 注: 港交所自 2024-08-19 起不再披露沪深股通(北向)每日净买入额, 故北向
+#     '当日成交净买额' 在 2024-08-16 之后全为 NaN, 无法获取新值; 南向正常披露。
 # ---------------------------------------------------------------------------
 def fetch_capital_flow(cfg):
     label      = cfg["name"]
     flow_key   = cfg["symbol"]  # "北向资金" or "南向资金"
-    net_col    = "north_money" if flow_key == "北向资金" else "south_money"
 
-    start = (datetime.now() - timedelta(days=365 * 20)).strftime("%Y%m%d")
-    end   = datetime.now().strftime("%Y%m%d")
+    if flow_key == "北向资金":
+        subs = ["沪股通", "深股通"]
+    else:  # 南向资金
+        subs = ["港股通沪", "港股通深"]
 
-    try:
-        pro = _get_ts_pro()
-        df  = pro.moneyflow_hsgt(start_date=start, end_date=end,
-                                  fields="trade_date,north_money,south_money")
-    except Exception as exc:
-        print(f"  [ERROR] {label}: {exc}")
-        return None
+    frames = {}
+    for sym in subs:
+        try:
+            df = ak.stock_hsgt_hist_em(symbol=sym)
+        except Exception as exc:
+            print(f"  [ERROR] {label} {sym}: {exc}")
+            return None
+        if df is None or df.empty:
+            print(f"  [ERROR] {label} {sym}: empty data")
+            return None
+        frames[sym] = df
 
-    if df is None or df.empty:
-        print(f"  [ERROR] {label}: empty data")
-        return None
+    # 按日期对齐, 逐日求各子源净买额之和
+    by_date = defaultdict(dict)
+    for sym, df in frames.items():
+        for _, row in df.iterrows():
+            d = row.get("日期")
+            if d is None:
+                continue
+            ds = str(d)[:10]
+            by_date[ds][sym] = _safe_float(row.get("当日成交净买额"))
 
     entries = []
-    for _, row in df.iterrows():
-        date_val = row.get("trade_date")
-        net_val  = _safe_float(row.get(net_col))
-        if date_val is None or net_val is None:
-            continue
-        date_str = str(date_val)[:10]
-        if len(date_str) == 8:  # YYYYMMDD → YYYY-MM-DD
-            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-        entries.append({"date": date_str, "close": round(net_val / 10000, 4)})
+    for ds, vals in by_date.items():
+        parts = [vals.get(s) for s in subs]
+        if all(p is None for p in parts):
+            continue  # 北向官方停披露后净买额全空, 跳过这些日期
+        total = round(sum(p for p in parts if p is not None), 4)
+        if total == 0:
+            continue  # 源偶发返回 0 占位值, 跳过(真实交易日净买入几乎不可能恰好为 0)
+        entries.append({"date": ds, "close": total})
 
     if not entries:
         print(f"  [ERROR] {label}: no valid rows")
