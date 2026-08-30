@@ -11,10 +11,6 @@ and writes two series:
  2. cement_po425 — P.O42.5 散装水泥全国均价 (元/吨)
     → commodities + prices
 
- 3. coal_ccement_idx — 动力煤价格指数 (点, 归一化)
-    → commodities + prices   （取自 getPriceIndex 的 coal_price 字段，与 CEMPI 同源；
-      解决动力煤「无历史」问题：全历史 2011-09-09 起，免费无密钥）
-
 Data source
 -----------
     POST https://index.ccement.com/index/priceindex/getPriceIndex   {"timeType": 5}
@@ -31,10 +27,11 @@ We always ask for 5 (full history) and let the DB dedupe.
 History depth (as of 2026-08)
 -----------------------------
     getPriceIndex  → 3591 daily points, 2011-09-09 → today   (CEMPI 指数)
-                     coal_price (动力煤指数) 同深度，现一并入库
     po425zsline    → 3200 daily points, 2013-08-01 → today   (元/吨)
 
-getPriceIndex 另含 mjc (水泥煤价差)，暂未入库；如需判断水泥企业毛利可后续加。
+getPriceIndex 另含 mjc (水泥煤价差) 与 coal_price (动力煤指数)，
+暂未入库（动力煤指数口径偏归一化、与 CEMPI 同源，已在 2026-08 经评估后移除）。
+如需判断水泥企业毛利可后续单独评估 mjc。
 
 Why not akshare / futures
 -------------------------
@@ -108,13 +105,6 @@ CMDTY_UNIT  = "元/吨"
 CMDTY_TYPE  = "散装全国市场参考基准价"
 GRADE_TYPE  = "P.O42.5散装"
 
-# 动力煤价格指数 → commodities / prices (取自 getPriceIndex 的 coal_price 字段)
-COAL_KEY    = "coal_ccement_idx"
-COAL_NAME   = "动力煤价格指数(水泥网)"
-COAL_SYM    = "COAL_IDX"
-COAL_UNIT   = "点"
-COAL_TYPE   = "动力煤价格指数(归一化, 水泥网)"
-
 SOURCE_API  = "index.ccement.com"
 
 # ---------------------------------------------------------------------------
@@ -178,11 +168,11 @@ def _post(url: str, payload: dict) -> dict:
 
 def fetch_series() -> tuple:
     """
-    Fetch all three series.
+    Fetch both series.
 
     Returns
     -------
-    (cempi_points, po425_points, coal_points) where each is a list of
+    (cempi_points, po425_points) where each is a list of
     (date_str, value) sorted ascending by date.
 
     Raises RuntimeError when the API reports a non-200 Code.
@@ -192,7 +182,6 @@ def fetch_series() -> tuple:
         raise RuntimeError(f"getPriceIndex 返回 Code={j.get('Code')} Msg={j.get('Msg')}")
     d = j["Data"]
     cempi = list(zip(d["cement"]["dynamicIndexDate"], d["cement"]["dynamicIndexAll"]))
-    coal  = list(zip(d["coal_price"]["dynamicIndexDate"], d["coal_price"]["dynamicIndexAll"]))
 
     j = _post(URL_PO425, {"timeType": TIME_TYPE})
     if j.get("Code") != 200:
@@ -200,7 +189,7 @@ def fetch_series() -> tuple:
     p = j["Data"]
     po425 = list(zip(p["dynamicIndexDate"], p["dynamicIndex"]))
 
-    return cempi, po425, coal
+    return cempi, po425
 
 
 def _to_float(val):
@@ -238,25 +227,23 @@ def main() -> int:
 
     print("── 抓取中国水泥网 全国水泥价格 ────────────────────────────────────────")
     try:
-        cempi, po425, coal = fetch_series()
+        cempi, po425 = fetch_series()
     except Exception as exc:
         print(f"  [FATAL] 请求失败: {exc}")
         return 1
 
     cempi = normalise(cempi)
     po425 = normalise(po425)
-    coal  = normalise(coal)
 
-    if not cempi or not po425 or not coal:
+    if not cempi or not po425:
         print("  [FATAL] 未解析到任何数据")
         return 1
 
     print(f"  {INDEX_NAME:28s} {len(cempi):5d} 行  {cempi[0][0]} → {cempi[-1][0]}  末值 {cempi[-1][1]} {INDEX_UNIT}")
     print(f"  {CMDTY_NAME:28s} {len(po425):5d} 行  {po425[0][0]} → {po425[-1][0]}  末值 {po425[-1][1]} {CMDTY_UNIT}")
-    print(f"  {COAL_NAME:28s} {len(coal):5d} 行  {coal[0][0]} → {coal[-1][0]}  末值 {coal[-1][1]} {COAL_UNIT}")
 
     if dry_run:
-        print(f"\n[DRY-RUN] 跳过写库。CEMPI {len(cempi)} 行 / P.O42.5 {len(po425)} 行 / 动力煤 {len(coal)} 行。")
+        print(f"\n[DRY-RUN] 跳过写库。CEMPI {len(cempi)} 行 / P.O42.5 {len(po425)} 行。")
         return 0
 
     print("\n连接数据库...")
@@ -297,25 +284,6 @@ def main() -> int:
             print(f"  [OK] prices        写入 {len(rows)} 行"
                   + (f"（增量，已有至 {since}）" if since else "（全量）"))
 
-            # ── 3. 动力煤价格指数 → commodities + prices ───────────────────
-            cur.execute(UPSERT_COMMODITY_SQL,
-                        (COAL_KEY, COAL_SYM, COAL_NAME, COAL_UNIT,
-                         SOURCE_API, COAL_TYPE, None))
-            print(f"  [OK] commodities   就绪：{COAL_KEY} ({COAL_UNIT})")
-
-            since = None if full else latest_date(
-                cur, "SELECT MAX(price_date) FROM prices WHERE commodity_key = %s",
-                COAL_KEY)
-            rows = [(COAL_KEY, d, v) for d, v in coal if since is None or d > str(since)]
-            if rows:
-                execute_values(cur, UPSERT_PRICES_SQL, rows)
-            print(f"  [OK] prices        写入 {len(rows)} 行"
-                  + (f"（增量，已有至 {since}）" if since else "（全量）"))
-
-            cur.execute(LOG_FETCH_SQL, (COAL_KEY, coal[-1][0], coal[-1][1],
-                                        round(coal[-1][1] - coal[-2][1], 4) if len(coal) >= 2 else None))
-
-            # ── 4. fetch_log（商品侧惯例：commodities 路线才记） ─────────────
             change = None
             if len(po425) >= 2:
                 change = round(po425[-1][1] - po425[-2][1], 4)
@@ -332,8 +300,7 @@ def main() -> int:
         conn.close()
 
     print(f"\n[OK] 水泥数据更新完成：CEMPI {cempi[-1][1]} {INDEX_UNIT}、"
-          f"P.O42.5 {po425[-1][1]} {CMDTY_UNIT}、"
-          f"动力煤指数 {coal[-1][1]} {COAL_UNIT}（{cempi[-1][0]}）")
+          f"P.O42.5 {po425[-1][1]} {CMDTY_UNIT}（{cempi[-1][0]}）")
     return 0
 
 
