@@ -34,6 +34,7 @@ FETCH_SCRIPTS = [
     ("fetch_ccfi_history.py",      "CCFI 历史周线回补（GreenPacific，2023-04 起全航线）"),
     ("fetch_bdi.py",               "BDI 系列航运指数（akshare，日频含历史）"),
     ("fetch_commodities.py",       "大宗商品价格（黄金/铜/油/煤炭等）"),
+    ("fetch_cement.py",            "水泥价格：CEMPI 指数 + P.O42.5 均价（中国水泥网，日频含历史）"),
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
     ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
@@ -123,6 +124,30 @@ STATUS_QUERIES = [
             WHERE p.index_key IN ('bdi', 'bci', 'bsi', 'bcti', 'bdti')
         """,
         "cols": ["series", "rows", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "index_prices · 建材 CEMPI  (日频，含历史)",
+        "sql": """
+            SELECT COUNT(p.id) AS rows,
+                   MIN(p.price_date)::text AS earliest,
+                   MAX(p.price_date)::text AS latest
+            FROM index_prices p
+            WHERE p.index_key = 'cement_cempi'
+        """,
+        "cols": ["rows", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "prices · 水泥 P.O42.5 均价  (日频，元/吨)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   MIN(price_date)::text AS earliest,
+                   MAX(price_date)::text AS latest
+            FROM prices
+            WHERE commodity_key = 'cement_po425'
+        """,
+        "cols": ["rows", "earliest", "latest"],
         "optional": True,
     },
     {
