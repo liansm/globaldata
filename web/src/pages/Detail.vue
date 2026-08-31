@@ -11,8 +11,8 @@ import {
   MarkLineComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import VChart from 'vue-echarts'
 import { fetchCommodityDetail, fetchCommodityMinutes } from '@/api/commodities'
+import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
 import type { CommodityDetail, CommodityMinutes, DaysOption } from '@/types/commodity'
 
 use([
@@ -389,7 +389,7 @@ function exchangeTagType(label: string | null) {
             · 昨结算 {{ fmt(detail.spot.prevClose, 4) }} {{ detail.unit }}
           </template>
         </div>
-        <v-chart
+        <AnnotatedLineChart
           v-if="minutesData?.minutes.length"
           :option="minutesChartOption"
           autoresize
@@ -399,7 +399,7 @@ function exchangeTagType(label: string | null) {
 
       <!-- 历史走势图 -->
       <div v-else class="chart-wrap" v-loading="loading">
-        <v-chart :option="chartOption" autoresize style="width:100%;height:380px" />
+        <AnnotatedLineChart :option="chartOption" autoresize style="width:100%;height:380px" />
       </div>
 
       <!-- 详细信息卡片 -->
