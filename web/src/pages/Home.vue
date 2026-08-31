@@ -91,24 +91,21 @@ const SECTIONS = [
     icon: '🌾',
     keys: ['corn', 'soybean_oil', 'eggs', 'live_hog', 'cotton', 'sugar'],
   },
-  {
-    title: '建材',
-    icon: '🧱',
-    keys: ['cement_po425'],
-  },
 ]
 
-// 建材指数：水泥价格指数 CEMPI。走 /market/:key 详情页（与航运一致）
-const CEMENT_ORDER = ['cement_cempi']
+// 水泥：P.O42.5 现货价格（commodities）+ CEMPI 价格指数（market_indices, market='建材'）
+// 两类合并到同一个「水泥」section 展示；P.O42.5 走 /commodity/:key，CEMPI 走 /market/:key
+const CEMENT_CMDTY_ORDER = ['cement_po425']
+const CEMENT_INDEX_ORDER = ['cement_cempi']
 
-const cementSections = computed(() => {
+const cementCommodities = computed(() => {
+  const map = new Map(list.value.map(c => [c.key, c]))
+  return CEMENT_CMDTY_ORDER.map(k => map.get(k)).filter(Boolean) as Commodity[]
+})
+
+const cementIndexes = computed(() => {
   const map = new Map(cementIdx.value.map(s => [s.key, s]))
-  return [
-    { title: '水泥价格指数', icon: '🧱', keys: CEMENT_ORDER },
-  ].map(s => ({
-    ...s,
-    items: s.keys.map(k => map.get(k)).filter(Boolean) as MarketIndex[],
-  })).filter(s => s.items.length > 0)
+  return CEMENT_INDEX_ORDER.map(k => map.get(k)).filter(Boolean) as MarketIndex[]
 })
 
 const sections = computed(() => {
@@ -260,17 +257,64 @@ function exchangeTagType(label: string | null) {
         </div>
       </section>
 
-      <!-- 建材指数：水泥价格指数 CEMPI，来自 market_indices(market='建材') -->
-      <section v-for="sec in cementSections" :key="sec.title" class="section">
+      <!-- 水泥：P.O42.5 现货价格 + CEMPI 价格指数，合并一个 section -->
+      <section
+        v-if="cementCommodities.length || cementIndexes.length"
+        class="section"
+      >
         <div class="section-header">
-          <span class="section-icon">{{ sec.icon }}</span>
-          <h2 class="section-title">{{ sec.title }}</h2>
-          <span class="section-count">{{ sec.items.length }} 个指数</span>
+          <span class="section-icon">🧱</span>
+          <h2 class="section-title">水泥</h2>
+          <span class="section-count">{{ cementCommodities.length + cementIndexes.length }} 个品种</span>
         </div>
 
         <div class="card-grid">
+          <!-- P.O42.5 现货价格（commodities 表），跳 /commodity/:key -->
           <div
-            v-for="item in sec.items"
+            v-for="item in cementCommodities"
+            :key="item.key"
+            class="card"
+            @click="goDetail(item)"
+          >
+            <div class="card-top">
+              <span class="card-name">{{ displayName(item) }}</span>
+              <el-tag
+                v-if="exchangeLabel(item)"
+                size="small"
+                class="card-tag"
+                :type="exchangeTagType(exchangeLabel(item))"
+              >{{ exchangeLabel(item) }}</el-tag>
+            </div>
+
+            <div class="card-price">
+              {{ fmt(item.latestPrice) }}
+              <span class="card-unit">{{ item.unit ?? '' }}</span>
+            </div>
+
+            <!-- 涨跌幅（仅实时数据有） -->
+            <div
+              v-if="item.spotChangePct != null"
+              class="card-change"
+              :class="changePctClass(item.spotChangePct)"
+            >
+              {{ fmtChangePct(item.spotChangePct) }}
+            </div>
+
+            <div class="card-footer">
+              <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
+              <template v-if="item.spotUpdatedAt">
+                <span class="card-sep">·</span>
+                <span class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
+                <span class="card-spot-badge">实时</span>
+              </template>
+              <span v-if="item.hasMinutes" class="card-minutes-icon" title="有分时图">📈</span>
+              <span v-else class="card-arrow">→</span>
+            </div>
+          </div>
+
+          <!-- CEMPI 价格指数（market_indices, market='建材'），跳 /market/:key -->
+          <div
+            v-for="item in cementIndexes"
             :key="item.key"
             class="card ship-card clickable"
             @click="goMarketDetail(item)"
