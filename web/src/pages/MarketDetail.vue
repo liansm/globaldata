@@ -11,8 +11,8 @@ import {
   MarkLineComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import VChart from 'vue-echarts'
 import { fetchMarketDetail, fetchMarketMinutes } from '@/api/markets'
+import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
 import type { MarketDetail, MarketMinutes } from '@/types/market'
 
 use([CanvasRenderer, LineChart, BarChart, TitleComponent, TooltipComponent, GridComponent, DataZoomComponent, MarkLineComponent])
@@ -428,7 +428,7 @@ const intradayOption = computed(() => {
         <div v-if="minuteData?.date" class="intraday-date">
           {{ minuteData.date }} 分时走势（{{ minuteData.minutes.length }} 根 1分钟 K线）
         </div>
-        <v-chart
+        <AnnotatedLineChart
           v-if="minuteData?.minutes.length"
           :option="intradayOption"
           autoresize
@@ -439,7 +439,7 @@ const intradayOption = computed(() => {
 
       <!-- 日线走势图 -->
       <div v-else class="chart-wrap" v-loading="loading">
-        <v-chart :option="chartOption" autoresize style="width:100%;height:380px" />
+        <AnnotatedLineChart :option="chartOption" autoresize style="width:100%;height:380px" />
       </div>
 
       <el-descriptions :title="isFlow ? '资金流向信息' : '指数信息'" :column="3" border size="small" class="desc-card">
