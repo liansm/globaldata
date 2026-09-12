@@ -32,6 +32,16 @@ const router = createRouter({
       name: 'crypto',
       component: () => import('@/pages/Crypto.vue'),
     },
+    {
+      path: '/funds',
+      name: 'funds',
+      component: () => import('@/pages/Funds.vue'),
+    },
+    {
+      path: '/fund/:code',
+      name: 'fund-detail',
+      component: () => import('@/pages/FundDetail.vue'),
+    },
   ],
 })
 

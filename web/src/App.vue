@@ -8,6 +8,7 @@ const navItems = [
   { label: '大宗商品', icon: '📦', to: '/',        names: ['home', 'detail'] },
   { label: '全球股市', icon: '📈', to: '/markets',  names: ['markets', 'market-detail'] },
   { label: '加密货币', icon: '₿',  to: '/crypto',   names: ['crypto'] },
+  { label: '公募基金', icon: '💰', to: '/funds',    names: ['funds', 'fund-detail'] },
 ]
 
 function isActive(item: typeof navItems[0]) {

@@ -165,6 +165,45 @@ export const commodityMinutes = pgTable('commodity_minutes', {
 ])
 
 // --------------------------------------------------------------------------
+// funds — one row per public fund (份额口径，A/C 类分开)
+// Populated by fetch_funds.py: 名录来自天天基金 fund_name_em，
+// 规模/公司/经理来自雪球 fund_individual_basic_info_xq
+// --------------------------------------------------------------------------
+export const funds = pgTable('funds', {
+  fundCode:        varchar('fund_code',        { length: 12  }).primaryKey(),
+  fundName:        varchar('fund_name',        { length: 200 }).notNull(),
+  fundType:        varchar('fund_type',        { length: 60  }),   // '混合型-偏股' | '股票型' | ...
+  fundCompany:     varchar('fund_company',     { length: 200 }),
+  fundManager:     varchar('fund_manager',     { length: 200 }),
+  scale:           numeric('scale',            { precision: 16, scale: 4 }),  // 最新规模（亿元，含"万"级小基金）
+  scaleRaw:        varchar('scale_raw',        { length: 50  }),   // 原文，如 '39.38亿'
+  inceptionDate:   date('inception_date'),
+  scaleUpdatedAt:  timestamp('scale_updated_at', { withTimezone: true }),
+  updatedAt:       timestamp('updated_at',       { withTimezone: true })
+                     .default(sql`NOW()`).notNull(),
+})
+
+// --------------------------------------------------------------------------
+// fund_holdings — quarterly portfolio holdings (季报前十大重仓)
+// 股票来自 FundArchivesDatas.aspx?type=jjcc，债券 type=zqcc（--bonds 开启）
+// 注意：完整持仓仅半年报/年报披露，季报只有前十大
+// --------------------------------------------------------------------------
+export const fundHoldings = pgTable('fund_holdings', {
+  id:           bigserial('id', { mode: 'number' }).primaryKey(),
+  fundCode:     varchar('fund_code',     { length: 12  }).notNull(),
+  reportDate:   date('report_date').notNull(),            // 报告期截止日，如 2026-06-30
+  holdingType:  varchar('holding_type', { length: 10  }).notNull(),  // 'stock' | 'bond'
+  securityCode: varchar('security_code', { length: 12  }).notNull(),
+  securityName: varchar('security_name', { length: 100 }),
+  ratio:        numeric('ratio',        { precision: 10, scale: 4 }),  // 占净值比例 %
+  shares:       numeric('shares',       { precision: 20, scale: 4 }),  // 持股数（万股，股票）
+  marketValue:  numeric('market_value', { precision: 20, scale: 4 }),  // 持仓市值（万元）
+}, (t) => [
+  unique('fund_holdings_uniq').on(t.fundCode, t.reportDate, t.holdingType, t.securityCode),
+  index('idx_fund_holdings_fund_date').on(t.fundCode, t.reportDate),
+])
+
+// --------------------------------------------------------------------------
 // fetch_log — one row per commodity per run (audit trail)
 // --------------------------------------------------------------------------
 export const fetchLog = pgTable('fetch_log', {

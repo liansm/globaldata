@@ -38,6 +38,10 @@ FETCH_SCRIPTS = [
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
     ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
+    # 注意：fetch_funds.py 不接入本脚本，单独手动运行（数据量大、耗时长）
+    #   python fetch_funds.py --types 股票型,混合型,指数型   （权益类增量）
+    #   python fetch_funds.py --years-back 5                （回补近5年持仓）
+    #   python fetch_funds.py --refresh-scale --full        （强制全量重写）
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -198,6 +202,29 @@ STATUS_QUERIES = [
         "optional": True,
     },
     {
+        "title": "funds  (公募基金名录+规模)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   COUNT(scale) AS with_scale,
+                   MAX(scale_updated_at AT TIME ZONE 'Asia/Shanghai')::date::text AS scale_updated
+            FROM funds
+        """,
+        "cols": ["total", "with_scale", "scale_updated"],
+        "optional": True,
+    },
+    {
+        "title": "fund_holdings  (基金季度持仓，前十大重仓)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT fund_code) AS funds,
+                   MIN(report_date)::text AS earliest,
+                   MAX(report_date)::text AS latest
+            FROM fund_holdings
+        """,
+        "cols": ["rows", "funds", "earliest", "latest"],
+        "optional": True,
+    },
+    {
         "title": "crypto_coins  (加密货币定义)",
         "sql": """
             SELECT COUNT(*) AS total
@@ -312,6 +339,8 @@ def run_fetches():
 # 按依赖顺序 TRUNCATE（先子表再父表，CASCADE 处理外键）
 CLEAR_TABLES = [
     "fetch_log",
+    "fund_holdings",
+    "funds",
     "crypto_prices",
     "crypto_coins",
     "index_minutes",

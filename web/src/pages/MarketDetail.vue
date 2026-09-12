@@ -42,6 +42,14 @@ const daysOptions: { label: string; value: number | 'ytd' }[] = [
 
 // ── Intraday state ─────────────────────────────────────────────────────────
 const isAShare       = computed(() => detail.value?.market === 'A股')
+
+// 返回按钮：股市类指数回「全球股市」列表，航运/建材等大宗类回「大宗商品」列表
+const STOCK_MARKETS = new Set(['A股', '港股', '美股', '欧洲', '亚太', '资金流向'])
+const isStockMarket = computed(() =>
+  detail.value == null || STOCK_MARKETS.has(detail.value.market),
+)
+const backLabel  = computed(() => (isStockMarket.value ? '← 返回全球股市' : '← 返回列表'))
+const backTarget = computed(() => (isStockMarket.value ? '/markets' : '/commodities'))
 const showIntraday   = ref(true)   // default to intraday; switched off for non-A-share
 const minuteLoading  = ref(false)
 const minuteData     = ref<MarketMinutes | null>(null)
@@ -366,8 +374,8 @@ const intradayOption = computed(() => {
 
 <template>
   <div class="detail-page">
-    <el-button link @click="router.push('/markets')" class="back-btn">
-      ← 返回全球股市
+    <el-button v-if="detail" link @click="router.push(backTarget)" class="back-btn">
+      {{ backLabel }}
     </el-button>
 
     <template v-if="detail">
