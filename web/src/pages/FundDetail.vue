@@ -60,6 +60,10 @@ function goBack() {
   router.push('/funds')
 }
 
+function goCompany(key: string) {
+  router.push(`/company/${encodeURIComponent(key)}`)
+}
+
 // ── Formatters ──────────────────────────────────────────────────────────────
 function fmtScale(v: number | null) {
   if (v == null) return '—'
@@ -133,7 +137,13 @@ function fmtDate(d: string | null | undefined) {
           </div>
           <div class="stat">
             <span class="stat-label">基金公司</span>
-            <span class="stat-value text">{{ detail.fundCompany ?? '—' }}</span>
+            <span
+              v-if="detail.companyKey"
+              class="stat-value text link"
+              :title="`查看 ${detail.fundCompany} 的全部产品`"
+              @click="goCompany(detail.companyKey)"
+            >{{ detail.companyKey }}</span>
+            <span v-else class="stat-value text">{{ detail.fundCompany ?? '—' }}</span>
           </div>
           <div class="stat">
             <span class="stat-label">成立日期</span>
@@ -334,6 +344,15 @@ function fmtDate(d: string | null | undefined) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.stat-value.link {
+  color: #409eff;
+  cursor: pointer;
+}
+
+.stat-value.link:hover {
+  text-decoration: underline;
 }
 
 .stat-unit {

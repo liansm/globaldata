@@ -8,10 +8,17 @@ data/
 
 # ── 脚本运行时状态（断点续跑进度 + 备份，不提交）───────────
 .funds_progress.json*
+# 基金代码 → 公司名映射的 7 天缓存（--fill-company）
+.fund_company_map.json
+# 一次性生成的缺口清单（可用 SQL 随时重建，很快过期）
+fund_gap_codes.txt
 
 # ── Node / 后端 ──────────────────────────────────────────
 node_modules/
 dist/
+# tsx 的转译缓存目录：本机环境下它把缓存根解析成了字面量 "undefined"，
+# 于是每次 `npx tsx src/server.ts` 都会在仓库根生成 undefined/temp/tsx-*
+undefined/
 
 # ── 前端 (web/) ──────────────────────────────────────────
 web/node_modules/

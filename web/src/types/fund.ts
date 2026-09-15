@@ -3,6 +3,8 @@ export interface FundSummary {
   fundName: string
   fundType: string | null
   fundCompany: string | null
+  /** 规范化公司短名，用于跳转 /company/:key */
+  companyKey: string | null
   fundManager: string | null
   scale: number | null
   scaleRaw: string | null
@@ -36,6 +38,8 @@ export interface FundDetailResp {
   fundName: string
   fundType: string | null
   fundCompany: string | null
+  /** 规范化公司短名，用于跳转 /company/:key */
+  companyKey: string | null
   fundManager: string | null
   scale: number | null
   scaleRaw: string | null

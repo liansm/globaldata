@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { db } from '../db'
 import { funds, fundHoldings } from '../db/schema'
 import { eq, desc, asc, sql, and, isNotNull, ilike } from 'drizzle-orm'
+import { canonicalCompany } from '../lib/company'
 
 const toNum = (v: string | null | undefined) => (v == null ? null : parseFloat(v))
 
@@ -76,7 +77,13 @@ export async function fundsRoutes(app: FastifyInstance) {
       total,
       page: Math.max(parseInt(page) || 1, 1),
       pageSize: limit,
-      items: rows.map(r => ({ ...r, scale: toNum(r.scale) })),
+      items: rows.map(r => ({
+        ...r,
+        scale: toNum(r.scale),
+        // 规范化公司短名：前端据此跳转 /company/:key（原始名有「中欧基金公司 /
+        // 中欧基金管理有限公司」这类书写碎片，不能直接当链接）
+        companyKey: r.fundCompany ? canonicalCompany(r.fundCompany) : null,
+      })),
     }
   })
 
@@ -120,6 +127,7 @@ export async function fundsRoutes(app: FastifyInstance) {
       fundName:      meta.fundName,
       fundType:      meta.fundType,
       fundCompany:   meta.fundCompany,
+      companyKey:    meta.fundCompany ? canonicalCompany(meta.fundCompany) : null,
       fundManager:   meta.fundManager,
       scale:         toNum(meta.scale),
       scaleRaw:      meta.scaleRaw,
