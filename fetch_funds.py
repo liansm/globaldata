@@ -15,10 +15,22 @@ Data sources
 * 持仓:   https://fundf10.eastmoney.com/FundArchivesDatas.aspx
           type=jjcc 股票 / type=zqcc 债券，year 参数一次返回该年全部季度
 
-⚠ 东财持仓接口的坑（akshare 1.18.42 的 fund_portfolio_hold_em 因此报
-  JSONDecodeError）：裸请求 FundArchivesDatas.aspx 返回 404，必须先用
-  Session GET 一次 F10 页面（ccmx_<code>.html）拿到 ASP.NET_SessionId
-  cookie，再带 Referer 请求才返回 200。本脚本内置该握手 + 失效重试。
+⚠ 东财持仓接口的两个坑（务必都看懂再改代码）
+------------------------------------------------
+1) 必须带 ASP.NET_SessionId cookie：裸请求 FundArchivesDatas.aspx 返回 404，
+   得先用 Session GET 一次 F10 页面（ccmx_<code>.html）拿到 cookie，再带 Referer
+   请求才返回 200。akshare 1.18.42 的 fund_portfolio_hold_em 因此报 JSONDecodeError。
+2) **有频控，过快会返回 HTTP 514**（非标准状态码、body 为空）。
+   实测同一批「确认接口有数据」的基金：
+       间隔 0s（串行）   → 83% 成功
+       间隔 0.5s（串行） → 100%
+       8 线程无节流      → 27%
+   失败是**随机**的——同一只基金时好时坏，所以「这只基金没有持仓」是错觉。
+   因此本脚本用全局 RateLimiter 把请求速率锁在 1/--request-interval，
+   并且**请求失败绝不写进度文件**（否则缺口会被永久跳过，增量永远补不回来）。
+   2026-09-10 那次全量跑就是踩了这个坑：数千只基金的股票持仓被静默丢弃
+   （含兴全合润、招商中证白酒、富国天惠、中欧新蓝筹等）。2026-09-15 按上述
+   方式修复并回补，基金覆盖数 10501 → 14981（+4480），9408 个任务失败 0。
 
 口径限制
 --------
@@ -33,7 +45,7 @@ Incremental updates
 * 规模:   每只基金 30 天内更新过则跳过（--refresh-scale 强制刷新）
 * 持仓:   对 scope 内每只基金，按年计算「已过披露期的季末」集合 due
           （季末 + 40 天），若 DB 缺任一 due 季度才发起请求
-* 全量首跑约 2.8 万只 × 2 请求 ≈ 数小时（限速 0.25s/请求），之后日常增量很快
+* 全量首跑约 2.8 万只 × 2 请求 ≈ 数小时（受全局限速约束），之后日常增量很快
 
 Compliance note
 ---------------
@@ -48,6 +60,9 @@ Usage
     python fetch_funds.py --full                              # 忽略增量，全部重写
     python fetch_funds.py --refresh-scale                     # 强制刷新规模
     python fetch_funds.py --bonds                             # 同时抓债券持仓
+    python fetch_funds.py --codes-file gaps.txt --years-back 1 --bonds
+                                                              # 定向回补缺口基金
+    python fetch_funds.py --request-interval 1.0              # 更保守的限速
     python fetch_funds.py --dry-run                           # 只打印，不写库
 """
 
@@ -83,7 +98,13 @@ ARCHIVE_URL   = F10_BASE + "/FundArchivesDatas.aspx"
 UA            = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 TIMEOUT       = 30
-SLEEP         = 0.25          # 请求间隔（秒），对东财/雪球保持礼貌
+# 全局请求最小间隔（秒）。东财 F10 有频控，过快会返回 **HTTP 514**（非标准码、
+# body 为空）；实测同一批「确认有数据」的基金：间隔 0s → 83% 成功、
+# 0.5s → 100%、1.0s → 100%。串行如此，8 线程无节流更只有 27%。
+# 因此节流必须作用在**每一次请求**上（含 shake），而不是只在重试分支里。
+SLEEP         = 0.6           # = 全局最小请求间隔，见 RateLimiter
+RETRIES       = 4             # 单次请求最大尝试次数（抖 514 用）
+RETRY_BACKOFF = 1.0           # 重试退避基数（秒）：第 n 次失败后 sleep n*基数
 SCALE_TTL_DAYS = 30           # 规模刷新节流
 DISCLOSE_LAG   = 40           # 季末后 N 天视为已过披露期
 
@@ -272,10 +293,41 @@ class Progress:
 
 
 # ---------------------------------------------------------------------------
+# 全局限速器 —— 跨线程统一控制请求间隔
+# ---------------------------------------------------------------------------
+class RateLimiter:
+    """确保**任意两次请求之间**至少间隔 min_interval 秒（全进程共享）。
+
+    与「每个线程各自 sleep」不同，这里是全局串行化发牌：无论 --workers 开到几，
+    对东财的请求速率都恒定不超过 1/min_interval，从根上避开 HTTP 514 频控。
+    """
+
+    def __init__(self, min_interval: float):
+        self.min_interval = max(0.0, float(min_interval))
+        self._lock = threading.Lock()
+        self._next_at = 0.0
+
+    def wait(self):
+        if self.min_interval <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            sleep_for = self._next_at - now
+            if sleep_for < 0:
+                sleep_for = 0.0
+            self._next_at = max(now, self._next_at) + self.min_interval
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+
+REQUEST_LIMITER = RateLimiter(SLEEP)
+
+
+# ---------------------------------------------------------------------------
 # Eastmoney F10 session（关键：必须带 ASP.NET_SessionId cookie）
 # ---------------------------------------------------------------------------
 class F10Session:
-    """持有 ASP.NET_SessionId 的会话；aspx 404/异常时自动重新握手。"""
+    """持有 ASP.NET_SessionId 的会话；aspx 404/514/异常时自动退避重试。"""
 
     def __init__(self):
         self.s = requests.Session()
@@ -285,7 +337,11 @@ class F10Session:
     def _shake(self, code: str = "000001"):
         """GET 一次 F10 页面以获得/刷新 session cookie。"""
         url = f"{F10_BASE}/ccmx_{code}.html"
-        self.s.get(url, timeout=TIMEOUT)
+        REQUEST_LIMITER.wait()
+        try:
+            self.s.get(url, timeout=TIMEOUT)
+        except requests.RequestException:
+            pass
 
     def get_holdings(self, code: str, year: int, typ: str):
         """
@@ -295,22 +351,40 @@ class F10Session:
         -------
         list of (report_date_str, holding_type, security_code, security_name,
                  ratio, shares, market_value)
+
+        Raises
+        ------
+        RuntimeError
+            重试 RETRIES 次后仍拿不到 apidata（多半是被东财限流）。
+            **调用方必须把它与「该基金确实没有此类持仓」区分开**，
+            见 fetch_holding_http 的 ok 标志。
         """
-        for attempt in (1, 2):
-            r = self.s.get(
-                ARCHIVE_URL,
-                params={"type": typ, "code": code, "topline": "10000",
-                        "year": str(year), "month": "", "rt": f"{time.time()%1:.15f}"},
-                headers={"Referer": f"{F10_BASE}/ccmx_{code}.html"},
-                timeout=TIMEOUT,
-            )
-            if r.status_code == 200 and "apidata" in r.text:
-                break
-            if attempt == 1:
-                self._shake(code)   # cookie 失效，重新握手后重试
-                time.sleep(SLEEP)
+        r = None
+        last = "未发起请求"
+        for attempt in range(1, RETRIES + 1):
+            REQUEST_LIMITER.wait()
+            try:
+                r = self.s.get(
+                    ARCHIVE_URL,
+                    params={"type": typ, "code": code, "topline": "10000",
+                            "year": str(year), "month": "",
+                            "rt": f"{time.time()%1:.15f}"},
+                    headers={"Referer": f"{F10_BASE}/ccmx_{code}.html"},
+                    timeout=TIMEOUT,
+                )
+            except requests.RequestException as exc:
+                r, last = None, f"网络异常 {type(exc).__name__}"
+            else:
+                last = f"HTTP {r.status_code}"
+                if r.status_code == 200 and "apidata" in r.text:
+                    break
+            if attempt < RETRIES:
+                # cookie 失效 / 被限流 → 重新握手 + 指数退避
+                self._shake(code)
+                time.sleep(RETRY_BACKOFF * attempt)
         else:
-            raise RuntimeError(f"{code} {typ} {year}: HTTP {r.status_code}")
+            hint = "（HTTP 514 = 东财限流）" if last == "HTTP 514" else ""
+            raise RuntimeError(f"{code} {typ} {year}: {last}{hint}")
 
         m = re.search(r'content:"(.*)",arryear:', r.text, re.S)
         if not m:
@@ -405,11 +479,21 @@ def _f10_session() -> "F10Session":
 
 
 def fetch_holding_http(code: str, year: int, typ: str):
-    """线程本地 F10 拉持仓，失败返回 [] 不抛错。"""
+    """线程本地 F10 拉持仓。
+
+    Returns
+    -------
+    (rows, ok)
+        ok=True  → 请求成功。rows 为空表示**该基金确实没有此类持仓**（如债基无股票）
+        ok=False → 请求失败（限流 / 网络 / 解析异常），rows 恒为空
+
+    ⚠ 必须区分这两种情况：把失败当成「无数据」会让数据静默丢失，
+      而把失败写进进度文件更会让它**永远不再重试**。
+    """
     try:
-        return _f10_session().get_holdings(code, year, typ)
+        return _f10_session().get_holdings(code, year, typ), True
     except Exception:
-        return []
+        return [], False
 
 
 # ---------------------------------------------------------------------------
@@ -592,16 +676,20 @@ def run_holdings_concurrent(codes: list, conn, progress: Progress,
             for fut in as_completed(futures):
                 code, year, typ = futures[fut]
                 try:
-                    rows = fut.result()
-                    if rows:
-                        rows_buf.extend((code, *r_) for r_ in rows)
-                    # 不论有无 rows，都标记该 (code, year, typ) 已尝试；
-                    # 否则债基的 jjcc 会无限重试空响应
-                    progress.mark(f"hy:{code}:{year}:{typ}")
+                    rows, ok = fut.result()
                 except Exception:
-                    stat["持仓失败"] += 1
-                    # 失败的也标记，避免下次重试同一个失败请求
+                    rows, ok = [], False
+                if rows:
+                    rows_buf.extend((code, *r_) for r_ in rows)
+                if ok:
+                    # 只有**请求确实成功**才标记完成（rows 为空 = 该基金真没这类持仓，
+                    # 如债基的 jjcc，标记它可以避免无限重试空响应）
                     progress.mark(f"hy:{code}:{year}:{typ}")
+                else:
+                    # 失败不标记 → 下次运行自动重试，数据不会被永久漏掉
+                    stat["持仓失败"] += 1
+                    if stat["持仓失败"] <= 20:
+                        print(f"    [HOLD] {code} {year} {typ}: 请求失败，未标记进度（下次重试）")
                 done_tasks += 1
                 if len(rows_buf) >= BUF_FLUSH:
                     flush_rows()
@@ -627,6 +715,10 @@ def run_holdings_concurrent(codes: list, conn, progress: Progress,
 def main() -> int:
     ap = argparse.ArgumentParser(description="公募基金名录+规模+持仓抓取")
     ap.add_argument("--types",        default=None,  help='基金类型过滤，逗号分隔，子串匹配，如 "混合型-偏股,股票型"')
+    ap.add_argument("--codes-file",   default=None,
+                    help="只处理文件里的基金代码（每行一个），用于定向回补缺口")
+    ap.add_argument("--request-interval", type=float, default=SLEEP,
+                    help=f"全局最小请求间隔秒数（默认 {SLEEP}）。调小会触发东财 HTTP 514 限流")
     ap.add_argument("--limit",        type=int, default=None, help="限制规模/持仓抓取的基金数量（试点用）")
     ap.add_argument("--years-back",   type=int, default=0,     help="持仓回补年数（0=仅当年）")
     ap.add_argument("--bonds",        action="store_true", help="同时抓债券持仓（默认仅股票）")
@@ -638,6 +730,12 @@ def main() -> int:
     ap.add_argument("--reset-progress", action="store_true",
                     help="忽略现有进度文件，从零开始")
     args = ap.parse_args()
+
+    # 全局请求间隔（东财频控防线，见 RateLimiter 与文件头说明）
+    REQUEST_LIMITER.min_interval = max(0.0, args.request_interval)
+    if args.request_interval < 0.5:
+        print(f"  [WARN] --request-interval={args.request_interval}s < 0.5s，"
+              f"大概率触发东财 HTTP 514 限流导致数据丢失")
 
     print("── 抓取公募基金名录 / 规模 / 持仓 ─────────────────────────────────────")
 
@@ -652,6 +750,20 @@ def main() -> int:
 
     # scope 过滤
     scope = names
+    if args.codes_file:
+        try:
+            with open(args.codes_file, "r", encoding="utf-8") as f:
+                want = {ln.strip() for ln in f if ln.strip()}
+        except OSError as exc:
+            print(f"  [FATAL] 读取 --codes-file 失败: {exc}")
+            return 1
+        scope = scope[scope["基金代码"].isin(want)]
+        missing = want - set(scope["基金代码"])
+        print(f"  --codes-file {len(want)} 只，命中名录 {len(scope)} 只"
+              + (f"，{len(missing)} 只不在名录（已清盘/更名）" if missing else ""))
+        if scope.empty:
+            print("  [FATAL] --codes-file 未命中任何基金")
+            return 1
     if args.types:
         pats = [p.strip() for p in args.types.split(",") if p.strip()]
         mask = scope["基金类型"].fillna("").apply(
