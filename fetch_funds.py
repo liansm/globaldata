@@ -63,6 +63,10 @@ Usage
     python fetch_funds.py --codes-file gaps.txt --years-back 1 --bonds
                                                               # 定向回补缺口基金
     python fetch_funds.py --request-interval 1.0              # 更保守的限速
+    python fetch_funds.py --fill-company                      # 只补空的公司名
+    python fetch_funds.py --fill-company --dry-run            # 先看补全计划
+    python fetch_funds.py --fill-scale                        # 只补空的规模
+    python fetch_funds.py --fill-scale --limit 50             # 小批试跑
     python fetch_funds.py --dry-run                           # 只打印，不写库
 """
 
@@ -117,13 +121,15 @@ ON CONFLICT (fund_code) DO UPDATE SET
     updated_at = EXCLUDED.updated_at
 """
 
+# 全部用 COALESCE：东财备源只给规模、不给公司/经理，若直接覆盖会把已有的
+# fund_company / fund_manager 抹成 NULL。COALESCE 保证「只填不抹」。
 SQL_UPDATE_SCALE = """
 UPDATE funds SET
-    fund_company    = %s,
-    fund_manager    = %s,
-    scale           = %s,
-    scale_raw       = %s,
-    inception_date  = %s,
+    fund_company    = COALESCE(%s, fund_company),
+    fund_manager    = COALESCE(%s, fund_manager),
+    scale           = COALESCE(%s, scale),
+    scale_raw       = COALESCE(%s, scale_raw),
+    inception_date  = COALESCE(%s, inception_date),
     scale_updated_at = NOW(),
     updated_at      = NOW()
 WHERE fund_code = %s
@@ -440,31 +446,95 @@ class F10Session:
 
 
 # ---------------------------------------------------------------------------
-# Danjuanfunds scale（雪球的实际接口，比 akshare 包装更快，可并发）
+# Scale — 规模/公司/经理（雪球为主源，东财 F10 为备源）
+# ---------------------------------------------------------------------------
+# 为什么需要备源：雪球对**场内份额、已停售份额、部分货币基金**返回
+# `{"result_code":600001,"message":"该基金暂不销售,基金代码：XXXXXX"}`，
+# 拿不到 keeper_name / totshare。实测 2026-09-15 时库里 7855 只（28%）没有
+# scale、183 只没有 fund_company，天弘余额宝 000198（6799 亿）就在其中，
+# 导致「基金公司」页的合计规模被严重低估。
+#
+# 东财 F10 基本概况页是现成的备源：
+#   净资产规模：<span> 6,799.46亿元 （截止至：2026-06-30）</span>
+# 口径与雪球 totshare **一致**（随机 30 只「两源都有」的基金对照，比值
+# 30/30 = 1.00，逐份额类别对齐）；抽样 40 只缺规模的基金命中 38/40
+# （未命中的是新发未披露的 028xxx）。「(后端)」老代码在这页也没有规模，
+# 所以不会把主代码的规模重复计入。
 # ---------------------------------------------------------------------------
 DANJUAN_URL = "https://danjuanfunds.com/djapi/fund/{code}"
+JBGK_URL    = F10_BASE + "/jbgk_{code}.html"
+EM_SCALE_RE = re.compile(
+    r"净资产规模：\s*<span>\s*([\d,\.]+)\s*(万|亿)?\s*元?\s*"
+    r"（截止至：\s*([\d-]+)\s*）")
+
+
+class ScaleNoData(Exception):
+    """**两个来源都明确回答**「这只基金没有规模」——可以安全记进度、不再重试。"""
+
+
+class ScaleFetchError(Exception):
+    """网络 / 限流 / 解析失败——**不得**记进度，下次必须重试。"""
+
+
+def fetch_scale_em(code: str):
+    """东财 F10 基本概况页 → (scale_yi, scale_raw, asof)；无数据抛 ScaleNoData。"""
+    REQUEST_LIMITER.wait()
+    try:
+        r = requests.get(JBGK_URL.format(code=code),
+                         headers={"User-Agent": UA,
+                                  "Referer": JBGK_URL.format(code=code)},
+                         timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        raise ScaleFetchError(f"em network: {exc}") from exc
+    if r.status_code != 200:
+        raise ScaleFetchError(f"em HTTP {r.status_code}")
+    r.encoding = "utf-8"
+    m = EM_SCALE_RE.search(r.text)
+    if not m:
+        # 东财连这条代码都没有（老「(后端)」份额、未披露的新发基金）
+        raise ScaleNoData(f"em: {code} 无净资产规模")
+    v = float(m.group(1).replace(",", ""))
+    unit = m.group(2) or "亿"
+    if unit == "万":
+        v /= 10000.0
+    return round(v, 4), f"{m.group(1)}{unit}元", m.group(3)
+
 
 def fetch_scale_http(code: str):
-    """danjuanfunds 基金详情 → (company, manager, scale_yi, scale_raw, inception).
+    """规模 → (company, manager, scale_yi, scale_raw, inception)。
 
-    实际接口: https://danjuanfunds.com/djapi/fund/<6 位代码>
-    字段: keeper_name / manager_name / totshare ('39.38亿') / found_date
+    主源雪球 danjuanfunds（同时给公司/经理/成立日），备源东财 F10。
+    两源互补：雪球常见「有记录但 totshare 为空」，此时公司/经理仍取雪球、
+    规模取东财。
+
+    失败语义（决定调用方是否记进度）：
+        ScaleNoData    两个源都明确没有 → 可记进度
+        ScaleFetchError 网络/限流失败   → **不可**记进度
     """
-    r = requests.get(DANJUAN_URL.format(code=code),
-                     headers={"User-Agent": UA},
-                     timeout=TIMEOUT)
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code}")
-    data = r.json().get("data") or {}
-    if not data.get("fd_code"):
-        raise RuntimeError("empty data")
-    scale, scale_raw = parse_scale(data.get("totshare"))
-    inception = None
-    d0 = str(data.get("found_date") or "")
-    if re.match(r"\d{4}-\d{2}-\d{2}", d0):
-        inception = d0
-    return (data.get("keeper_name"), data.get("manager_name"),
-            scale, scale_raw, inception)
+    company = manager = inception = None
+    scale = scale_raw = None
+
+    try:
+        r = requests.get(DANJUAN_URL.format(code=code),
+                         headers={"User-Agent": UA}, timeout=TIMEOUT)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        data = r.json().get("data") or {}
+        if not data.get("fd_code"):
+            raise RuntimeError("暂不销售 / empty data")
+        company = data.get("keeper_name")
+        manager = data.get("manager_name")
+        scale, scale_raw = parse_scale(data.get("totshare"))
+        d0 = str(data.get("found_date") or "")
+        if re.match(r"\d{4}-\d{2}-\d{2}", d0):
+            inception = d0
+    except Exception:
+        pass          # 雪球没有就落到东财，不直接失败
+
+    if scale is None:
+        scale, scale_raw, _asof = fetch_scale_em(code)   # 可能抛 ScaleNoData/Error
+
+    return (company, manager, scale, scale_raw, inception)
 
 
 # 线程本地 F10Session（避免每次创建，复用同一 cookie）
@@ -541,8 +611,11 @@ def run_scale_concurrent(codes: list, conn, progress: Progress,
                     # 留给下次启动时从进度判断时由 DB 兜底重跑
                 except Exception as exc:
                     stat["规模失败"] += 1
-                    # 失败也 mark，避免每次启动重试已知失败（如「(后端)」份额无 danjuanfunds 数据）
-                    progress.mark(f"s:{code}")
+                    # 只有「两个源都明确没有」才记进度。请求失败（网络/限流/解析）
+                    # **绝不能**记 —— 那会让缺口永久跳过，和 2026-09-10 那次持仓
+                    # 丢失是同一个反模式（当时 7855 只基金的规模就是这么丢的）。
+                    if isinstance(exc, ScaleNoData):
+                        progress.mark(f"s:{code}")
                     if stat["规模失败"] <= 20:
                         print(f"    [SCALE] {code}: {type(exc).__name__} {str(exc)[:120]}")
                 done += 1
@@ -710,6 +783,199 @@ def run_holdings_concurrent(codes: list, conn, progress: Progress,
 
 
 # ---------------------------------------------------------------------------
+# 补全缺失的基金公司（funds.fund_company）
+# ---------------------------------------------------------------------------
+# 公司名来自雪球 keeper_name，但雪球对场内份额、后端收费份额、部分货币基金
+# 返回「该基金暂不销售」，不给 keeper_name，于是公司名为空 —— 实测 6981 只
+# （占 25%），里面还有天弘余额宝 000198、汇添富现金宝 000330 这类大基金。
+# 这些基金因此在公司页里看不到。
+#
+# 东财有现成的「公司 → 旗下基金」名录，补齐成本极低：
+#   1) GET fund.eastmoney.com/js/jjjz_gs.js  → [公司代码, 短名] 列表（215 家）
+#   2) 逐家 GET /company/<公司代码>.html      → 页内 class="code">(\d{6})</a>
+#      即该公司旗下**全部**基金代码（华夏 1010 只、天弘 568 只，均无分页）
+#      <title> 是「<法定全名>主页 _ 天天基金网」，比短名完整，优先采用
+# 合计 216 次请求、约 2 分钟（受全局限速器约束）。结果缓存 7 天。
+#
+# 只填空值、不覆盖已有的公司名（雪球数据不动），因此是非破坏性的。
+# ---------------------------------------------------------------------------
+COMPANY_JS_URL   = "https://fund.eastmoney.com/js/jjjz_gs.js"
+COMPANY_PAGE_URL = "https://fund.eastmoney.com/company/{cid}.html"
+COMPANY_CODE_RE  = re.compile(r'class="code">(\d{6})</a>')
+COMPANY_TITLE_RE = re.compile(r"<title>(.*?)主页\s*_\s*天天基金网\s*</title>", re.S)
+COMPANY_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".fund_company_map.json")
+COMPANY_CACHE_DAYS = 7
+
+SQL_FILL_COMPANY = """
+UPDATE funds SET fund_company = v.company, updated_at = NOW()
+FROM (VALUES %s) AS v(company, code)
+WHERE funds.fund_code = v.code
+  AND (funds.fund_company IS NULL OR funds.fund_company = '')
+"""
+
+
+def fetch_company_map(refresh: bool = False, verbose: bool = True) -> dict:
+    """东财「基金代码 → 公司法定全名」映射（带 7 天磁盘缓存）。
+
+    东财短名（「富国基金」）和库里的雪球法定名（「富国基金管理有限公司」）
+    经 src/lib/company.ts 的 canonicalCompany() 归一后是同一个分组键，
+    所以直接写库不会把一家公司拆成两家。
+    """
+    if not refresh and os.path.exists(COMPANY_CACHE_FILE):
+        try:
+            with open(COMPANY_CACHE_FILE, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            age = time.time() - cached.get("ts", 0)
+            if age < COMPANY_CACHE_DAYS * 86400 and cached.get("map"):
+                if verbose:
+                    print(f"  公司映射用缓存（{len(cached['map'])} 条，"
+                          f"{age / 86400:.1f} 天前抓的）")
+                return cached["map"]
+        except (OSError, ValueError):
+            pass  # 缓存坏了就当没有，重新抓
+
+    sess = requests.Session()
+    sess.headers.update({"User-Agent": UA, "Referer": "https://fund.eastmoney.com/"})
+
+    REQUEST_LIMITER.wait()
+    r = sess.get(COMPANY_JS_URL, timeout=TIMEOUT)
+    r.raise_for_status()
+    r.encoding = "utf-8"        # 东财 js 不声明 charset，不显式设会读出乱码
+    txt = r.text
+    companies = json.loads(txt[txt.index("["): txt.rindex("]") + 1])
+    if verbose:
+        print(f"  公司名录 {len(companies)} 家（东财 jjjz_gs.js）")
+
+    mapping: dict = {}
+    failed = []
+    for cid, short in companies:
+        REQUEST_LIMITER.wait()
+        try:
+            rr = sess.get(COMPANY_PAGE_URL.format(cid=cid), timeout=TIMEOUT)
+            rr.raise_for_status()
+            rr.encoding = "utf-8"
+            html = rr.text
+        except Exception as exc:                       # 单家失败不影响整体
+            failed.append((short, f"{type(exc).__name__}: {exc}"[:70]))
+            continue
+        m = COMPANY_TITLE_RE.search(html)
+        name = (m.group(1) if m else short).replace("\u3000", "").strip()
+        for code in COMPANY_CODE_RE.findall(html):
+            mapping.setdefault(code, name)
+
+    if verbose:
+        print(f"  解析到 {len(mapping)} 只基金的公司归属"
+              + (f"，{len(failed)} 家公司页抓取失败" if failed else "，公司页全部成功"))
+        for short, err in failed[:5]:
+            print(f"    [!] {short}: {err}")
+
+    try:
+        with open(COMPANY_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"ts": time.time(), "map": mapping}, f, ensure_ascii=False)
+    except OSError:
+        pass
+    return mapping
+
+
+def fill_missing_companies(dry_run: bool = False, refresh: bool = False) -> int:
+    """把 funds 表里公司名为空的基金补上公司名。返回补全行数。"""
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT fund_code, fund_name, fund_type FROM funds
+                       WHERE fund_company IS NULL OR fund_company = ''""")
+        missing = cur.fetchall()
+        print(f"  公司名为空的基金: {len(missing)} 只")
+        if not missing:
+            print("  无需补全")
+            return 0
+
+        mapping = fetch_company_map(refresh=refresh)
+        rows = [(mapping[code], code) for code, _, _ in missing if code in mapping]
+        uncovered = [code for code, _, _ in missing if code not in mapping]
+        print(f"  东财名录命中 {len(rows)} 只，未命中 {len(uncovered)} 只")
+        if uncovered[:5]:
+            print(f"    未命中示例: {uncovered[:5]}")
+
+        # 归属公司分布（补全后各公司新增多少只）
+        from collections import Counter
+        dist = Counter(mapping[code] for code, _, _ in missing if code in mapping)
+        print("  新增归属最多的公司:")
+        for name, cnt in dist.most_common(8):
+            print(f"    {cnt:5d} 只  {name}")
+
+        if dry_run:
+            print("  [DRY-RUN] 未写库")
+            return 0
+        if not rows:
+            return 0
+
+        execute_values(cur, SQL_FILL_COMPANY, rows, page_size=1000)
+        conn.commit()
+        print(f"  已补全 {len(rows)} 只基金的公司名")
+        return len(rows)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 补全缺失的规模（funds.scale）
+# ---------------------------------------------------------------------------
+# 与 --fill-company 同一个根因：雪球对场内/停售份额返回「暂不销售」，
+# 拿不到 totshare → 27~28% 的基金 scale 为空，公司页的合计规模因此被低估。
+# 本模式对每只基金走 fetch_scale_http()（雪球为主、东财 F10 备源）。
+#
+# 幂等性来自 DB 本身（`scale IS NULL` 是唯一判据），**刻意不碰
+# .funds_progress.json**：Progress.bind_scope() 遇到不同 scope 会清空整个进度
+# 文件，而本模式没有名录 scope。
+# ---------------------------------------------------------------------------
+class NullProgress:
+    """不落盘的 Progress 替身（供 --fill-scale 复用 run_scale_concurrent）。"""
+
+    def has(self, key: str) -> bool:
+        return False
+
+    def mark(self, key: str) -> None:
+        pass
+
+    def save(self, force: bool = False) -> None:
+        pass
+
+
+def fill_missing_scales(workers: int, limit: int = None,
+                        dry_run: bool = False) -> int:
+    """把 scale 为空的基金补上规模。返回补全只数。"""
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT fund_code FROM funds WHERE scale IS NULL "
+                    "ORDER BY fund_code")
+        codes = [r[0] for r in cur.fetchall()]
+        print(f"  规模为空的基金: {len(codes)} 只")
+        if not codes:
+            print("  无需补全")
+            return 0
+        if limit:
+            codes = codes[:limit]
+            print(f"  --limit 生效，本次处理 {len(codes)} 只")
+        if dry_run:
+            print(f"  [DRY-RUN] 将抓 {len(codes)} 只，示例 {codes[:5]}")
+            return 0
+
+        stat = {"规模": 0, "规模失败": 0}
+        run_scale_concurrent(codes, conn, NullProgress(), workers, stat)
+
+        cur.execute("SELECT COUNT(*) FROM funds WHERE scale IS NULL")
+        left = cur.fetchone()[0]
+        print(f"  补全结束: 成功 {stat['规模']} 失败 {stat['规模失败']}；"
+              f"库中仍缺规模 {left} 只")
+        return stat["规模"]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
@@ -729,6 +995,14 @@ def main() -> int:
                     help="并发线程数（默认 8）。设 1 退化为串行模式（兼容）")
     ap.add_argument("--reset-progress", action="store_true",
                     help="忽略现有进度文件，从零开始")
+    ap.add_argument("--fill-company", action="store_true",
+                    help="只补全 funds.fund_company 为空的基金（东财公司名录，216 次请求）"
+                         "，不抓名录/规模/持仓")
+    ap.add_argument("--refresh-company-map", action="store_true",
+                    help="配合 --fill-company：忽略公司映射的 7 天缓存，强制重抓")
+    ap.add_argument("--fill-scale", action="store_true",
+                    help="只补全 funds.scale 为空的基金（雪球为主 + 东财 F10 备源），"
+                         "不抓名录/持仓")
     args = ap.parse_args()
 
     # 全局请求间隔（东财频控防线，见 RateLimiter 与文件头说明）
@@ -736,6 +1010,20 @@ def main() -> int:
     if args.request_interval < 0.5:
         print(f"  [WARN] --request-interval={args.request_interval}s < 0.5s，"
               f"大概率触发东财 HTTP 514 限流导致数据丢失")
+
+    # ── 0. 补全公司名（独立模式，不碰名录/规模/持仓）────────────────────────
+    if args.fill_company:
+        print("── 补全 funds.fund_company（东财公司名录）─────────────────────────────")
+        n = fill_missing_companies(dry_run=args.dry_run,
+                                   refresh=args.refresh_company_map)
+        return 0 if n >= 0 else 1
+
+    # ── 0b. 补全规模（独立模式）───────────────────────────────────────────────
+    if args.fill_scale:
+        print("── 补全 funds.scale（雪球 + 东财 F10 备源）────────────────────────────")
+        fill_missing_scales(workers=args.workers, limit=args.limit,
+                            dry_run=args.dry_run)
+        return 0
 
     print("── 抓取公募基金名录 / 规模 / 持仓 ─────────────────────────────────────")
 
