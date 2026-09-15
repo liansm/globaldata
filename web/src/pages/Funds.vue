@@ -83,6 +83,10 @@ function goDetail(row: FundSummary) {
   router.push(`/fund/${row.fundCode}`)
 }
 
+function goCompany(key: string) {
+  router.push(`/company/${encodeURIComponent(key)}`)
+}
+
 // ── Formatters ──────────────────────────────────────────────────────────────
 function fmtScale(v: number | null) {
   if (v == null) return '—'
@@ -186,7 +190,17 @@ function typeTagColor(t: string | null): 'info' | 'warning' | 'danger' | 'primar
         </template>
       </el-table-column>
       <el-table-column prop="fundCompany" label="基金公司" min-width="150" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.fundCompany ?? '—' }}</template>
+        <template #default="{ row }">
+          <!-- 显示规范化短名而非库里的原始写法：原始值同一家公司有
+               「鹏华基金公司 / 鹏华基金管理公司」等多种拼法，列表里看起来像脏数据 -->
+          <span
+            v-if="row.companyKey"
+            class="company-link"
+            :title="row.fundCompany ? `原始名称：${row.fundCompany}` : ''"
+            @click.stop="goCompany(row.companyKey)"
+          >{{ row.companyKey }}</span>
+          <span v-else>{{ row.fundCompany ?? '—' }}</span>
+        </template>
       </el-table-column>
       <el-table-column prop="fundManager" label="基金经理" min-width="110" show-overflow-tooltip>
         <template #default="{ row }">{{ row.fundManager ?? '—' }}</template>
@@ -287,6 +301,15 @@ h1 {
 .fund-name {
   font-weight: 500;
   color: #1a1a2e;
+}
+
+.company-link {
+  color: #409eff;
+  cursor: pointer;
+}
+
+.company-link:hover {
+  text-decoration: underline;
 }
 
 .scale-value {

@@ -5,6 +5,7 @@ import { commoditiesRoutes } from './routes/commodities'
 import { marketsRoutes } from './routes/markets'
 import { cryptoRoutes } from './routes/crypto'
 import { fundsRoutes } from './routes/funds'
+import { fundCompaniesRoutes } from './routes/fundCompanies'
 
 const app = Fastify({
   logger: {
@@ -25,6 +26,7 @@ app.register(commoditiesRoutes)
 app.register(marketsRoutes)
 app.register(cryptoRoutes)
 app.register(fundsRoutes)
+app.register(fundCompaniesRoutes)
 
 // Health check
 app.get('/health', async () => ({
