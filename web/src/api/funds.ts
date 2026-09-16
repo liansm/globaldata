@@ -1,5 +1,10 @@
 import axios from 'axios'
-import type { FundListResp, FundTypeCount, FundDetailResp } from '@/types/fund'
+import type {
+  FundListResp,
+  FundTypeCount,
+  FundDetailResp,
+  FundNavResp,
+} from '@/types/fund'
 
 const http = axios.create({
   baseURL: '/api',
@@ -33,5 +38,21 @@ export function fetchFundTypes(): Promise<FundTypeCount[]> {
 export function fetchFundDetail(code: string, date?: string): Promise<FundDetailResp> {
   return http
     .get<FundDetailResp>(`/funds/${code}`, { params: date ? { date } : {} })
+    .then(r => r.data)
+}
+
+/** 净值序列（日线，升序）。days=0 表示取全部历史 */
+export function fetchFundNav(
+  code: string,
+  options: { days?: number; from?: string; to?: string } = {},
+): Promise<FundNavResp> {
+  return http
+    .get<FundNavResp>(`/funds/${code}/nav`, {
+      params: {
+        days: options.days ?? 365,
+        from: options.from || undefined,
+        to: options.to || undefined,
+      },
+    })
     .then(r => r.data)
 }

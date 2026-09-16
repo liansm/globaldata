@@ -1,3 +1,6 @@
+/** 净值口径：'money' = 货币基金，latestNav 是万份收益(元)、latestAccNav 是七日年化(%) */
+export type FundNavKind = 'unit' | 'money' | null
+
 export interface FundSummary {
   fundCode: string
   fundName: string
@@ -9,6 +12,11 @@ export interface FundSummary {
   scale: number | null
   scaleRaw: string | null
   inceptionDate: string | null
+  latestNav: number | null
+  latestAccNav: number | null
+  latestNavDate: string | null
+  latestDailyReturn: number | null
+  navKind: FundNavKind
 }
 
 export interface FundListResp {
@@ -16,6 +24,21 @@ export interface FundListResp {
   page: number
   pageSize: number
   items: FundSummary[]
+}
+
+export interface FundNavPoint {
+  date: string
+  nav: number | null
+  accNav: number | null
+  dailyReturn: number | null
+}
+
+export interface FundNavResp {
+  fundCode: string
+  navKind: FundNavKind
+  latestNavDate: string | null
+  count: number
+  items: FundNavPoint[]
 }
 
 export interface FundTypeCount {
@@ -44,6 +67,11 @@ export interface FundDetailResp {
   scale: number | null
   scaleRaw: string | null
   inceptionDate: string | null
+  latestNav: number | null
+  latestAccNav: number | null
+  latestNavDate: string | null
+  latestDailyReturn: number | null
+  navKind: FundNavKind
   updatedAt: string
   reportDates: string[]
   holdings: FundHolding[]

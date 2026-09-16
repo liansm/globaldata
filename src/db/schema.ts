@@ -179,9 +179,39 @@ export const funds = pgTable('funds', {
   scaleRaw:        varchar('scale_raw',        { length: 50  }),   // 原文，如 '39.38亿'
   inceptionDate:   date('inception_date'),
   scaleUpdatedAt:  timestamp('scale_updated_at', { withTimezone: true }),
+  // 最新净值快照（由 fetch_fund_nav.py 维护）
+  latestNav:        numeric('latest_nav',         { precision: 14, scale: 4 }),
+  latestAccNav:     numeric('latest_acc_nav',     { precision: 14, scale: 4 }),
+  latestNavDate:    date('latest_nav_date'),
+  latestDailyReturn:numeric('latest_daily_return',{ precision: 10, scale: 4 }),
+  // 净值口径：'unit' = 单位净值/累计净值；'money' = 货币基金（万份收益 元 / 七日年化 %）
+  navKind:          varchar('nav_kind',           { length: 10  }),
+  navUpdatedAt:     timestamp('nav_updated_at',   { withTimezone: true }),
   updatedAt:       timestamp('updated_at',       { withTimezone: true })
                      .default(sql`NOW()`).notNull(),
 })
+
+// --------------------------------------------------------------------------
+// fund_nav — 基金净值日线序列（全历史，份额口径）
+// Populated by fetch_fund_nav.py:
+//   回填 = pingzhongdata/<code>.js（1 请求拿全历史）
+//   增量 = 天天基金排行榜批量接口（4 请求拿全市场当日净值）
+// ⚠ nav_kind='money' 时列含义不同：unit_nav = 万份收益(元)、acc_nav = 七日年化(%)
+//   —— 货币基金没有「单位净值」，别和普通基金混算
+// --------------------------------------------------------------------------
+export const fundNav = pgTable('fund_nav', {
+  id:          bigserial('id', { mode: 'number' }).primaryKey(),
+  fundCode:    varchar('fund_code',   { length: 12 }).notNull(),
+  navDate:     date('nav_date').notNull(),
+  unitNav:     numeric('unit_nav',     { precision: 14, scale: 4 }),  // 单位净值 / 万份收益
+  accNav:      numeric('acc_nav',      { precision: 14, scale: 4 }),  // 累计净值 / 七日年化
+  dailyReturn: numeric('daily_return', { precision: 10, scale: 4 }),  // 日增长率 %
+  navKind:     varchar('nav_kind',     { length: 10 }).notNull().default('unit'),
+}, (t) => [
+  unique('fund_nav_uniq').on(t.fundCode, t.navDate),
+  index('idx_fund_nav_fund_date').on(t.fundCode, t.navDate),
+  index('idx_fund_nav_date').on(t.navDate),
+])
 
 // --------------------------------------------------------------------------
 // fund_holdings — quarterly portfolio holdings (季报前十大重仓)
