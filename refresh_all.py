@@ -38,10 +38,14 @@ FETCH_SCRIPTS = [
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
     ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
+    ("fetch_fund_nav.py",          "公募基金最新净值快照（天天基金排行榜批量，4 个请求拿全市场）"),
     # 注意：fetch_funds.py 不接入本脚本，单独手动运行（数据量大、耗时长）
     #   python fetch_funds.py --types 股票型,混合型,指数型   （权益类增量）
     #   python fetch_funds.py --years-back 5                （回补近5年持仓）
     #   python fetch_funds.py --refresh-scale --full        （强制全量重写）
+    # fetch_fund_nav.py 同理：日常只有上面那一行（秒级）；下面两个模式耗时长，手动跑
+    #   python fetch_fund_nav.py --gap                      （逐只补 L1 覆盖不到的非 ETF/定开等）
+    #   python fetch_fund_nav.py --history                  （全历史回填，约 2 小时，可断点续跑）
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -202,14 +206,29 @@ STATUS_QUERIES = [
         "optional": True,
     },
     {
-        "title": "funds  (公募基金名录+规模)",
+        "title": "funds  (公募基金名录+规模+净值快照)",
         "sql": """
             SELECT COUNT(*) AS total,
                    COUNT(scale) AS with_scale,
+                   COUNT(latest_nav) AS with_nav,
+                   MAX(latest_nav_date)::text AS nav_date,
                    MAX(scale_updated_at AT TIME ZONE 'Asia/Shanghai')::date::text AS scale_updated
             FROM funds
         """,
-        "cols": ["total", "with_scale", "scale_updated"],
+        "cols": ["total", "with_scale", "with_nav", "nav_date", "scale_updated"],
+        "optional": True,
+    },
+    {
+        "title": "fund_nav  (基金净值日线，全历史)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT fund_code) AS funds,
+                   COUNT(daily_return) AS with_chg,
+                   MIN(nav_date)::text AS earliest,
+                   MAX(nav_date)::text AS latest
+            FROM fund_nav
+        """,
+        "cols": ["rows", "funds", "with_chg", "earliest", "latest"],
         "optional": True,
     },
     {
@@ -339,6 +358,7 @@ def run_fetches():
 # 按依赖顺序 TRUNCATE（先子表再父表，CASCADE 处理外键）
 CLEAR_TABLES = [
     "fetch_log",
+    "fund_nav",
     "fund_holdings",
     "funds",
     "crypto_prices",

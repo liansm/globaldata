@@ -8,6 +8,8 @@ data/
 
 # ── 脚本运行时状态（断点续跑进度 + 备份，不提交）───────────
 .funds_progress.json*
+# 基金净值的断点续跑进度（--history / --gap）
+.fund_nav_progress.json*
 # 基金代码 → 公司名映射的 7 天缓存（--fill-company）
 .fund_company_map.json
 # 一次性生成的缺口清单（可用 SQL 随时重建，很快过期）

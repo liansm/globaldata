@@ -99,6 +99,17 @@ function fmtDate(d: string | null) {
   return d ? d.slice(0, 10) : '—'
 }
 
+function fmtNav(v: number | null) {
+  return v == null
+    ? '—'
+    : v.toLocaleString('zh-CN', { minimumFractionDigits: 4, maximumFractionDigits: 4 })
+}
+
+function fmtPct(v: number | null) {
+  if (v == null) return '—'
+  return (v > 0 ? '+' : '') + v.toFixed(2) + '%'
+}
+
 function typeTagColor(t: string | null): 'info' | 'warning' | 'danger' | 'primary' | 'success' {
   if (!t) return 'info'
   if (t.includes('股票')) return 'danger'
@@ -210,6 +221,23 @@ function typeTagColor(t: string | null): 'info' | 'warning' | 'danger' | 'primar
           <span class="scale-value">{{ fmtScale(row.scale) }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="单位净值" width="100" align="right">
+        <template #default="{ row }">
+          <!-- 货币基金没有单位净值，这一列放万份收益(元) -->
+          <span class="nav-value" :title="row.navKind === 'money' ? '万份收益(元)' : '单位净值'">
+            {{ row.latestNav != null ? fmtNav(row.latestNav) : '—' }}
+          </span>
+        </template>
+      </el-table-column>
+      <el-table-column label="日涨跌" width="90" align="right">
+        <template #default="{ row }">
+          <span
+            v-if="row.latestDailyReturn != null"
+            :class="row.latestDailyReturn > 0 ? 'up' : row.latestDailyReturn < 0 ? 'down' : ''"
+          >{{ fmtPct(row.latestDailyReturn) }}</span>
+          <span v-else class="nav-dash">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="成立日期" width="110" align="center">
         <template #default="{ row }">{{ fmtDate(row.inceptionDate) }}</template>
       </el-table-column>
@@ -317,6 +345,18 @@ h1 {
   font-weight: 600;
   color: #1a1a2e;
 }
+
+.nav-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.nav-dash { color: #ccc; }
+
+/* 涨红跌绿（中式约定） */
+.up   { color: #e8534a; font-variant-numeric: tabular-nums; }
+.down { color: #26a17b; font-variant-numeric: tabular-nums; }
 
 /* ── 分页 ───────────────────────────────────────────────────────────────── */
 .pagination-wrap {
