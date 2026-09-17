@@ -36,15 +36,31 @@ const reportDate = ref<string>('')
 // ── 净值 ────────────────────────────────────────────────────────────────────
 const navPoints  = ref<FundNavPoint[]>([])
 const navLoading = ref(false)
-const navDays    = ref<number>(365)   // 0 = 全部历史
+
+/** 区间：天数（0 = 全部历史）或 'ytd'（今年来，按自然年取 1 月 1 日起） */
+type NavRange = number | 'ytd'
+const navRange = ref<NavRange>(365)
 
 /** 货币基金口径不同：nav=万份收益(元)、accNav=七日年化(%)，没有「单位净值」 */
 const isMoney = computed(() => detail.value?.navKind === 'money')
 
+/**
+ * 「今年来」的起点 = 本自然年 1 月 1 日（与 MarketDetail.vue / Detail.vue 的 ytdFrom 同写法规约）。
+ * 刻意**不用** latestNavDate 的年份：库里有已终止/停更的基金，快照停在若干年前，
+ * 按数据年算会把 2024 年的曲线标成「今年来」——那是粉饰。按系统年算，
+ * 这类基金只会得到一个空图，是真实的「今年没数据」。
+ * （1 月初数据尚未更新时也会短暂为空，同样属实。）
+ */
+function ytdFrom() {
+  return `${new Date().getFullYear()}-01-01`
+}
+
 async function loadNav(code: string) {
   navLoading.value = true
   try {
-    const resp = await fetchFundNav(code, { days: navDays.value })
+    const resp = navRange.value === 'ytd'
+      ? await fetchFundNav(code, { from: ytdFrom() })
+      : await fetchFundNav(code, { days: navRange.value })
     navPoints.value = resp.items
   } catch {
     navPoints.value = []
@@ -52,6 +68,18 @@ async function loadNav(code: string) {
     navLoading.value = false
   }
 }
+
+/** 空图提示：选「今年来」但该基金今年没有净值时，把最新数据日说清楚（多为已终止/停更） */
+const emptyNavHint = computed(() => {
+  if (navRange.value !== 'ytd') {
+    return '暂无净值数据（该基金未抓取到净值，或未在所选区间内）'
+  }
+  const y = ytdFrom().slice(0, 4)
+  const d = detail.value?.latestNavDate
+  return d
+    ? `该基金 ${y} 年暂无净值（最新数据为 ${d.slice(0, 10)}）`
+    : `该基金 ${y} 年暂无净值数据`
+})
 
 async function load(code: string) {
   loading.value = true
@@ -83,7 +111,7 @@ watch(reportDate, () => {
   if (code) load(code)
 })
 
-watch(navDays, () => {
+watch(navRange, () => {
   const code = route.params.code as string
   if (code) loadNav(code)
 })
@@ -336,7 +364,9 @@ function fmtPct(v: number | null) {
               （数据至 {{ fmtDate(detail.latestNavDate) }}）
             </span>
           </h2>
-          <el-select v-model="navDays" size="small" style="width: 120px">
+          <!-- 「今年来」放首位，与 MarketDetail.vue / Detail.vue 的区间选择器一致 -->
+          <el-select v-model="navRange" size="small" style="width: 120px">
+            <el-option value="ytd" label="今年来" />
             <el-option :value="90" label="近 3 月" />
             <el-option :value="365" label="近 1 年" />
             <el-option :value="1095" label="近 3 年" />
@@ -358,7 +388,7 @@ function fmtPct(v: number | null) {
 
         <el-empty
           v-else-if="!navPoints.length"
-          description="暂无净值数据（该基金未抓取到净值，或未在所选区间内）"
+          :description="emptyNavHint"
         />
 
         <div v-else class="chart-card">
