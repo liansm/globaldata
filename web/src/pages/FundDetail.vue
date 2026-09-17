@@ -11,9 +11,9 @@ import {
   LegendComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { fetchFundDetail, fetchFundNav } from '@/api/funds'
+import { fetchFundDetail, fetchFundNav, fetchFundYearly } from '@/api/funds'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
-import type { FundDetailResp, FundHolding, FundNavPoint } from '@/types/fund'
+import type { FundDetailResp, FundHolding, FundNavPoint, FundYearlyItem } from '@/types/fund'
 
 use([
   CanvasRenderer,
@@ -43,6 +43,13 @@ const navRange = ref<NavRange>(365)
 
 /** 货币基金口径不同：nav=万份收益(元)、accNav=七日年化(%)，没有「单位净值」 */
 const isMoney = computed(() => detail.value?.navKind === 'money')
+
+/** 列名随口径切换（图表 legend 与业绩表格共用） */
+const navLabel = computed(() => (isMoney.value ? '万份收益' : '单位净值'))
+const accLabel = computed(() => (isMoney.value ? '七日年化' : '累计净值'))
+/** 表格列头带上单位，值只给数字 */
+const navColLabel = computed(() => (isMoney.value ? '万份收益 (元)' : '单位净值'))
+const accColLabel = computed(() => (isMoney.value ? '七日年化 (%)' : '累计净值'))
 
 /**
  * 「今年来」的起点 = 本自然年 1 月 1 日（与 MarketDetail.vue / Detail.vue 的 ytdFrom 同写法规约）。
@@ -81,6 +88,81 @@ const emptyNavHint = computed(() => {
     : `该基金 ${y} 年暂无净值数据`
 })
 
+// ── 基金业绩（近期净值 / 历史业绩） ─────────────────────────────────────────
+// 与上面的走势图相互独立：走势图按所选区间取数，这里固定取「最近 N 条」和全年度，
+// 两者不共用 navPoints。
+const SUMMARY_ROWS  = 10   // 概况区默认展示条数（净值 / 年度都取 10）
+const DIALOG_PAGE   = 50   // 「全部净值」每页条数
+
+const perfTab = ref<'nav' | 'yearly'>('nav')
+
+const recentNav      = ref<FundNavPoint[]>([])
+const recentNavTotal = ref(0)
+
+const navDlgVisible = ref(false)
+const navDlgLoading = ref(false)
+const navDlgItems   = ref<FundNavPoint[]>([])
+const navDlgTotal   = ref(0)
+const navPage       = ref(1)
+const navPageSize   = ref(DIALOG_PAGE)
+
+const yearly = ref<FundYearlyItem[]>([])
+const yearDlgVisible = ref(false)
+
+async function loadPerf(code: string) {
+  try {
+    const [navResp, yearResp] = await Promise.all([
+      // days=0 → 全历史，配合 order=desc + limit 拿最近 N 条，total 拿到总条数
+      fetchFundNav(code, { days: 0, limit: SUMMARY_ROWS, order: 'desc' }),
+      fetchFundYearly(code),
+    ])
+    recentNav.value      = navResp.items
+    recentNavTotal.value = navResp.total
+    yearly.value         = yearResp.items
+  } catch {
+    recentNav.value = []
+    recentNavTotal.value = 0
+    yearly.value = []
+  }
+}
+
+async function loadNavDialog() {
+  const code = route.params.code as string
+  if (!code) return
+  navDlgLoading.value = true
+  try {
+    const resp = await fetchFundNav(code, {
+      days: 0,
+      limit: navPageSize.value,
+      offset: (navPage.value - 1) * navPageSize.value,
+      order: 'desc',
+    })
+    navDlgItems.value = resp.items
+    navDlgTotal.value = resp.total
+  } catch {
+    navDlgItems.value = []
+    navDlgTotal.value = 0
+  } finally {
+    navDlgLoading.value = false
+  }
+}
+
+function openNavDialog() {
+  navPage.value = 1
+  navDlgVisible.value = true
+  loadNavDialog()
+}
+
+function onNavPageChange() {
+  loadNavDialog()
+}
+
+function onNavSizeChange(size: number) {
+  navPageSize.value = size
+  navPage.value = 1
+  loadNavDialog()
+}
+
 async function load(code: string) {
   loading.value = true
   error.value = ''
@@ -91,6 +173,7 @@ async function load(code: string) {
       reportDate.value = detail.value.reportDates[0]
     }
     await loadNav(code)
+    await loadPerf(code)
   } catch (e: any) {
     const msg = e?.response?.data?.error
     error.value = msg ?? '加载失败，请检查后端服务是否启动'
@@ -148,8 +231,8 @@ const navChartOption = computed(() => {
   if (!pts.length) return {}
 
   const money = isMoney.value
-  const navName = money ? '万份收益' : '单位净值'
-  const accName = money ? '七日年化' : '累计净值'
+  const navName = navLabel.value
+  const accName = accLabel.value
 
   const navs = pts.map(p => p.nav)
   const accs = pts.map(p => p.accNav)
@@ -268,6 +351,20 @@ function fmtPct(v: number | null) {
   if (v == null) return '—'
   return (v > 0 ? '+' : '') + v.toFixed(2) + '%'
 }
+
+/** 涨红跌绿（中式约定）。0 与 null 都返回空串 */
+function pctClass(v: number | null | undefined) {
+  if (v == null || v === 0) return ''
+  return v > 0 ? 'up' : 'down'
+}
+
+/** 「全部净值」弹窗当前页覆盖的行号范围，如 51–100 / 共 6008 */
+const navRangeText = computed(() => {
+  if (!navDlgTotal.value) return '0 条'
+  const from = (navPage.value - 1) * navPageSize.value + 1
+  const to   = Math.min(navPage.value * navPageSize.value, navDlgTotal.value)
+  return `${from}–${to} / 共 ${navDlgTotal.value.toLocaleString('zh-CN')} 条`
+})
 </script>
 
 <template>
@@ -300,6 +397,23 @@ function fmtPct(v: number | null) {
         </div>
 
         <div class="meta-stats">
+          <!-- 收益率排在最前：这是看一只基金最先要的两个数 -->
+          <div
+            class="stat"
+            v-if="detail.ytdReturn != null"
+            title="按累计净值计算（含分红再投），基数取上一年最后一个披露日的累计净值"
+          >
+            <span class="stat-label">今年来</span>
+            <span class="stat-value" :class="pctClass(detail.ytdReturn)">{{ fmtPct(detail.ytdReturn) }}</span>
+          </div>
+          <div
+            class="stat"
+            v-if="detail.totalReturn != null"
+            title="成立以来累计收益，按累计净值计算（含分红再投）"
+          >
+            <span class="stat-label">累计收益</span>
+            <span class="stat-value" :class="pctClass(detail.totalReturn)">{{ fmtPct(detail.totalReturn) }}</span>
+          </div>
           <div class="stat" v-if="detail.latestNav != null">
             <span class="stat-label">{{ isMoney ? '万份收益' : '单位净值' }}</span>
             <span class="stat-value">
@@ -394,6 +508,154 @@ function fmtPct(v: number | null) {
         <div v-else class="chart-card">
           <AnnotatedLineChart :option="navChartOption" autoresize style="width:100%;height:380px" />
         </div>
+      </section>
+
+      <!-- 基金业绩：近期净值 / 历史业绩 -->
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">基金业绩</h2>
+        </div>
+
+        <el-tabs v-model="perfTab" class="perf-tabs">
+          <!-- ① 近期净值：默认最近 10 条，点「查看全部」进分页 -->
+          <el-tab-pane label="近期净值" name="nav">
+            <div class="perf-bar">
+              <span class="perf-hint">
+                共 {{ recentNavTotal.toLocaleString('zh-CN') }} 个披露日，此处显示最近 {{ recentNav.length }} 条
+              </span>
+              <el-button
+                v-if="recentNavTotal > recentNav.length"
+                text
+                type="primary"
+                size="small"
+                @click="openNavDialog"
+              >查看全部 →</el-button>
+            </div>
+
+            <el-empty
+              v-if="!recentNav.length"
+              :description="isMoney ? '暂无万份收益数据' : '暂无净值数据'"
+            />
+            <el-table
+              v-else
+              :data="recentNav"
+              class="perf-table"
+              :header-cell-style="{ background: '#fafbfc', color: '#555', fontWeight: 600 }"
+            >
+              <el-table-column prop="date" label="净值日期" width="130" />
+              <el-table-column :label="navColLabel" align="right" min-width="130">
+                <template #default="{ row }">{{ fmtNav(row.nav) }}</template>
+              </el-table-column>
+              <el-table-column :label="accColLabel" align="right" min-width="130">
+                <template #default="{ row }">{{ fmtNav(row.accNav) }}</template>
+              </el-table-column>
+              <el-table-column label="日涨跌" align="right" min-width="110">
+                <template #default="{ row }">
+                  <span :class="pctClass(row.dailyReturn)">{{ fmtPct(row.dailyReturn) }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+
+          <!-- ② 历史业绩：每年涨跌幅 -->
+          <el-tab-pane label="历史业绩" name="yearly">
+            <p v-if="isMoney" class="nav-caveat">
+              货币基金没有净值涨跌幅概念（单位净值列存的是万份收益、累计净值列存的是七日年化），
+              故不列年度业绩，「近期净值」页可看万份收益与七日年化。
+            </p>
+            <template v-else>
+              <div class="perf-bar">
+                <span class="perf-hint">
+                  共 {{ yearly.length }} 个年度，此处显示最近 {{ Math.min(yearly.length, SUMMARY_ROWS) }} 个
+                </span>
+                <el-button
+                  v-if="yearly.length > SUMMARY_ROWS"
+                  text
+                  type="primary"
+                  size="small"
+                  @click="yearDlgVisible = true"
+                >查看全部 →</el-button>
+              </div>
+
+              <el-empty v-if="!yearly.length" description="暂无年度业绩数据" />
+              <el-table
+                v-else
+                :data="yearly.slice(0, SUMMARY_ROWS)"
+                class="perf-table"
+                :header-cell-style="{ background: '#fafbfc', color: '#555', fontWeight: 600 }"
+              >
+                <el-table-column label="年份" width="130">
+                  <template #default="{ row }">{{ row.year }} 年</template>
+                </el-table-column>
+                <el-table-column label="年度涨跌" align="right" min-width="130">
+                  <template #default="{ row }">
+                    <span :class="pctClass(row.ret)">{{ fmtPct(row.ret) }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </template>
+          </el-tab-pane>
+        </el-tabs>
+
+        <p class="data-note" v-if="!isMoney">
+          年度涨跌幅按<b>累计净值</b>计算（含分红再投），基数为上一年最后一个披露日的累计净值；
+          基金成立当年的基数取其首个累计净值，故首个年度为「成立以来」而非整年。
+        </p>
+
+        <!-- 全部净值（分页） -->
+        <el-dialog v-model="navDlgVisible" title="全部净值" width="640px" top="6vh">
+          <div class="perf-bar">
+            <span class="perf-hint">显示 {{ navRangeText }}</span>
+            <span class="perf-hint">每页 {{ navPageSize }} 条</span>
+          </div>
+          <el-table
+            v-loading="navDlgLoading"
+            :data="navDlgItems"
+            height="60vh"
+            :header-cell-style="{ background: '#fafbfc', color: '#555', fontWeight: 600 }"
+          >
+            <el-table-column prop="date" label="净值日期" width="130" />
+            <el-table-column :label="navColLabel" align="right" min-width="130">
+              <template #default="{ row }">{{ fmtNav(row.nav) }}</template>
+            </el-table-column>
+            <el-table-column :label="accColLabel" align="right" min-width="130">
+              <template #default="{ row }">{{ fmtNav(row.accNav) }}</template>
+            </el-table-column>
+            <el-table-column label="日涨跌" align="right" min-width="110">
+              <template #default="{ row }">
+                <span :class="pctClass(row.dailyReturn)">{{ fmtPct(row.dailyReturn) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-pagination
+            v-model:current-page="navPage"
+            :page-size="navPageSize"
+            :page-sizes="[50, 100, 200]"
+            :total="navDlgTotal"
+            layout="total, sizes, prev, pager, next, jumper"
+            class="perf-pager"
+            @current-change="onNavPageChange"
+            @size-change="onNavSizeChange"
+          />
+        </el-dialog>
+
+        <!-- 历史业绩（全部年度） -->
+        <el-dialog v-model="yearDlgVisible" title="历史业绩 · 全部年度" width="420px" top="8vh">
+          <el-table
+            :data="yearly"
+            height="64vh"
+            :header-cell-style="{ background: '#fafbfc', color: '#555', fontWeight: 600 }"
+          >
+            <el-table-column label="年份" width="130">
+              <template #default="{ row }">{{ row.year }} 年</template>
+            </el-table-column>
+            <el-table-column label="年度涨跌" align="right" min-width="130">
+              <template #default="{ row }">
+                <span :class="pctClass(row.ret)">{{ fmtPct(row.ret) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-dialog>
       </section>
 
       <!-- 持仓 -->
@@ -605,6 +867,40 @@ function fmtPct(v: number | null) {
 /* 涨红跌绿（中式约定，与站点其他页面一致） */
 .stat-value.up   { color: #e8534a; }
 .stat-value.down { color: #26a17b; }
+
+/* 业绩表格里的涨跌幅（pctClass 返回 up/down，与上面的 stat-value 同色系） */
+.up   { color: #e8534a; }
+.down { color: #26a17b; }
+
+/* ── 基金业绩 ───────────────────────────────────────────────────────────── */
+.perf-tabs {
+  margin-bottom: 4px;
+}
+
+.perf-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 8px;
+  min-height: 24px;
+}
+
+.perf-hint {
+  font-size: 12px;
+  color: #999;
+}
+
+.perf-table {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+}
+
+.perf-pager {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
 
 /* ── 净值走势 ───────────────────────────────────────────────────────────── */
 .section-sub {

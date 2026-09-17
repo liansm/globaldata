@@ -37,8 +37,26 @@ export interface FundNavResp {
   fundCode: string
   navKind: FundNavKind
   latestNavDate: string | null
+  /** 命中总行数（不受 limit/offset 影响），供分页表格用 */
+  total: number
+  /** 本次返回行数 */
   count: number
   items: FundNavPoint[]
+}
+
+/** 历史业绩：单个自然年的涨跌幅（%） */
+export interface FundYearlyItem {
+  year: number
+  /** 年度涨跌幅（%）。按累计净值算；基数缺失时为 null */
+  ret: number | null
+}
+
+export interface FundYearlyResp {
+  fundCode: string
+  navKind: FundNavKind
+  total: number
+  /** 按年份降序 */
+  items: FundYearlyItem[]
 }
 
 export interface FundTypeCount {
@@ -72,6 +90,10 @@ export interface FundDetailResp {
   latestNavDate: string | null
   latestDailyReturn: number | null
   navKind: FundNavKind
+  /** 今年来涨跌幅（%），按累计净值算；货币口径为 null */
+  ytdReturn: number | null
+  /** 成立以来累计收益（%），按累计净值算；货币口径为 null */
+  totalReturn: number | null
   updatedAt: string
   reportDates: string[]
   holdings: FundHolding[]
