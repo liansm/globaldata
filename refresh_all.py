@@ -39,6 +39,7 @@ FETCH_SCRIPTS = [
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
     ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
     ("fetch_fund_nav.py",          "公募基金最新净值快照（天天基金排行榜批量，4 个请求拿全市场）"),
+    ("fetch_ipo_calendar.py",      "新股日历（东财 A股/北交所 + 财华社/AAStocks/东财 港股，秒级）"),
     # 注意：fetch_funds.py 不接入本脚本，单独手动运行（数据量大、耗时长）
     #   python fetch_funds.py --types 股票型,混合型,指数型   （权益类增量）
     #   python fetch_funds.py --years-back 5                （回补近5年持仓）
@@ -241,6 +242,19 @@ STATUS_QUERIES = [
             FROM fund_holdings
         """,
         "cols": ["rows", "funds", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "ipo_calendar  (新股日历 A股/北交所/港股)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   STRING_AGG(DISTINCT market, ' / ' ORDER BY market) AS markets,
+                   COUNT(apply_date) AS with_apply,
+                   COUNT(raise_amount) AS with_raise,
+                   MAX(COALESCE(listing_date, apply_date))::text AS latest
+            FROM ipo_calendar
+        """,
+        "cols": ["total", "markets", "with_apply", "with_raise", "latest"],
         "optional": True,
     },
     {

@@ -10,6 +10,7 @@ const navItems = [
   { label: '加密货币', icon: '₿',  to: '/crypto',   names: ['crypto'] },
   { label: '公募基金', icon: '💰', to: '/funds',    names: ['funds', 'fund-detail'] },
   { label: '基金公司', icon: '🏢', to: '/companies', names: ['companies', 'company-detail'] },
+  { label: '新股日历', icon: '🆕', to: '/ipo-calendar', names: ['ipo-calendar'] },
 ]
 
 function isActive(item: typeof navItems[0]) {

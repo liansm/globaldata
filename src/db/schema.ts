@@ -245,3 +245,58 @@ export const fetchLog = pgTable('fetch_log', {
   latestPrice:  numeric('latest_price', { precision: 14, scale: 4 }),
   changeDay:    numeric('change_day',   { precision: 10, scale: 4 }),
 })
+
+// --------------------------------------------------------------------------
+// ipo_calendar — 新股日历（A股 / 北交所 / 港股，2026-09-28 落地）
+// Populated by fetch_ipo_calendar.py
+//
+// ⚠ 三个市场的字段重合度很低，**一张表统管、市场特有列一律可空**
+//   （不按市场分表，与本项目「绝对价格 / 指数」的分层习惯一致）：
+//     A股独有 → allotment_date(中签号公布) / pay_date(中签缴款) / pe_industry / win_rate
+//     港股独有 → apply_end_date(招股截止) / pricing_date(定价) / refund_date(退票)
+//                / grey_date(暗盘) / lot_size(每手) / entry_fee(入场费)
+//
+// ⚠ raise_amount 单位统一「亿」，币种看 currency（CNY / HKD）。
+//   A股募资额 = 发行总数(万股) × 发行价 / 1e4，由脚本自算；
+//   港股募资额只有**已上市**标的能在东财拿到，未上市新股源侧不披露
+//   → 留空，前端显示「—」。**不要用 0 充数。**
+//
+// ⚠ 招股节点两套叫法：A股是「申购日 → 中签号公布 → 中签缴款 → 上市」，
+//   港股是「招股起止 → 定价 → 公布售股结果 → 退票 → 暗盘 → 上市」。
+//   前端的「申购/招股」统一映射到 apply_date。
+// --------------------------------------------------------------------------
+export const ipoCalendar = pgTable('ipo_calendar', {
+  id:             bigserial('id', { mode: 'number' }).primaryKey(),
+  market:         varchar('market',   { length: 10  }).notNull(),   // 'A股' | '北交所' | '港股'
+  code:           varchar('code',     { length: 16  }).notNull(),
+  name:           varchar('name',     { length: 120 }).notNull(),
+  exchange:       varchar('exchange', { length: 30  }),
+  board:          varchar('board',    { length: 20  }),   // A股板块：非科创板 / 科创板 / 北交所
+  industry:       varchar('industry', { length: 60  }),   // 港股行业分类
+  issuePrice:     numeric('issue_price',      { precision: 14, scale: 4 }),  // 发行价 / 招股价下限
+  issuePriceHigh: numeric('issue_price_high', { precision: 14, scale: 4 }),  // 招股价区间上限（港股）
+  currency:       varchar('currency', { length: 6  }),    // CNY | HKD
+  issueShares:    numeric('issue_shares', { precision: 24, scale: 4 }),      // 发行总数（股）
+  raiseAmount:    numeric('raise_amount', { precision: 20, scale: 4 }),      // 募集资金（亿）
+  lotSize:        numeric('lot_size',  { precision: 14, scale: 2 }),         // 每手股数（港股）
+  entryFee:       numeric('entry_fee', { precision: 14, scale: 2 }),         // 入场费（港元，港股）
+  applyDate:      date('apply_date'),        // A股申购日 / 港股招股起始日
+  applyEndDate:   date('apply_end_date'),    // 港股招股截止日
+  pricingDate:    date('pricing_date'),      // 定价日（港股）
+  allotmentDate:  date('allotment_date'),    // 中签号公布日 / 公布售股结果日
+  payDate:        date('pay_date'),          // 中签缴款日（A股）
+  refundDate:     date('refund_date'),       // 退票寄发日（港股）
+  greyDate:       date('grey_date'),         // 暗盘日（港股独有节点）
+  listingDate:    date('listing_date'),
+  peIssue:        numeric('pe_issue',    { precision: 14, scale: 4 }),       // 发行市盈率
+  peIndustry:     numeric('pe_industry', { precision: 14, scale: 4 }),       // 行业市盈率
+  winRate:        numeric('win_rate',    { precision: 14, scale: 6 }),       // 中签率 %
+  source:         varchar('source', { length: 120 }).notNull(),  // 多源时用 + 连接，便于追溯
+  updatedAt:      timestamp('updated_at', { withTimezone: true })
+                    .default(sql`NOW()`).notNull(),
+}, (t) => [
+  unique('ipo_calendar_market_code_uniq').on(t.market, t.code),
+  index('idx_ipo_calendar_listing').on(t.listingDate),
+  index('idx_ipo_calendar_apply').on(t.applyDate),
+  index('idx_ipo_calendar_market').on(t.market),
+])

@@ -53,6 +53,12 @@ const router = createRouter({
       name: 'company-detail',
       component: () => import('@/pages/CompanyDetail.vue'),
     },
+    {
+      // 新股日历：A股 / 北交所 / 港股，日历 + 列表双视图
+      path: '/ipo-calendar',
+      name: 'ipo-calendar',
+      component: () => import('@/pages/IpoCalendar.vue'),
+    },
   ],
 })
 
