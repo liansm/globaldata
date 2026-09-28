@@ -54,6 +54,17 @@ const router = createRouter({
       component: () => import('@/pages/CompanyDetail.vue'),
     },
     {
+      path: '/private-funds',
+      name: 'private-funds',
+      component: () => import('@/pages/PrivateFunds.vue'),
+    },
+    {
+      // :code 是备案编码（如 SB595C），与中基协 fundNo 同码
+      path: '/private-fund/:code',
+      name: 'private-fund-detail',
+      component: () => import('@/pages/PrivateFundDetail.vue'),
+    },
+    {
       // 新股日历：A股 / 北交所 / 港股，日历 + 列表双视图
       path: '/ipo-calendar',
       name: 'ipo-calendar',

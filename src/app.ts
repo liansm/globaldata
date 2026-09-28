@@ -6,6 +6,7 @@ import { marketsRoutes } from './routes/markets'
 import { cryptoRoutes } from './routes/crypto'
 import { fundsRoutes } from './routes/funds'
 import { fundCompaniesRoutes } from './routes/fundCompanies'
+import { privateFundsRoutes } from './routes/privateFunds'
 import { ipoRoutes } from './routes/ipo'
 
 const app = Fastify({
@@ -28,6 +29,7 @@ app.register(marketsRoutes)
 app.register(cryptoRoutes)
 app.register(fundsRoutes)
 app.register(fundCompaniesRoutes)
+app.register(privateFundsRoutes)
 app.register(ipoRoutes)
 
 // Health check

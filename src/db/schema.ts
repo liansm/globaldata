@@ -7,6 +7,8 @@ import {
   timestamp,
   serial,
   bigserial,
+  bigint,
+  boolean,
   unique,
   index,
 } from 'drizzle-orm/pg-core'
@@ -245,6 +247,76 @@ export const fetchLog = pgTable('fetch_log', {
   latestPrice:  numeric('latest_price', { precision: 14, scale: 4 }),
   changeDay:    numeric('change_day',   { precision: 10, scale: 4 }),
 })
+
+// --------------------------------------------------------------------------
+// 私募基金（2026-09-17 落地，fetch_private_funds.py）
+//
+// ⚠ 私募和公募不是一个物种：公募的「名录 / 规模 / 持仓 / 净值」四层，私募
+//   **只有名录能全量对标**。《私募投资基金募集行为管理办法》禁止公开宣传推介
+//   与披露业绩，规模/持仓/净值在公开渠道拿不到 —— 监管口径，不是技术问题。
+//
+// private_managers — 管理人（中基协公示，~1.84 万家）
+// private_funds    — 备案产品（中基协公示，~25 万只）+ 代销池净值快照
+// private_fund_nav — 净值日线。**两个来源、两种口径**（2026-09-20 起）：
+//     source=em_gaoduan 天天基金高端理财代销池：unit_nav=单位净值、acc_nav=累计净值（现金分红累加）
+//     source=sppw       私募排排网 fundNavTrend： acc_nav=**复权净值（分红再投）**、unit_nav 留空
+//   ⚠ 两源在「有分红」标的上终身收益最多差 2.5 倍，**禁止跨源拼同一条序列**。
+//     写库时对与代销池重叠的 fund_no 一律跳过（见 .workbuddy/load_simu_nav.py）。
+// --------------------------------------------------------------------------
+export const privateManagers = pgTable('private_managers', {
+  registerNo:       varchar('register_no',       { length: 40 }).primaryKey(),  // 登记编号
+  managerId:        bigint('manager_id', { mode: 'number' }),  // 中基协内部 id（大数，超出 int4）
+  managerName:      varchar('manager_name',      { length: 200 }).notNull(),
+  artificialPerson: varchar('artificial_person', { length: 120 }),  // 法定代表人
+  investType:       varchar('invest_type',       { length: 80  }),  // 机构类型
+  registerProvince: varchar('register_province', { length: 80  }),
+  officeAddress:    varchar('office_address',    { length: 300 }),
+  establishDate:    date('establish_date'),
+  registerDate:     date('register_date'),
+  fundCount:        integer('fund_count'),        // 在管基金数量
+  memberType:       varchar('member_type',       { length: 80  }),
+  hasSpecialTips:   boolean('has_special_tips'),
+  hasCreditTips:    boolean('has_credit_tips'),
+  updatedAt:        timestamp('updated_at', { withTimezone: true })
+                      .default(sql`NOW()`).notNull(),
+})
+
+export const privateFunds = pgTable('private_funds', {
+  fundNo:           varchar('fund_no',   { length: 40 }).primaryKey(),  // 备案编码，与代销池同码
+  fundName:         varchar('fund_name', { length: 300 }).notNull(),
+  managerName:      varchar('manager_name', { length: 200 }),
+  managerId:        bigint('manager_id', { mode: 'number' }),
+  managerType:      varchar('manager_type', { length: 40  }),   // 受托管理 / ...
+  workingState:     varchar('working_state',{ length: 40  }),   // 正在运作 / 延期清算 / ...
+  recordDate:       date('record_date'),                        // 备案时间
+  establishDate:    date('establish_date'),
+  mandatorName:     varchar('mandator_name', { length: 200 }),  // 托管人
+  isDeputeManage:   boolean('is_depute_manage'),
+  inRegistry:       boolean('in_registry').notNull().default(false),  // 在中基协备案库
+  hasNav:           boolean('has_nav').notNull().default(false),      // 有代销池净值
+  latestNav:        numeric('latest_nav',          { precision: 14, scale: 4 }),
+  latestAccNav:     numeric('latest_acc_nav',      { precision: 14, scale: 4 }),
+  latestNavDate:    date('latest_nav_date'),
+  latestDailyReturn:numeric('latest_daily_return', { precision: 10, scale: 4 }),
+  latestFundSize:   numeric('latest_fund_size',    { precision: 20, scale: 2 }),  // 元；多数源侧不给
+  navUpdatedAt:     timestamp('nav_updated_at', { withTimezone: true }),
+  updatedAt:        timestamp('updated_at', { withTimezone: true })
+                      .default(sql`NOW()`).notNull(),
+})
+
+export const privateFundNav = pgTable('private_fund_nav', {
+  id:          bigserial('id', { mode: 'number' }).primaryKey(),
+  fundNo:      varchar('fund_no',  { length: 40 }).notNull(),
+  navDate:     date('nav_date').notNull(),
+  unitNav:     numeric('unit_nav',     { precision: 14, scale: 4 }),
+  accNav:      numeric('acc_nav',      { precision: 14, scale: 4 }),  // 含分红口径：累计净值(em) / 复权净值(sppw)
+  dailyReturn: numeric('daily_return', { precision: 10, scale: 4 }),  // 日涨跌 %
+  source:      varchar('source',       { length: 16 }).notNull().default('em_gaoduan'),
+}, (t) => [
+  unique('private_fund_nav_uniq').on(t.fundNo, t.navDate),
+  index('idx_pf_nav_fund_date').on(t.fundNo, t.navDate),
+  index('idx_pf_nav_source').on(t.source),
+])
 
 // --------------------------------------------------------------------------
 // ipo_calendar — 新股日历（A股 / 北交所 / 港股，2026-09-28 落地）

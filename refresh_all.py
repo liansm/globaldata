@@ -47,6 +47,9 @@ FETCH_SCRIPTS = [
     # fetch_fund_nav.py 同理：日常只有上面那一行（秒级）；下面两个模式耗时长，手动跑
     #   python fetch_fund_nav.py --gap                      （逐只补 L1 覆盖不到的非 ETF/定开等）
     #   python fetch_fund_nav.py --history                  （全历史回填，约 2 小时，可断点续跑）
+    # fetch_private_funds.py 同理，两个模式都耗时长，一律手动跑：
+    #   python fetch_private_funds.py                        （中基协备案全量，约 55 分钟，可续跑）
+    #   python fetch_private_funds.py --nav                  （代销池净值，约 13 分钟，幂等）
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -240,6 +243,40 @@ STATUS_QUERIES = [
                    MIN(report_date)::text AS earliest,
                    MAX(report_date)::text AS latest
             FROM fund_holdings
+        """,
+        "cols": ["rows", "funds", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "private_funds  (私募备案产品 + 代销池净值快照)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE in_registry) AS registry,
+                   COUNT(*) FILTER (WHERE has_nav) AS with_nav,
+                   MAX(latest_nav_date)::text AS nav_date
+            FROM private_funds
+        """,
+        "cols": ["total", "registry", "with_nav", "nav_date"],
+        "optional": True,
+    },
+    {
+        "title": "private_managers  (私募基金管理人)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   COUNT(fund_count) AS with_count
+            FROM private_managers
+        """,
+        "cols": ["total", "with_count"],
+        "optional": True,
+    },
+    {
+        "title": "private_fund_nav  (私募净值日线，仅代销池 ~0.5%)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT fund_no) AS funds,
+                   MIN(nav_date)::text AS earliest,
+                   MAX(nav_date)::text AS latest
+            FROM private_fund_nav
         """,
         "cols": ["rows", "funds", "earliest", "latest"],
         "optional": True,
