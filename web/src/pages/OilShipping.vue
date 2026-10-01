@@ -4,7 +4,12 @@ import { fetchVlccFleet, fetchVlccOwners, fetchVlccVessel } from '@/api/vlcc'
 import type { VlccVessel, VlccFleetStats, VlccOwner, VlccVesselDetail } from '@/types/vlcc'
 
 // ── 地图：按合规要求**只能**用白名单厂商（腾讯 / 高德 / 百度 / 天地图），
-//    默认走腾讯地图 GL JS。**不用 OpenStreetMap / Google / Mapbox**。
+//    **不用 OpenStreetMap / Google / Mapbox**。
+//    实际是「腾讯 GL JS 渲染 + 天地图出图」的组合：
+//      · 渲染层仍用腾讯 GL JS（船位/轨迹/自绘标注都建在它的覆盖物体系上，
+//        换 SDK 等于全部重写，收益为零）；
+//      · 底图与注记换成天地图的 WMTS 瓦片 —— 因为腾讯境外零注记（见下方注释）。
+//    这样可以不动渲染代码就拿到全球中文地名。
 //
 // key 从环境变量读，**绝不写进代码**：web/.env 里加 VITE_TMAP_KEY=你的key
 // ⚠ 必须是 web/.env（vite 的项目根），放仓库根 .env 前端读不到
@@ -16,6 +21,24 @@ import type { VlccVessel, VlccFleetStats, VlccOwner, VlccVesselDetail } from '@/
 // 上线/部署到非 localhost 域时必须配 key，否则会一直挂着鉴权提示。
 const TMAP_KEY = ((import.meta as any).env?.VITE_TMAP_KEY as string | undefined)?.trim() || ''
 const hasKey = computed(() => !!TMAP_KEY)
+
+// ── 天地图注记层（境外地名的**唯一**来源）────────────────────────────────────
+// 腾讯底图境外零注记（海外图是它单独的付费产品，官方 FAQ：不支持个人申请、需公司主体），
+// 而天地图 cva_w 是**全球中文注记**、免费（个人实名即可申请 key）—— 实测 z4 上几乎每个
+// 国家都有国名 + 首都圆点 + 城市名 + 海域名。
+// 做法：不换 SDK（腾讯 GL 的覆盖物、船位层都在它上面），只把天地图当**瓦片底图**叠上去，
+//       正好盖住腾讯那层没有注记的底图。
+// 申请：http://lbs.tianditu.gov.cn/ → 注册实名 → 控制台创建「浏览器端」key
+// ⚠ 天地图 key 有 Referer 白名单，localhost 若不白名单会 403，症状是底图空白。
+// ⚠ 坐标（2026-10-01 实测）：天地图用 CGCS2000（≈ WGS84），腾讯境内底图是 GCJ-02，
+//    而腾讯 SDK **不替开发者做坐标转换**（传入值一律当 GCJ-02 直接投影）。
+//    实测取已知点 (39.9087, 116.3975) 在 z16 打点：腾讯底图上落在天安门附近（约 100m），
+//    换天地图瓦片后同一像素显示的是「WGS84 恰好等于该值」的地物 → 落在天安门东北约 550m，
+//    正是 GCJ-02 相对 WGS84 的偏移量级。
+//    → 船位是 AIS 的 WGS84（旧记录：船位 vs 腾讯底图偏 482~596m，若船位是 GCJ 就不会偏），
+//      所以**叠上天地图之后船位与陆地对齐了**。撤掉天地图层，这 ~500m 偏移会原样回来。
+const TDT_KEY = ((import.meta as any).env?.VITE_TDT_KEY as string | undefined)?.trim() || ''
+const tdtOn = computed(() => !!TDT_KEY)
 
 const OWNER_COLOR: Record<string, string> = {
   招商轮船: '#2f6fed',
@@ -31,17 +54,22 @@ const FLAG_LABEL: Record<string, string> = {
 }
 
 // ── 自绘地理标注 ─────────────────────────────────────────────────────────────
-// 为什么自己画：腾讯底图**境外没有地名注记** ——「海外图」是它单独的付费产品
+// 由来：腾讯底图**境外没有地名注记** ——「海外图」是它单独的付费产品
 // （「海外位置服务」，官方 FAQ：不支持个人申请、需公司主体、是付费服务），
 // 默认的 JavaScript API GL key 不含这项能力。实测：z6 法国/德国上空**零注记**，
 // z3 全球只有「中华人民共和国」一个国名；境外瓦片字节数只有境内的 50%
 // （是 200 有数据的，只是内容就是光秃秃的陆地 + 海洋轮廓 + 大洲/大洋名）。
 // 详见 .workbuddy/memory/DATASOURCES.md「🌍 底图境外不显示地名」。
 //
-// 对油运图来说，真正要回答的是「这条 VLCC 现在堵在哪个咽喉」——
-// 标「法国」「德国」帮不上忙。所以这里画两层：
+// ⚠ 现已叠天地图 WMTS 作底图/注记（见下），**国名、城市名、首都点都从天地图来**，
+//    自绘层不再是「境外地名的唯一来源」。它现在只补天地图**没有**的两块：
 //   choke 咽喉点：海峡 / 运河（霍尔木兹、马六甲、苏伊士、好望角…）
-//   sea   海域名：**境外**主要海域（境内东海/黄海/南海腾讯自己的注记里有，不重复画）
+//        —— 天地图**完全不标海峡名**（实测 z7 霍尔木兹、马六甲都没有，只标省/国/城市），
+//           而油运图最要回答的恰恰是「这条 VLCC 堵在哪个咽喉」，所以必须自己画。
+//   sea   海域名：**仅 z3 全球视图**用。
+//        —— 天地图 z4 起就标「波斯湾/红海/地中海/黑海」，再叠一层就是重影；
+//           但 z3（本页默认视野）它只标「太平洋」「印度洋」两个大洋级，
+//           全球图上缺了「波斯湾」「红海」会显得没重点，故 z3 由自绘补位。
 //
 // ⚠ 坐标一律按**真实经纬度**填，不做 GCJ-02 偏移转换。三条理由：
 //   ① 咽喉点绝大多数在境外，而腾讯境外图本身就是 WGS84；
@@ -55,6 +83,8 @@ interface GeoLabel { id: string; name: string; lat: number; lon: number; kind: G
 
 // minZoom = 低于该缩放级别不显示，做语义分层：全球视图只留干线咽喉，
 // 放大后才补出区域航线与国内口门 —— 否则 z3 上几十个标签会糊成一片。
+// sea 类另有**上限** z3（SEA_MAX_ZOOM，写死在 renderGeoLabels 里而非逐条填字段，
+// 免得 16 条数据各写一遍、改的时候漏一条）：z4 起天地图自己会标海域名。
 const GEO_LABELS: GeoLabel[] = [
   // ── 一级咽喉：全球油运干线 ────────────────────────────────────────────
   { id: 'hormuz',       name: '霍尔木兹海峡',   lat: 26.57,  lon: 56.25,   kind: 'choke', minZoom: 3 },
@@ -124,6 +154,8 @@ let labelLayer: any = null
 let trackLayer: any = null
 let infoWindow: any = null
 let TMapRef: any = null
+let tdtBaseLayer: any = null   // 天地图矢量底图（vec_w）
+let tdtAnnoLayer: any = null   // 天地图中文注记（cva_w）
 let lastGeoKey = ''   // 上一次实际渲染的标注 id 集合，用于跳过无谓重绘
 
 const withPos    = computed(() => vessels.value.filter(v => v.pos))
@@ -158,6 +190,20 @@ function loadTMapSdk(key: string): Promise<any> {
     s.onerror = () => reject(new Error('腾讯地图 SDK 加载失败（网络受限？）'))
     document.head.appendChild(s)
   })
+}
+
+// 天地图 WMTS 瓦片地址。
+// vec = 矢量底图（行政境界/水系/道路，**不含文字**），cva = 矢量中文注记（含全球地名）。
+// 两个必须成对叠：只叠 cva 会得到「白底 + 飘着的字」，只叠 vec 则和腾讯一样没有境外地名。
+// ⚠ 参数名大小写和顺序都是天地图 WMTS 1.0.0 规范的真实要求，别改：
+//    是 FORMAT=tiles（不是 image/png）、TILEMATRIXSET=w（球面墨卡托矩阵集）。
+// ⚠ 子域 t0~t7 轮询：同域浏览器只给 6 条并发，全球视图一次要几十张瓦片，
+//    不分流的话后半屏是空白的。按瓦片坐标散列，保证同一瓦片地址稳定（可被缓存）。
+function tdtTileUrl(layer: 'vec' | 'cva', x: number, y: number, z: number) {
+  const s = (x + y + z) % 8
+  return `https://t${s}.tianditu.gov.cn/${layer}_w/wmts?SERVICE=WMTS&REQUEST=GetTile`
+    + `&VERSION=1.0.0&LAYER=${layer}&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles`
+    + `&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}&tk=${TDT_KEY}`
 }
 
 // 「全部装下」。
@@ -311,10 +357,13 @@ function drawTrack(d: VlccVesselDetail) {
 
 // 按当前缩放级别挑出该显示的标注。拖动/滚轮缩放时 zoom_changed 会连续触发，
 // 故用「可见 id 集合」做指纹，集合没变就整个跳过（不重建 LatLng、不重设图层）。
+const SEA_MAX_ZOOM = 3   // 海域名只在 z3 自绘；z4 起天地图自己会标（见 GEO_LABELS 注释）
+
 function renderGeoLabels() {
   if (!map || !TMapRef || !labelLayer) return
+  const z = map.getZoom()
   const on = showGeo.value
-    ? GEO_LABELS.filter(g => map.getZoom() >= g.minZoom)
+    ? GEO_LABELS.filter(g => z >= g.minZoom && (g.kind !== 'sea' || z <= SEA_MAX_ZOOM))
     : []
   const key = on.map(g => g.id).join(',')
   if (key === lastGeoKey) return
@@ -334,17 +383,45 @@ async function initMap() {
   if (!mapEl.value) return
   try {
     TMapRef = await loadTMapSdk(TMAP_KEY)
-    // ⚠ 境外没有地名注记是**腾讯底图本身如此**，不是这里的配置问题，别去调 baseMap/features。
+    // ⚠ 境外零注记是**腾讯底图数据本身如此**，靠 baseMap/features 调不出来。
     // 腾讯把境外地图做成了独立付费产品「海外位置服务」，默认的 JS API GL key 不含这项能力：
     // 境内走完整矢量数据（城市/省界/海域名齐全），境外只落到「陆地+海洋轮廓 + 大洲/大洋名」。
     // 实测：z6 法国上空零注记；z3 全图只有「中华人民共和国」一个国名；境外瓦片字节数
-    // 只有境内的 50%，但确实 200 有数据。getOverseaEnabled()=true / getOverseaMapStyle()='auto'
-    // 都不代表 key 有权限。官方 FAQ：海外服务不支持个人申请、需公司主体、是付费服务。
+    // 只有境内的 50%，但确实 200 有数据。官方 FAQ：海外服务不支持个人申请、需公司主体、是付费服务。
     // 详见 .workbuddy/memory/DATASOURCES.md「🌍 底图境外不显示地名」。
-    map = new TMapRef.Map(mapEl.value, {
+    // → 解法不是换 SDK，而是**叠天地图瓦片作底图**（见下）。
+    //   注意下面还给 baseMap.features 收窄过 —— 那是**另一件事**：天地图瓦片一叠，
+    //   腾讯自带的注记就浮在它上面了，必须关掉才不会两层字叠在一起。
+    const mapOpts: any = {
       zoom: 3,
       center: new TMapRef.LatLng(18, 88),
-    })
+    }
+    // ⚠ 叠了天地图就必须关掉腾讯自带的注记：腾讯的 label 画在 ImageTileLayer **之上**
+    //    （不是底图层次），不关会两层字叠在一起 —— 实测 z6 武汉一带「武汉市」出现两次，
+    //    还冒出只可能来自天地图的「香港特别行政区」（腾讯标的是「香港」）。
+    // features 只留 'base'（陆地色块 / 路网 / 水系），**留它而不是空数组**是当兜底：
+    // 天地图某级瓦片万一加载失败，底下还有腾讯的地形可看，不至于露白。
+    // 未配 TDT_KEY 时保持默认（腾讯自己的注记是境内唯一的字，不能关）。
+    if (TDT_KEY) mapOpts.baseMap = { type: 'vector', features: ['base'] }
+    map = new TMapRef.Map(mapEl.value, mapOpts)
+
+    // ── 天地图底图 + 注记层 ────────────────────────────────────────────────
+    // ⚠ 必须建在 markerLayer **之前**：腾讯 GL 的覆盖物按创建顺序叠放，
+    //    瓦片层若后建会盖住先建的船位 marker。
+    // vec_w 是不透明全幅底图，叠上去正好把腾讯那层「没有注记的境外地图」整块盖掉；
+    // 本层之上的腾讯注记也随之不可见，境内外的地名统一由 cva_w 提供 —— 反而更一致。
+    // 若 TDT_KEY 为空则完全不建，行为退回原样（腾讯底图 + 自绘 GEO_LABELS）。
+    if (TDT_KEY) {
+      tdtBaseLayer = new TMapRef.ImageTileLayer({
+        map, minZoom: 3, maxZoom: 18, isMainThreadLoaded: true,
+        getTileUrl: (x: number, y: number, z: number) => tdtTileUrl('vec', x, y, z),
+      })
+      tdtAnnoLayer = new TMapRef.ImageTileLayer({
+        map, minZoom: 3, maxZoom: 18, isMainThreadLoaded: true,
+        getTileUrl: (x: number, y: number, z: number) => tdtTileUrl('cva', x, y, z),
+      })
+    }
+
     markerLayer = new TMapRef.MultiMarker({
       map,
       styles: {
@@ -460,6 +537,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   try { map?.destroy?.() } catch { /* noop */ }
   map = markerLayer = labelLayer = trackLayer = infoWindow = TMapRef = null
+  tdtBaseLayer = tdtAnnoLayer = null
   lastGeoKey = ''
 })
 
@@ -496,9 +574,11 @@ function fmtStale(h: number | null | undefined) {
       <div class="guide-title">⚠ 地图初始化失败：{{ mapError }}</div>
       <div class="guide-body">
         按合规要求，本项目地图只使用白名单厂商（腾讯 / 高德 / 百度 / 天地图），<b>不使用 OpenStreetMap、Google、Mapbox</b>。
-        可到 <a href="https://lbs.qq.com/" target="_blank" rel="noreferrer">腾讯位置服务</a> 申请 Key（Web端 JavaScript API GL），
-        写入 <code>web/.env</code> 的 <code>VITE_TMAP_KEY</code> 后重启 dev server。
-        <b>注意是 web/.env，不是仓库根目录的 .env</b>（vite 只读前端项目根下的 .env）。
+        <br>渲染：<a href="https://lbs.qq.com/" target="_blank" rel="noreferrer">腾讯位置服务</a> 申请 Key（Web端 JavaScript API GL），
+        写入 <code>web/.env</code> 的 <code>VITE_TMAP_KEY</code>。
+        <br>底图与注记：<a href="http://lbs.tianditu.gov.cn/" target="_blank" rel="noreferrer">天地图</a> 注册实名后申请「浏览器端」Key，
+        写入 <code>web/.env</code> 的 <code>VITE_TDT_KEY</code>（不配也能用，只是境外没有地名）。
+        <br><b>两个都在 web/.env，不是仓库根目录的 .env</b>（vite 只读前端项目根下的 .env），改完重启 dev server。
         下方<b>名录视图照常可用</b>。
       </div>
     </div>
@@ -510,6 +590,7 @@ function fmtStale(h: number | null | undefined) {
         要消掉它：到 <a href="https://lbs.qq.com/" target="_blank" rel="noreferrer">腾讯位置服务</a> 申请 Key，
         写进 <code>web/.env</code> 的 <code>VITE_TMAP_KEY</code>，重启 <code>npm run dev</code>。
         <b>部署到非 localhost 域名时必须配 Key。</b>
+        <br>另需 <code>VITE_TDT_KEY</code>（天地图，免费）才有<b>境外地名</b>；两个 Key 都放 <code>web/.env</code>。
       </div>
     </div>
 
@@ -535,6 +616,10 @@ function fmtStale(h: number | null | undefined) {
             <i :style="{ background: c }"></i>{{ o }}
           </span>
         </div>
+        <!-- 署名：底图和注记来自天地图，但 SDK 左下角只印腾讯自己的版权行，
+             不补这一行等于把天地图的成果挂到腾讯名下（天地图服务条款要求署名）。
+             放右下角 —— 左下角是 SDK 的比例尺+logo，右上角是它的缩放控件。 -->
+        <div class="map-credit" v-if="mapReady && tdtOn">底图 / 注记：天地图</div>
       </div>
 
       <aside class="side">
@@ -548,7 +633,7 @@ function fmtStale(h: number | null | undefined) {
             <el-checkbox v-model="onlyPos" size="small">只看有船位的</el-checkbox>
             <el-checkbox
               v-model="showGeo" size="small"
-              title="腾讯底图境外不提供地名注记（海外图是其单独的付费产品），此图层为自绘的咽喉 / 海域标注"
+              title="自绘的咽喉 / 海域标注。天地图底图不标海峡名（实测 z7 霍尔木兹、马六甲都没有），咽喉点只能自绘；海域名只在全球视图（z3）自绘，z4 起由天地图接管"
             >咽喉 / 海域标注</el-checkbox>
           </div>
         </div>
@@ -701,6 +786,12 @@ function fmtStale(h: number | null | undefined) {
   display: flex; gap: 14px; font-size: 12px; color: #5a6272;
 }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+
+.map-credit {
+  position: absolute; right: 10px; bottom: 8px; z-index: 30;
+  font-size: 11px; color: #7b8494; background: rgba(255,255,255,.82);
+  padding: 2px 7px; border-radius: 5px; pointer-events: none;
+}
 
 .side {
   width: 356px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px;
