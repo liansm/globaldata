@@ -30,6 +30,77 @@ const FLAG_LABEL: Record<string, string> = {
   LR: '利比里亚', MH: '马绍尔群岛', MT: '马耳他',
 }
 
+// ── 自绘地理标注 ─────────────────────────────────────────────────────────────
+// 为什么自己画：腾讯底图**境外没有地名注记** ——「海外图」是它单独的付费产品
+// （「海外位置服务」，官方 FAQ：不支持个人申请、需公司主体、是付费服务），
+// 默认的 JavaScript API GL key 不含这项能力。实测：z6 法国/德国上空**零注记**，
+// z3 全球只有「中华人民共和国」一个国名；境外瓦片字节数只有境内的 50%
+// （是 200 有数据的，只是内容就是光秃秃的陆地 + 海洋轮廓 + 大洲/大洋名）。
+// 详见 .workbuddy/memory/DATASOURCES.md「🌍 底图境外不显示地名」。
+//
+// 对油运图来说，真正要回答的是「这条 VLCC 现在堵在哪个咽喉」——
+// 标「法国」「德国」帮不上忙。所以这里画两层：
+//   choke 咽喉点：海峡 / 运河（霍尔木兹、马六甲、苏伊士、好望角…）
+//   sea   海域名：**境外**主要海域（境内东海/黄海/南海腾讯自己的注记里有，不重复画）
+//
+// ⚠ 坐标一律按**真实经纬度**填，不做 GCJ-02 偏移转换。三条理由：
+//   ① 咽喉点绝大多数在境外，而腾讯境外图本身就是 WGS84；
+//   ② 境内那几个（台湾/琼州/渤海海峡、长江口、珠江口）GCJ-02 偏移约 500m，
+//      在海峡尺度（几十~几百公里）下连 1px 都不到；
+//   ③ 最要紧：本仓库船位也是**原样 WGS84** 打上去的，地名跟着同一套坐标走才与
+//      船位自洽 —— 只给地名做转换，反而会让地名和船位互相错开。
+//      （船位本身的坐标系隐患是另一件事，见 DATASOURCES.md，与本图层无关。）
+type GeoKind = 'choke' | 'sea'
+interface GeoLabel { id: string; name: string; lat: number; lon: number; kind: GeoKind; minZoom: number }
+
+// minZoom = 低于该缩放级别不显示，做语义分层：全球视图只留干线咽喉，
+// 放大后才补出区域航线与国内口门 —— 否则 z3 上几十个标签会糊成一片。
+const GEO_LABELS: GeoLabel[] = [
+  // ── 一级咽喉：全球油运干线 ────────────────────────────────────────────
+  { id: 'hormuz',       name: '霍尔木兹海峡',   lat: 26.57,  lon: 56.25,   kind: 'choke', minZoom: 3 },
+  { id: 'malacca',      name: '马六甲海峡',     lat: 2.20,   lon: 102.20,  kind: 'choke', minZoom: 3 },
+  { id: 'suez',         name: '苏伊士运河',     lat: 30.60,  lon: 32.30,   kind: 'choke', minZoom: 3 },
+  { id: 'bab_mandeb',   name: '曼德海峡',       lat: 12.58,  lon: 43.40,   kind: 'choke', minZoom: 3 },
+  { id: 'gibraltar',    name: '直布罗陀海峡',   lat: 35.95,  lon: -5.60,   kind: 'choke', minZoom: 3 },
+  { id: 'good_hope',    name: '好望角',         lat: -34.36, lon: 18.47,   kind: 'choke', minZoom: 3 },
+  { id: 'panama',       name: '巴拿马运河',     lat: 9.08,   lon: -79.68,  kind: 'choke', minZoom: 3 },
+  { id: 'bosphorus',    name: '博斯普鲁斯海峡', lat: 41.12,  lon: 29.06,   kind: 'choke', minZoom: 3 },
+  // ── 二级咽喉：替代航线与区域口门 ──────────────────────────────────────
+  { id: 'dardanelles',  name: '达达尼尔海峡',   lat: 40.05,  lon: 26.20,   kind: 'choke', minZoom: 5 },
+  { id: 'singapore',    name: '新加坡海峡',     lat: 1.22,   lon: 103.85,  kind: 'choke', minZoom: 5 },
+  { id: 'sunda',        name: '巽他海峡',       lat: -5.90,  lon: 105.50,  kind: 'choke', minZoom: 5 },
+  { id: 'lombok',       name: '龙目海峡',       lat: -8.50,  lon: 115.80,  kind: 'choke', minZoom: 5 },
+  { id: 'mozambique',   name: '莫桑比克海峡',   lat: -18.00, lon: 41.00,   kind: 'choke', minZoom: 5 },
+  { id: 'dover',        name: '多佛海峡',       lat: 51.02,  lon: 1.50,    kind: 'choke', minZoom: 5 },
+  { id: 'danish',       name: '丹麦海峡',       lat: 57.00,  lon: 10.50,   kind: 'choke', minZoom: 5 },
+  { id: 'korea',        name: '朝鲜海峡',       lat: 34.50,  lon: 129.00,  kind: 'choke', minZoom: 5 },
+  { id: 'tsugaru',      name: '津轻海峡',       lat: 41.50,  lon: 140.70,  kind: 'choke', minZoom: 5 },
+  { id: 'bering',       name: '白令海峡',       lat: 65.90,  lon: -169.00, kind: 'choke', minZoom: 5 },
+  { id: 'magellan',     name: '麦哲伦海峡',     lat: -53.50, lon: -70.50,  kind: 'choke', minZoom: 5 },
+  { id: 'taiwan_str',   name: '台湾海峡',       lat: 24.30,  lon: 119.30,  kind: 'choke', minZoom: 5 },
+  { id: 'qiongzhou',    name: '琼州海峡',       lat: 20.15,  lon: 110.30,  kind: 'choke', minZoom: 6 },
+  { id: 'bohai',        name: '渤海海峡',       lat: 38.55,  lon: 121.10,  kind: 'choke', minZoom: 6 },
+  { id: 'yangtze',      name: '长江口',         lat: 31.20,  lon: 122.20,  kind: 'choke', minZoom: 6 },
+  { id: 'pearl_river',  name: '珠江口',         lat: 21.90,  lon: 113.90,  kind: 'choke', minZoom: 6 },
+  // ── 境外海域名 ────────────────────────────────────────────────────────
+  { id: 'persian_gulf',   name: '波斯湾',       lat: 26.50,  lon: 51.50,   kind: 'sea', minZoom: 3 },
+  { id: 'red_sea',        name: '红海',         lat: 20.00,  lon: 38.00,   kind: 'sea', minZoom: 3 },
+  { id: 'gulf_aden',      name: '亚丁湾',       lat: 12.50,  lon: 48.00,   kind: 'sea', minZoom: 4 },
+  { id: 'arabian_sea',    name: '阿拉伯海',     lat: 15.00,  lon: 63.00,   kind: 'sea', minZoom: 3 },
+  { id: 'bengal',         name: '孟加拉湾',     lat: 15.00,  lon: 88.00,   kind: 'sea', minZoom: 3 },
+  { id: 'mediterranean',  name: '地中海',       lat: 35.00,  lon: 18.00,   kind: 'sea', minZoom: 3 },
+  { id: 'black_sea',      name: '黑海',         lat: 43.00,  lon: 34.00,   kind: 'sea', minZoom: 4 },
+  { id: 'north_sea',      name: '北海',         lat: 56.00,  lon: 3.00,    kind: 'sea', minZoom: 4 },
+  { id: 'baltic',         name: '波罗的海',     lat: 58.00,  lon: 20.00,   kind: 'sea', minZoom: 4 },
+  { id: 'japan_sea',      name: '日本海',       lat: 39.00,  lon: 135.00,  kind: 'sea', minZoom: 3 },
+  { id: 'philippine_sea', name: '菲律宾海',     lat: 20.00,  lon: 130.00,  kind: 'sea', minZoom: 4 },
+  { id: 'coral_sea',      name: '珊瑚海',       lat: -18.00, lon: 155.00,  kind: 'sea', minZoom: 3 },
+  { id: 'gulf_mexico',    name: '墨西哥湾',     lat: 25.00,  lon: -90.00,  kind: 'sea', minZoom: 3 },
+  { id: 'caribbean',      name: '加勒比海',     lat: 15.00,  lon: -75.00,  kind: 'sea', minZoom: 3 },
+  { id: 'great_bight',    name: '大澳大利亚湾', lat: -35.00, lon: 132.00,  kind: 'sea', minZoom: 3 },
+  { id: 'south_ocean',    name: '南大洋',       lat: -58.00, lon: 70.00,   kind: 'sea', minZoom: 3 },
+]
+
 // ── state ────────────────────────────────────────────────────────────────────
 const loading   = ref(false)
 const error     = ref('')
@@ -46,11 +117,14 @@ const detailLoading = ref(false)
 const mapEl     = ref<HTMLElement | null>(null)
 const mapReady  = ref(false)
 const mapError  = ref('')
+const showGeo   = ref(true)      // 自绘咽喉/海域标注开关（见 GEO_LABELS 注释）
 let map: any = null
 let markerLayer: any = null
+let labelLayer: any = null
 let trackLayer: any = null
 let infoWindow: any = null
 let TMapRef: any = null
+let lastGeoKey = ''   // 上一次实际渲染的标注 id 集合，用于跳过无谓重绘
 
 const withPos    = computed(() => vessels.value.filter(v => v.pos))
 const shownList  = computed(() => {
@@ -90,6 +164,36 @@ function loadTMapSdk(key: string): Promise<any> {
 // 早先手算 center+zoom，右边缘（中国/日本）被切掉；改用 SDK 自带 fitBounds，
 // 已对着真 SDK 验过签名：map.fitBounds(LatLngBounds, { padding }) 可用。
 // 无船位时退回「西太—印度洋」默认视野（不是全球居中，因为船就在这一带）。
+// ── 默认视野 ────────────────────────────────────────────────────────────────
+// ⚠ 一屏装下**全部**船位在腾讯 GL 上做不到：SDK 把 zoom 下限硬编码成 3
+//    实测 `setMinZoom()` 无效，`setZoom(2 / 1 / 0)` 一律被钳回 3；
+//    而 zoom 3 时本页地图容器只能覆盖约 152 度经度。中国船东的 VLCC 跑的是全球
+//    航线，船位经度跨度实测 248 度 → 必然有一批落在视野外，这是 API 层的物理限制。
+// 所以默认视野**不取经纬极值的中点** —— 那会把视野放在船最少的大洋中央，
+// 实测只能看见 49/95 艘；改为取**覆盖船数最多的那段经度窗口**，实测 81/95 艘。
+// 没进视野的船随时可点右侧列表飞过去（selectVessel 会 setCenter）。
+function lonSpanAtFloorZoom() {
+  const w = mapEl.value?.clientWidth || 800
+  // zoom 3 = 全球 256*2^3 像素宽。0.96 是边距余量，不是随手取的：
+  // fitBounds 的 zoom 一被钳到下限 3，视野就固定成「容器全宽对应的经度」，
+  // 窗口取太满会让两端的船点正好贴在容器边缘上（padding 此时已不起作用）。
+  return (w / (256 * 8)) * 360 * 0.96
+}
+
+// 选「装船最多」的经度窗口。窗口左沿只需试**正好落在某艘船上**的位置 ——
+// 覆盖数最大的窗口总可以平移到某个点处（经典区间覆盖结论），不必按步长穷举。
+// ⚠ 不处理跨日界线的窗口（本项目船位在 −106~143 度，不跨）；将来若跨了要另写。
+function pickDensestWindow<T extends { lon: number }>(pts: T[], span: number): T[] {
+  const lons = pts.map(p => p.lon).sort((a, b) => a - b)
+  let bestLo = lons[0], bestN = -1
+  for (const s of lons) {
+    let n = 0
+    for (const x of lons) if (x >= s && x <= s + span) n++
+    if (n > bestN) { bestN = n; bestLo = s }
+  }
+  return pts.filter(p => p.lon >= bestLo && p.lon <= bestLo + span)
+}
+
 function fitAll() {
   if (!map || !TMapRef) return
   const uniq = new Map<string, { lat: number; lon: number }>()
@@ -110,11 +214,22 @@ function fitAll() {
     map.setZoom(7)
     return
   }
-  const bounds = new TMapRef.LatLngBounds(
-    new TMapRef.LatLng(Math.min(...pts.map(p => p.lat)), Math.min(...pts.map(p => p.lon))),
-    new TMapRef.LatLng(Math.max(...pts.map(p => p.lat)), Math.max(...pts.map(p => p.lon))),
+
+  const los = pts.map(p => p.lon)
+  const span = lonSpanAtFloorZoom()
+  // 经度装得下就全部上；装不下才丢卒保车，只留船最多的那一段
+  const use = (Math.max(...los) - Math.min(...los) <= span)
+    ? pts
+    : pickDensestWindow(pts, span)
+
+  // 交给 SDK 定 zoom（窗口内船密集时会自动放大，比写死 3 好）
+  map.fitBounds(
+    new TMapRef.LatLngBounds(
+      new TMapRef.LatLng(Math.min(...use.map(p => p.lat)), Math.min(...use.map(p => p.lon))),
+      new TMapRef.LatLng(Math.max(...use.map(p => p.lat)), Math.max(...use.map(p => p.lon))),
+    ),
+    { padding: 60 },
   )
-  map.fitBounds(bounds, { padding: 60 })
 }
 
 function renderMarkers() {
@@ -194,10 +309,38 @@ function drawTrack(d: VlccVesselDetail) {
   }])
 }
 
+// 按当前缩放级别挑出该显示的标注。拖动/滚轮缩放时 zoom_changed 会连续触发，
+// 故用「可见 id 集合」做指纹，集合没变就整个跳过（不重建 LatLng、不重设图层）。
+function renderGeoLabels() {
+  if (!map || !TMapRef || !labelLayer) return
+  const on = showGeo.value
+    ? GEO_LABELS.filter(g => map.getZoom() >= g.minZoom)
+    : []
+  const key = on.map(g => g.id).join(',')
+  if (key === lastGeoKey) return
+  lastGeoKey = key
+  labelLayer.setGeometries(on.map(g => ({
+    id: g.id,
+    styleId: g.kind,
+    content: g.name,
+    position: new TMapRef.LatLng(g.lat, g.lon),
+    // rank 只在开启同层碰撞后生效：咽喉点(20) 压过海域名(5)，
+    // 两者挤在一起时海域名主动让位，不会字叠字
+    rank: g.kind === 'choke' ? 20 : 5,
+  })))
+}
+
 async function initMap() {
   if (!mapEl.value) return
   try {
     TMapRef = await loadTMapSdk(TMAP_KEY)
+    // ⚠ 境外没有地名注记是**腾讯底图本身如此**，不是这里的配置问题，别去调 baseMap/features。
+    // 腾讯把境外地图做成了独立付费产品「海外位置服务」，默认的 JS API GL key 不含这项能力：
+    // 境内走完整矢量数据（城市/省界/海域名齐全），境外只落到「陆地+海洋轮廓 + 大洲/大洋名」。
+    // 实测：z6 法国上空零注记；z3 全图只有「中华人民共和国」一个国名；境外瓦片字节数
+    // 只有境内的 50%，但确实 200 有数据。getOverseaEnabled()=true / getOverseaMapStyle()='auto'
+    // 都不代表 key 有权限。官方 FAQ：海外服务不支持个人申请、需公司主体、是付费服务。
+    // 详见 .workbuddy/memory/DATASOURCES.md「🌍 底图境外不显示地名」。
     map = new TMapRef.Map(mapEl.value, {
       zoom: 3,
       center: new TMapRef.LatLng(18, 88),
@@ -216,6 +359,39 @@ async function initMap() {
       styles: { track: new TMapRef.PolylineStyle({ color: '#2f6fed', width: 3, borderWidth: 1, borderColor: '#ffffff', lineCap: 'round' }) },
       geometries: [],
     })
+    // 地理标注层**最后建** —— 腾讯 GL 的覆盖物按创建顺序叠放，晚建的在上。
+    // 实测两种次序都跑过：建在船位层之前时，船密集处（霍尔木兹/马六甲/中国沿海）
+    // 地名被 marker 压得只剩半个字；建在之后才读得全。
+    // 反过来的代价（地名压住某艘船的 marker 一角）可接受：标签是半透明的，
+    // 而且 disableInteractive 让鼠标事件穿透下去，那艘船照样点得到。
+    labelLayer = new TMapRef.MultiLabel({
+      map,
+      styles: {
+        // 咽喉点：深色气泡 + 白字，压得住底图的浅色海洋/陆地块
+        // ⚠ verticalAlignment 必须是 top：船位 marker 的锚点在底部尖角、本体向**上**
+        //   伸 34px，而咽喉点恰恰是船最密的地方 —— 文字若居中就会和 marker 正面撞上。
+        //   整体落到位置点下方就和 marker 错开了。
+        choke: new TMapRef.LabelStyle({
+          color: '#ffffff', size: 12,
+          backgroundColor: 'rgba(31,42,64,0.86)',
+          padding: '4px 8px', borderRadius: 4,
+          alignment: 'center', verticalAlignment: 'top', offset: { x: 0, y: 5 },
+        }),
+        // 海域名：不加底色（叫「海」的东西本来就该轻），改用白色描边
+        // 让灰字在深海底色上也读得出来
+        sea: new TMapRef.LabelStyle({
+          color: '#6b7f9e', size: 12,
+          strokeColor: 'rgba(255,255,255,0.92)', strokeWidth: 3,
+          alignment: 'center', verticalAlignment: 'middle',
+        }),
+      },
+      geometries: [],
+      // sameSource: 层内碰撞（靠 rank 决定谁让位）；vectorBaseMapSource 保持关，
+      // 不跟腾讯底图自己的注记抢位置，否则境内注记会被我们挤掉
+      collisionOptions: { sameSource: true, vectorBaseMapSource: false },
+      // 必须禁用交互：否则标签会吞掉落在地图上的鼠标事件，拖着拖着就卡住
+      disableInteractive: true,
+    })
     infoWindow = new TMapRef.InfoWindow({ map, position: new TMapRef.LatLng(0, 0), content: '', offset: { x: 0, y: -36 } })
     infoWindow.close()
 
@@ -224,10 +400,18 @@ async function initMap() {
       if (name) selectVessel(name)
     })
     map.on('click', () => infoWindow?.close())
+    // 缩放事件名是**实测**确认的（腾讯官方文档只给事件参数规范、不给名字清单）：
+    // 在真 SDK 上把 zoom_changed / zoomend / zooming / idle / bounds_changed /
+    // center_changed / tiles_loaded / loading / render 全注册一遍再 setZoom，
+    // 实际触发的只有 zoom_changed、zoomend、bounds_changed、idle。
+    // 用 zoom_changed：缩放过程中即时响应，且拖动地图时不会像 bounds_changed 那样被
+    // 别的操作带出来。
+    map.on('zoom_changed', renderGeoLabels)
 
     mapReady.value = true
     renderMarkers()
     fitAll()
+    renderGeoLabels()   // 初次进入：fitAll 改过 zoom，那一刻事件可能早于图层就绪
   } catch (e: any) {
     mapError.value = e?.message || '地图初始化失败'
   }
@@ -264,6 +448,9 @@ watch(ownerSel, async () => {
   } catch { error.value = '加载失败' } finally { loading.value = false }
 })
 
+// 开关只改「显示哪些」，切换时把指纹清掉强制重绘一次
+watch(showGeo, () => { lastGeoKey = '\u0000'; renderGeoLabels() })
+
 onMounted(async () => {
   await nextTick()
   await initMap()
@@ -272,7 +459,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   try { map?.destroy?.() } catch { /* noop */ }
-  map = markerLayer = trackLayer = infoWindow = TMapRef = null
+  map = markerLayer = labelLayer = trackLayer = infoWindow = TMapRef = null
+  lastGeoKey = ''
 })
 
 function fmtStale(h: number | null | undefined) {
@@ -356,7 +544,13 @@ function fmtStale(h: number | null | undefined) {
             <el-option v-for="o in owners" :key="o.owner" :label="`${o.owner} (${o.total})`" :value="o.owner" />
           </el-select>
           <el-input v-model="keyword" size="small" placeholder="搜索船名（中/英）" clearable />
-          <el-checkbox v-model="onlyPos" size="small">只看有船位的</el-checkbox>
+          <div class="filter-row">
+            <el-checkbox v-model="onlyPos" size="small">只看有船位的</el-checkbox>
+            <el-checkbox
+              v-model="showGeo" size="small"
+              title="腾讯底图境外不提供地名注记（海外图是其单独的付费产品），此图层为自绘的咽喉 / 海域标注"
+            >咽喉 / 海域标注</el-checkbox>
+          </div>
         </div>
 
         <div class="list-head">
@@ -514,6 +708,7 @@ function fmtStale(h: number | null | undefined) {
   background: #fff; border: 1px solid #eef0f5; border-radius: 12px; padding: 12px;
 }
 .filters { display: flex; flex-direction: column; gap: 8px; }
+.filter-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .list-head { font-size: 12.5px; color: #6b7280; border-bottom: 1px solid #f2f4f8; padding-bottom: 6px; }
 .list-head b { color: #1a1a2e; }
 .list-sub { color: #a3aab8; }
