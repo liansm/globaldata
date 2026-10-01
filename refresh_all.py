@@ -49,6 +49,11 @@ FETCH_SCRIPTS = [
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
     ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
+    # 外汇：增量 = 中间价当日 + 中间价近 30 天 + 即期实时快照，秒级。
+    # ⚠ 即期日线走新浪 getDayKLine（每对 1 请求、返回全历史），增量只写最近 7 天。
+    #   全历史回补用 --full（中间价 2006 起分块 + 即期全量，约 1.5 分钟），手动跑：
+    #   python fetch_fx.py --full
+    ("fetch_fx.py",                "人民币汇率中间价（CFETS）+ 即期汇率（新浪），日频含历史"),
     ("fetch_fund_nav.py",          "公募基金最新净值快照（天天基金排行榜批量，4 个请求拿全市场）"),
     ("fetch_ipo_calendar.py",      "新股日历（东财 A股/北交所 + 财华社/AAStocks/东财 港股，秒级）"),
     ("fetch_vlcc_fleet.py",        "中国船东 VLCC 名录（招商轮船在役船队 + 中远海能 2021-06 官方快照）"),
@@ -393,6 +398,46 @@ STATUS_QUERIES = [
         "cols": ["rows", "coins", "earliest", "latest"],
         "optional": True,
     },
+    {
+        "title": "fx_pairs  (人民币汇率货币对定义)",
+        "sql": """
+            SELECT COUNT(*) AS pairs,
+                   COUNT(*) FILTER (WHERE official_code IS NOT NULL) AS with_mid,
+                   COUNT(*) FILTER (WHERE spot_code IS NOT NULL) AS with_spot
+            FROM fx_pairs
+        """,
+        "cols": ["pairs", "with_mid", "with_spot"],
+        "optional": True,
+    },
+    {
+        # ⚠ 两个口径分开统计，**不要合成一行**（覆盖 25 vs 19 对、深度 2006 vs 1994/2023）
+        "title": "fx_rates  (汇率日线；mid=中间价 cfets / spot=即期 sina)",
+        "sql": """
+            SELECT rate_type,
+                   COUNT(DISTINCT pair_key) AS pairs,
+                   COUNT(*) AS rows,
+                   MIN(rate_date)::text AS earliest,
+                   MAX(rate_date)::text AS latest
+            FROM fx_rates
+            GROUP BY rate_type
+            ORDER BY rate_type
+        """,
+        "cols": ["type", "pairs", "rows", "earliest", "latest"],
+        "optional": True,
+        "multi": True,
+    },
+    {
+        "title": "fx_spot  (即期实时快照；休市时会停更，看 quote_time)",
+        "sql": """
+            SELECT COUNT(*) AS pairs,
+                   MAX(quote_time) AS last_quote,
+                   MAX(spot_date)::text AS spot_date,
+                   MAX(updated_at AT TIME ZONE 'Asia/Shanghai')::text AS last_run
+            FROM fx_spot
+        """,
+        "cols": ["pairs", "last_quote", "spot_date", "last_run"],
+        "optional": True,
+    },
 ]
 
 
@@ -412,10 +457,14 @@ def print_status():
             try:
                 with conn.cursor() as cur:
                     cur.execute(q["sql"])
-                    row = cur.fetchone()
-                pairs = "  ".join(f"{c}={ok(str(v))}" for c, v in zip(cols, row))
+                    rows = cur.fetchall() if q.get("multi") else [cur.fetchone()]
                 print(f"  {BOLD}{title}{RESET}")
-                print(f"    {pairs}")
+                if not rows or rows == [None]:
+                    print(f"    {warn('无数据')}")
+                for row in rows:
+                    pairs = "  ".join(f"{c}={ok(str(v))}" for c, v in zip(cols, row))
+                    print(f"    {pairs}" if not q.get("multi") else f"    [{row[0]}] " + "  ".join(
+                        f"{c}={ok(str(v))}" for c, v in zip(cols[1:], row[1:])))
             except psycopg2.errors.UndefinedTable:
                 if optional:
                     print(f"  {BOLD}{title}{RESET}")

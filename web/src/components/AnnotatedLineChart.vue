@@ -20,7 +20,7 @@ import VChart from 'vue-echarts'
 // markPoint 依赖 MarkPointComponent（其余组件由各页面自行注册）
 use([CanvasRenderer, LineChart, MarkPointComponent])
 
-const props = defineProps<{ option: any }>()
+const props = defineProps<{ option: any; decimals?: number }>()
 
 const MAX_COLOR = '#e8534a'   // 最高（红，涨跌色约定）
 const MIN_COLOR = '#26a17b'   // 最低（绿）
@@ -67,7 +67,14 @@ function buildMarkPoint(
   }
   if (maxI < 0 || minI < 0) return undefined
 
-  const fmtV = (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+  // 小数位跟随调用方：汇率这类小量级（韩元 0.004958）用默认 2 位会显示成 0。
+  // 不传 decimals 时**保持原有行为**（最多 2 位、不补零），避免影响既有页面。
+  const fmtV = (v: number) => (props.decimals == null)
+    ? v.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+    : v.toLocaleString('zh-CN', {
+        minimumFractionDigits: props.decimals,
+        maximumFractionDigits: props.decimals,
+      })
 
   const point = (i: number, name: string, color: string, position: string) => ({
     name,
