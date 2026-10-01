@@ -70,6 +70,12 @@ const router = createRouter({
       name: 'ipo-calendar',
       component: () => import('@/pages/IpoCalendar.vue'),
     },
+    {
+      // 油运信息：中国船东 VLCC 船队 + 最新 AIS 船位（地图只走合规白名单厂商）
+      path: '/oil-shipping',
+      name: 'oil-shipping',
+      component: () => import('@/pages/OilShipping.vue'),
+    },
   ],
 })
 

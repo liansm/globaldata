@@ -12,6 +12,7 @@ const navItems = [
   { label: '基金公司', icon: '🏢', to: '/companies', names: ['companies', 'company-detail'] },
   { label: '私募基金', icon: '🏦', to: '/private-funds', names: ['private-funds', 'private-fund-detail'] },
   { label: '新股日历', icon: '🆕', to: '/ipo-calendar', names: ['ipo-calendar'] },
+  { label: '油运信息', icon: '🛢️', to: '/oil-shipping', names: ['oil-shipping'] },
 ]
 
 function isActive(item: typeof navItems[0]) {

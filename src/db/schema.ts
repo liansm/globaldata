@@ -386,3 +386,75 @@ export const ipoCalendar = pgTable('ipo_calendar', {
   index('idx_ipo_calendar_apply').on(t.applyDate),
   index('idx_ipo_calendar_market').on(t.market),
 ])
+
+// --------------------------------------------------------------------------
+// VLCC 船队（2026-09-30 落地，「油运信息」地图页）
+//   vlcc_vessels   ← fetch_vlcc_fleet.py            （名录：船东→船名，静态）
+//   vlcc_positions ← fetch_vlcc_position_hifleet.py （船位主源：HiFleet REST，付费）
+//                  ← fetch_vlcc_position.py         （船位副源：aisstream.io 流，免费但覆盖塌陷）
+//   source 列区分两条来源：'hifleet' / 'aisstream'。同一 (name_ais, ts) 唯一，两源可共存。
+//
+// 为什么单开表，不塞进 market_indices / index_prices
+// -------------------------------------------------
+// 这里是「**实体（船）+ 时空点（船位）**」，不是时间序列。船有船东/吨位/建造年等
+// 静态属性，船位是 (lat,lon,sog,cog…) —— 塞进 index_prices 的 `close` 会丢语义，
+// 而且一艘船位数据点没有「开高低收」。
+//
+// ⚠ 三条口径，别搞错
+// -------------------------------------------------
+// ① 名录口径 = **中国船东**（招商轮船 / 中远海能），**不是挂旗口径**。
+//    这两家的 VLCC 大量挂中国香港旗 / 新加坡旗 / 巴拿马旗 / 利比里亚旗，
+//    按「挂中国旗」筛会漏掉绝大多数。船旗只在 `flag` 列做参考，不参与筛选。
+// ② `name_ais` = 英文船名规范化（大写 + 折叠空白）→ **AIS 匹配键**。
+//    AIS 只认船名 / MMSI，**不认船东**；没有这份名录就没法从全球 AIS 流里
+//    挑出「中国的 VLCC」。所以名录不是装饰，是过滤器本身。
+// ③ 名录源侧**都不给 IMO/MMSI**（中远海能官方 PDF、chinashipbuild 都没有），
+//    由船位脚本 `--learn` 从 AIS 的 ShipStaticData 反推回写，并把 verified 置真。
+//    `verified=false` 只代表「还没被 AIS 实见过」，**不代表这船不存在**。
+//
+// ⚠ 船位时间语义：`ts` 是 **AIS 报文时间（UTC）**，不是我们收到的时间。
+//   远洋船没有岸基 AIS 覆盖时，最新报文可能已过去几小时甚至几天 ——
+//   这是 AIS 的固有限制，**不是数据坏了**。前端必须显示「更新于 X 小时前」，
+//   不能默认所有点都是实时的。
+// --------------------------------------------------------------------------
+export const vlccVessels = pgTable('vlcc_vessels', {
+  id:        bigserial('id', { mode: 'number' }).primaryKey(),
+  nameAis:   varchar('name_ais',   { length: 120 }).notNull(),
+  nameEn:    varchar('name_en',    { length: 120 }).notNull(),
+  nameCn:    varchar('name_cn',    { length: 120 }),   // 拿不到就留空，不猜
+  owner:     varchar('owner',      { length: 60  }).notNull(),   // '招商轮船' | '中远海能'
+  ownerFull: varchar('owner_full', { length: 200 }),
+  dwt:       numeric('dwt',        { precision: 14, scale: 2 }),
+  builtYear: integer('built_year'),
+  flag:      varchar('flag',       { length: 12 }),    // CN/HK/SG/PA/LR/MH/MT
+  source:    varchar('source',     { length: 200 }).notNull(),
+  imo:       varchar('imo',        { length: 16 }),
+  mmsi:      varchar('mmsi',       { length: 16 }),
+  verified:  boolean('verified').notNull().default(false),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+               .default(sql`NOW()`).notNull(),
+}, (t) => [
+  unique('vlcc_vessels_name_ais_uniq').on(t.nameAis),
+  index('idx_vlcc_vessels_owner').on(t.owner),
+])
+
+export const vlccPositions = pgTable('vlcc_positions', {
+  id:        bigserial('id', { mode: 'number' }).primaryKey(),
+  nameAis:   varchar('name_ais', { length: 120 }).notNull(),
+  mmsi:      varchar('mmsi',     { length: 16  }),
+  ts:        timestamp('ts', { withTimezone: true }).notNull(),
+  lat:       numeric('lat',     { precision: 10, scale: 6 }).notNull(),
+  lon:       numeric('lon',     { precision: 10, scale: 6 }).notNull(),
+  sog:       numeric('sog',     { precision: 8, scale: 2 }),
+  cog:       numeric('cog',     { precision: 8, scale: 2 }),
+  heading:   numeric('heading', { precision: 8, scale: 2 }),
+  navStatus: varchar('nav_status', { length: 40 }),
+  dest:      varchar('dest',    { length: 120 }),
+  draught:   numeric('draught', { precision: 8, scale: 2 }),
+  source:    varchar('source',  { length: 40 }).notNull().default('aisstream'),
+  createdAt: timestamp('created_at', { withTimezone: true })
+               .default(sql`NOW()`).notNull(),
+}, (t) => [
+  unique('vlcc_positions_name_ts_uniq').on(t.nameAis, t.ts),
+  index('idx_vlcc_positions_name_ts').on(t.nameAis, t.ts),
+])

@@ -26,6 +26,15 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata
 BASE_DIR     = Path(__file__).parent
 
 # 刷新脚本执行顺序
+#
+# 元素格式：
+#   (脚本名, 说明)
+#   (脚本名, 说明, [额外参数...])
+#   (脚本名, 说明, [额外参数...], {"requires_env": "环境变量名"})
+#
+# requires_env 的脚本在环境变量缺失时 **SKIP（不判失败）** —— 缺 key 是
+# 「没配置」而不是「抓取坏了」，不该把整轮 refresh 的结论染红。
+# 但会显式打印 [SKIP] 原因，绝不静默跳过。
 FETCH_SCRIPTS = [
     ("fetch_markets.py",           "A股/港股指数 + 沪深港通资金流向（历史日线）"),
     ("fetch_index_spot.py",        "A股/港股指数实时快照（stock_zh/hk_index_spot_sina）"),
@@ -42,6 +51,18 @@ FETCH_SCRIPTS = [
     ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
     ("fetch_fund_nav.py",          "公募基金最新净值快照（天天基金排行榜批量，4 个请求拿全市场）"),
     ("fetch_ipo_calendar.py",      "新股日历（东财 A股/北交所 + 财华社/AAStocks/东财 港股，秒级）"),
+    ("fetch_vlcc_fleet.py",        "中国船东 VLCC 名录（招商轮船在役船队 + 中远海能 2021-06 官方快照）"),
+    # VLCC 船位：主源 = HiFleet（付费，覆盖全球含波斯湾/红海/马六甲/中国沿海）。
+    # 缺 HIFLEET_API_KEY 时 → SKIP，不判失败（「没配置」≠「抓取坏了」，但原因照样打印）。
+    # ⚠ 计费：逐船查询，一轮约 99 次查位（首次还要 ~99 次搜索补 MMSI）。
+    #   单次扣多少点官方**未公开** → 先实测：python fetch_vlcc_position_hifleet.py --limit 5 --dry-run
+    #   看余额前后差，再决定刷新频率与订阅档位。分数不够会显式失败（--max-errors，不静默）。
+    ("fetch_vlcc_position_hifleet.py", "VLCC 船位（HiFleet REST，逐船按 MMSI 查最新位置）",
+     [], {"requires_env": "HIFLEET_API_KEY"}),
+    # ⚠ aisstream 版（fetch_vlcc_position.py）**不接入**（2026-09-30 实测定论）：
+    #   免费但覆盖塌陷 —— 波斯湾 3 分钟 0 条、红海/印度洋/马六甲北/南中国海/上海口 全 0 条/秒，
+    #   全地球流的六成来自北海。用已学到的 MMSI 精确订阅仍是 0 条 → 当地没有接收站。
+    #   保留作海外段补充，手动跑：python fetch_vlcc_position.py --minutes 10
     # 注意：fetch_funds.py 不接入本脚本，单独手动运行（数据量大、耗时长）
     #   python fetch_funds.py --types 股票型,混合型,指数型   （权益类增量）
     #   python fetch_funds.py --years-back 5                （回补近5年持仓）
@@ -324,6 +345,34 @@ STATUS_QUERIES = [
         "optional": True,
     },
     {
+        "title": "vlcc_vessels  (中国船东 VLCC 名录)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   STRING_AGG(DISTINCT owner, ' / ' ORDER BY owner) AS owners,
+                   COUNT(*) FILTER (WHERE mmsi IS NOT NULL) AS with_mmsi,
+                   COUNT(*) FILTER (WHERE dwt  IS NOT NULL) AS with_dwt,
+                   COUNT(*) FILTER (WHERE flag IS NOT NULL) AS with_flag,
+                   MAX(updated_at AT TIME ZONE 'Asia/Shanghai')::date::text AS updated
+            FROM vlcc_vessels
+        """,
+        "cols": ["total", "owners", "with_mmsi", "with_dwt", "with_flag", "updated"],
+        "optional": True,
+    },
+    {
+        "title": "vlcc_positions  (VLCC 船位，滚存；source=hifleet/aisstream)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT name_ais) AS ships,
+                   STRING_AGG(DISTINCT source, '/' ORDER BY source) AS src,
+                   MIN(ts)::text AS earliest,
+                   MAX(ts)::text AS latest,
+                   MAX(created_at AT TIME ZONE 'Asia/Shanghai')::text AS last_run
+            FROM vlcc_positions
+        """,
+        "cols": ["rows", "ships", "src", "earliest", "latest", "last_run"],
+        "optional": True,
+    },
+    {
         "title": "crypto_coins  (加密货币定义)",
         "sql": """
             SELECT COUNT(*) AS total
@@ -387,22 +436,41 @@ def print_status():
 # ─────────────────────────────────────────────────────────────────────────────
 # Run fetch scripts
 # ─────────────────────────────────────────────────────────────────────────────
+def parse_entry(entry):
+    """把 FETCH_SCRIPTS 的元素规整成 (script, desc, extra_args, options)。"""
+    script, desc = entry[0], entry[1]
+    extra = list(entry[2]) if len(entry) > 2 and entry[2] else []
+    opts  = entry[3] if len(entry) > 3 and entry[3] else {}
+    return script, desc, extra, opts
+
+
 def run_fetches():
     print(hdr("\n══════════════  开始刷新数据  ══════════════\n"))
     python = sys.executable
     results = []
 
-    for script, desc in FETCH_SCRIPTS:
+    for entry in FETCH_SCRIPTS:
+        script, desc, extra, opts = parse_entry(entry)
+
+        # 需要环境变量的脚本：缺了就 SKIP，不判失败（原因打印出来）
+        env_key = opts.get("requires_env")
+        if env_key and not os.environ.get(env_key):
+            print(f"  {warn('[SKIP]')} {script}  ({desc})")
+            print(f"         未配置 {env_key}，跳过（这不是失败）\n")
+            results.append((script, "skip", 0.0))
+            continue
+
         path = BASE_DIR / script
         if not path.exists():
             print(f"  {warn('[SKIP]')} {script}  ({desc})  — 文件不存在")
             results.append((script, "skip", 0))
             continue
 
-        print(f"  {CYAN}▶ {script}{RESET}  {desc}")
+        cmd_desc = desc + (f"  [{' '.join(extra)}]" if extra else "")
+        print(f"  {CYAN}▶ {script}{RESET}  {cmd_desc}")
         t0 = time.time()
         proc = subprocess.run(
-            [python, str(path)],
+            [python, str(path)] + extra,
             capture_output=False,   # 让输出直接打印到终端
             text=True,
         )
@@ -438,6 +506,8 @@ def run_fetches():
 # 按依赖顺序 TRUNCATE（先子表再父表，CASCADE 处理外键）
 CLEAR_TABLES = [
     "fetch_log",
+    "vlcc_positions",
+    "vlcc_vessels",
     "fund_nav",
     "fund_holdings",
     "funds",
