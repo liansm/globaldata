@@ -33,6 +33,8 @@ FETCH_SCRIPTS = [
     ("fetch_ccfi.py",              "CCFI 中国出口集装箱运价指数（上海航交所，每周五发布）"),
     ("fetch_ccfi_history.py",      "CCFI 历史周线回补（GreenPacific，2023-04 起全航线）"),
     ("fetch_bdi.py",               "BDI 系列航运指数（akshare，日频含历史）"),
+    ("fetch_ctfi.py",              "CTFI 中国进口原油运价指数 + VLCC 各航线 WS/TCE（上海航交所，日频滚存）"),
+    ("fetch_ctfi_history.py",      "CTFI 历史回补（中华航运网周报/月报，月报 2021-09 起 / 周报 2025-07 起）"),
     ("fetch_commodities.py",       "大宗商品价格（黄金/铜/油/煤炭等）"),
     ("fetch_cement.py",            "水泥价格：CEMPI 指数 + P.O42.5 均价（中国水泥网，日频含历史）"),
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
@@ -134,6 +136,33 @@ STATUS_QUERIES = [
                    MAX(p.price_date)::text AS latest
             FROM index_prices p
             WHERE p.index_key IN ('bdi', 'bci', 'bsi', 'bcti', 'bdti')
+        """,
+        "cols": ["series", "rows", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "index_prices · 航运 油运 CTFI  (当日口径：日频滚存 + 周报/月报期末值)",
+        "sql": """
+            SELECT COUNT(DISTINCT p.index_key) AS series,
+                   COUNT(p.id) AS rows,
+                   MIN(p.price_date)::text AS earliest,
+                   MAX(p.price_date)::text AS latest
+            FROM index_prices p
+            WHERE p.index_key LIKE 'ctfi_%'
+              AND p.index_key NOT LIKE '%_avg'
+        """,
+        "cols": ["series", "rows", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "index_prices · 航运 油运 CTFI  (期间均值：月均/周均，口径不同勿混)",
+        "sql": """
+            SELECT COUNT(DISTINCT p.index_key) AS series,
+                   COUNT(p.id) AS rows,
+                   MIN(p.price_date)::text AS earliest,
+                   MAX(p.price_date)::text AS latest
+            FROM index_prices p
+            WHERE p.index_key LIKE 'ctfi_%_avg'
         """,
         "cols": ["series", "rows", "earliest", "latest"],
         "optional": True,

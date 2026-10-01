@@ -42,12 +42,26 @@ export const prices = pgTable('prices', {
 
 // --------------------------------------------------------------------------
 // market_indices — one row per index / capital-flow series
+//
+// 数据源分层（market 取值 → 抓取脚本）：
+//   'A股'|'港股'|'美股'|'欧洲'|'亚太' → fetch_markets.py + fetch_index_spot.py
+//   '资金流向'                       → fetch_markets.py（沪深港通）
+//   '航运'                           → fetch_bdi.py  BDI/BCI/BSI 干散货 + BDTI/BCTI 油运
+//                                                 （2006-07 起日频，**含全历史**）
+//                                       fetch_ccfi.py / fetch_ccfi_history.py  出口集装箱
+//                                                 （周频 / 2023-04 起）
+//                                       fetch_ctfi.py  **中国进口原油运价指数 + VLCC 各航线
+//                                                 WS / 美元每吨 / TCE**（日频，但页面上只给
+//                                                 当期值、历史是付费墙 → **只能滚存**）
+//   '建材'                           → fetch_cement.py（CEMPI）
+// ⚠ 同表内各序列的「可回补性」差别很大：BDI 系列含全历史，
+//   **CCFI / CTFI 只能靠定期运行累积，跑漏的期次永久缺失。**
 // --------------------------------------------------------------------------
 export const marketIndices = pgTable('market_indices', {
   key:       varchar('key',    { length: 60  }).primaryKey(),
   symbol:    varchar('symbol', { length: 60  }).notNull(),
   name:      varchar('name',   { length: 200 }).notNull(),
-  market:    varchar('market', { length: 50  }).notNull(),   // 'A股' | '港股' | '资金流向'
+  market:    varchar('market', { length: 50  }).notNull(),   // 'A股'|'港股'|'资金流向'|'航运'|'建材'|'美股'|'欧洲'|'亚太'
   unit:      varchar('unit',   { length: 50  }),
   updatedAt: timestamp('updated_at', { withTimezone: true })
                .default(sql`NOW()`).notNull(),
