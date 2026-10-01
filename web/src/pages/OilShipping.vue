@@ -398,6 +398,19 @@ async function initMap() {
     const mapOpts: any = {
       zoom: 3,
       center: new TMapRef.LatLng(18, 88),
+      // ── 禁止「左右拖动绕圈重复」────────────────────────────────────────────
+      // 不设 boundary 时，向东拖过 180° 后 SDK 会把中心归一化回 -180
+      // （源码 T.Map.prototype._normalizeCenter：delta>180 就 -360），视口于是把世界
+      // 整个重画一遍 —— 表现就是「一直往右拖，地图循环重复」。
+      // 实测（真 SDK + 真鼠标拖拽）：起始 lon 88，向东拖一次中心直接跳到 -81.98。
+      // 传入整个世界范围后，SDK 会把**视口**（不是中心点）夹在边界内，
+      // 西/东边正好贴在 ±180：同一拖拽下中心停在 83.32、东边界 179.9，再拖就不动了。
+      // ⚠ 它只夹「视口」，不影响 setCenter 到具体船位 —— focusVessel 照常能定位到任意经度。
+      // 纬度取 ±85 是 Web Mercator 的固有上限（再高会被投影拉到无穷）。
+      boundary: new TMapRef.LatLngBounds(
+        new TMapRef.LatLng(-85, -180),
+        new TMapRef.LatLng(85, 180),
+      ),
     }
     // ⚠ 叠了天地图就必须关掉腾讯自带的注记：腾讯的 label 画在 ImageTileLayer **之上**
     //    （不是底图层次），不关会两层字叠在一起 —— 实测 z6 武汉一带「武汉市」出现两次，
@@ -447,14 +460,21 @@ async function initMap() {
     labelLayer = new TMapRef.MultiLabel({
       map,
       styles: {
-        // 咽喉点：深色气泡 + 白字，压得住底图的浅色海洋/陆地块
+        // 咽喉点：**白色药丸 + 深蓝字 + 细边框**。
+        // 原来的深色气泡（rgba(31,42,64,0.86) + 白字）在偏亮的天地图底图上是一块块
+        // 突兀的黑疙瘩，海面上尤其扎眼 —— 已实测对比后换掉。
+        // 为什么不做成「无底色 + 白描边」：天地图自己的国名/城市名就是「深字 + 白描边」，
+        // 那样会跟底图注记糊成同一个视觉层级，反而看不出哪些是本页自绘的关键信息。
+        // 白底药丸能在底图之上立出独立的一层。borderColor/borderWidth 是 LabelStyle
+        // 支持但文档没写的键（读 SDK 源码 function t(){…this.borderColor=t.borderColor} 确认）。
         // ⚠ verticalAlignment 必须是 top：船位 marker 的锚点在底部尖角、本体向**上**
         //   伸 34px，而咽喉点恰恰是船最密的地方 —— 文字若居中就会和 marker 正面撞上。
         //   整体落到位置点下方就和 marker 错开了。
         choke: new TMapRef.LabelStyle({
-          color: '#ffffff', size: 12,
-          backgroundColor: 'rgba(31,42,64,0.86)',
-          padding: '4px 8px', borderRadius: 4,
+          color: '#1f3a5f', size: 12,
+          backgroundColor: 'rgba(255,255,255,0.94)',
+          borderColor: 'rgba(31,58,95,0.22)', borderWidth: 1,
+          padding: '3px 7px', borderRadius: 3,
           alignment: 'center', verticalAlignment: 'top', offset: { x: 0, y: 5 },
         }),
         // 海域名：不加底色（叫「海」的东西本来就该轻），改用白色描边
