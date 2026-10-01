@@ -425,7 +425,16 @@ function fmtStale(h: number | null | undefined) {
 </template>
 
 <style scoped>
-.oil-page { padding: 18px 22px 28px; }
+/* 整屏布局：页面自身占满一屏，内部用 flex 纵向分配 —— 标题栏/提示条占自然高度，
+   地图区 flex:1 吃掉剩余全部空间。原来地图写死 620px，在大屏上只有小半屏。
+   为什么用 vh 而不是 100%：.app-main 是 flex:1 的滚动容器，高度来自
+   .app-shell 的 min-height:100vh，对它写 height:100% 解析不出确定值。
+   高度值要和 App.vue 的 .sidebar(100vh)/.app-shell(min-height:100vh) 保持一致，
+   否则会出现「页面比一屏矮一点」或「多出一条滚动条」。 */
+.oil-page {
+  padding: 18px 22px 28px;
+  height: 100vh; display: flex; flex-direction: column;
+}
 
 .page-head {
   display: flex; align-items: flex-end; justify-content: space-between;
@@ -453,17 +462,25 @@ function fmtStale(h: number | null | undefined) {
 .guide ol { margin: 4px 0 0; padding-left: 20px; }
 .guide a { color: #2f6fed; }
 
-.body { display: flex; gap: 14px; align-items: flex-start; }
+/* align-items 必须是 stretch（不能 flex-start）：地图与右侧面板要等高撑满。
+   flex-start 会让两者各按内容高度，地图就退回写死高度。
+   min-height:0 是 flex 纵向伸缩的必要条件（子项默认 min-height:auto 会被内容顶开）。 */
+.body { display: flex; gap: 14px; align-items: stretch; flex: 1; min-height: 0; }
 
 .map-wrap {
-  position: relative; flex: 1; min-width: 0; min-height: 620px;
+  position: relative; flex: 1; min-width: 0;
+  /* min-height 是可用性下限：出现「地图初始化失败/未配 Key」提示条时纵向空间会被挤，
+     再矮就该让整页滚动，而不是把地图压成一条缝。 */
+  min-height: 320px;
   background: #eef1f6; border: 1px solid #e6e9f0; border-radius: 12px; overflow: hidden;
 }
-.map { width: 100%; height: 620px; }
+/* 100% 而非固定 px：高度由 .map-wrap 给出（flex 拉伸成确定高度）。
+   腾讯 GL JS 初始化时读的是布局后的实际高度，所以不再写死像素。 */
+.map { width: 100%; height: 100%; }
 .map.hidden { display: none; }
 
 /* 空态/失败态是「盖在地图上的浮层」，必须 absolute —— 早先写成普通流式块，
-   被 .map-wrap 的 overflow:hidden 连同 620px 高度一起裁掉：DOM 里在、屏幕上没有。
+   被 .map-wrap 的 overflow:hidden 连同那点高度一起裁掉：DOM 里在、屏幕上没有。
    改 absolute 后自身不再撑高，故 .map-wrap 要补 min-height。 */
 .map-empty {
   /* z-index 必须 > 1000：腾讯 GL JS 的地图容器自带 z-index:1000，
@@ -481,7 +498,10 @@ function fmtStale(h: number | null | undefined) {
 .map-empty code { background: #fff; padding: 2px 6px; border-radius: 4px; border: 1px solid #e3e7ee; }
 
 .legend {
-  position: absolute; left: 12px; bottom: 12px; z-index: 30;
+  /* 只放左上角。左下角是腾讯 SDK 自己的地盘：比例尺 + logo + 「腾讯地图 ©… GS(…)号」
+     版权行，位置不受我们控制；原先放 bottom:12px 时实测与版权行重叠 88x7px（字叠字）。
+     右上角同样被 SDK 的缩放/旋转控件占着。左上角是唯一干净的角。 */
+  position: absolute; left: 12px; top: 12px; z-index: 30;
   background: rgba(255,255,255,.94);
   border: 1px solid #e6e9f0; border-radius: 8px; padding: 6px 10px;
   display: flex; gap: 14px; font-size: 12px; color: #5a6272;
@@ -490,6 +510,7 @@ function fmtStale(h: number | null | undefined) {
 
 .side {
   width: 356px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px;
+  min-height: 0;
   background: #fff; border: 1px solid #eef0f5; border-radius: 12px; padding: 12px;
 }
 .filters { display: flex; flex-direction: column; gap: 8px; }
@@ -497,7 +518,10 @@ function fmtStale(h: number | null | undefined) {
 .list-head b { color: #1a1a2e; }
 .list-sub { color: #a3aab8; }
 
-.list { max-height: 430px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+/* 列表吃掉面板的剩余高度（原来是 max-height:430px 死值，整屏后只剩一半高）。
+   min-height:0 必须有：flex 子项默认 min-height:auto，会被内容顶开，
+   那样 overflow-y 永远不会触发、面板被撑出可视区。 */
+.list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .item {
   display: flex; justify-content: space-between; gap: 8px; align-items: center;
   padding: 7px 8px; border-radius: 8px; cursor: pointer; transition: background .12s;
