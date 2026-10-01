@@ -479,3 +479,73 @@ export const vlccPositions = pgTable('vlcc_positions', {
   unique('vlcc_positions_name_ts_uniq').on(t.nameAis, t.ts),
   index('idx_vlcc_positions_name_ts').on(t.nameAis, t.ts),
 ])
+
+// --------------------------------------------------------------------------
+// 外汇 / 人民币汇率（2026-10-01 落地，fetch_fx.py）
+//   fx_pairs ← 货币对元数据（25 对，手工维护在脚本的 PAIRS 里）
+//   fx_rates ← 日线序列。**两个口径分开存**：
+//              rate_type='mid' 中间价(cfets) / 'spot' 即期(sina)
+//   fx_spot  ← 即期实时快照（新浪 hq.sinajs，一对一行，与 index_spot 同模式）
+//
+// ⚠ 唯一数值口径：`fx_rates.close` = **1 单位外币 兑 人民币**（CNY per 1 unit foreign）
+//   CFETS 官方对 10 对报「外币/人民币」（USD/CNY…），对另 15 对报「人民币/外币」
+//   （CNY/KRW 201.70 → 入库 0.0049579，取倒数）。统一方向是刻意的：
+//   否则同一页会出现「USD/CNY 上行=人民币贬值」与「CNY/KRW 上行=人民币升值」
+//   两种互斥语义，涨跌红绿互相矛盾。
+//   ⇒ 本表内 **数值上行 = 人民币贬值**，全表唯一。
+//   `fx_pairs.quote_unit`（日元 100，其余 1）只管**展示倍数**，不改语义。
+//
+// ⚠ 两个口径的覆盖与深度不同，**不能当它们可以互换，更禁止拼成一条序列**：
+//   中间价(cfets) 25 对，官方定价，官网历史起点 2006-01；每工作日 9:15 发布，
+//     周末/法定节假日**没有数据**（是「当天就没发」，不是「没抓到」）。
+//   即期(sina)   19 对（缺 KRW/SAR/HUF/PLN/TRY/MXN），市场价；
+//     USDCNY 1994-08 起、EURCNY 2008-09 起，其余多数 **2023-07 起且被截断在 1000 根**。
+//
+// ⚠ `mid` 只有 close（官方只给单一中间价，没有开高低）；`spot` 才有 OHLC。
+//   UI 上 mid 的 OHLC 一律显示「—」，**不要用 close 充数**。
+// --------------------------------------------------------------------------
+export const fxPairs = pgTable('fx_pairs', {
+  key:          varchar('key',         { length: 40 }).primaryKey(),  // 'usd_cny'
+  baseCode:     varchar('base_code',   { length: 8  }).notNull(),     // 'USD'
+  baseName:     varchar('base_name',   { length: 40 }).notNull(),     // '美元'
+  quoteUnit:    integer('quote_unit').notNull().default(1),           // 展示倍数：JPY=100
+  category:     varchar('category',    { length: 20 }).notNull(),     // '主要货币' | '其他货币'
+  officialCode: varchar('official_code', { length: 24 }),             // CFETS 原始代码 '100JPY/CNY'
+  spotCode:     varchar('spot_code',     { length: 24 }),             // 新浪即期代码 'fx_sjpycny'
+  sortOrder:    integer('sort_order').notNull().default(100),
+  updatedAt:    timestamp('updated_at', { withTimezone: true })
+                  .default(sql`NOW()`).notNull(),
+}, (t) => [
+  index('idx_fx_pairs_category').on(t.category),
+])
+
+export const fxRates = pgTable('fx_rates', {
+  id:       bigserial('id', { mode: 'number' }).primaryKey(),
+  pairKey:  varchar('pair_key',  { length: 40 }).notNull(),
+  rateDate: date('rate_date').notNull(),
+  rateType: varchar('rate_type', { length: 8 }).notNull(),   // 'mid' 中间价 | 'spot' 即期
+  open:     numeric('open',  { precision: 20, scale: 10 }),
+  high:     numeric('high',  { precision: 20, scale: 10 }),
+  low:      numeric('low',   { precision: 20, scale: 10 }),
+  close:    numeric('close', { precision: 20, scale: 10 }),
+  source:   varchar('source', { length: 16 }).notNull(),     // 'cfets' | 'sina'
+}, (t) => [
+  unique('fx_rates_uniq').on(t.pairKey, t.rateDate, t.rateType),
+  index('idx_fx_rates_pair_date').on(t.pairKey, t.rateDate),
+  index('idx_fx_rates_type').on(t.rateType),
+])
+
+export const fxSpot = pgTable('fx_spot', {
+  pairKey:   varchar('pair_key',   { length: 40 }).primaryKey(),
+  price:     numeric('price',      { precision: 20, scale: 10 }),
+  prevClose: numeric('prev_close', { precision: 20, scale: 10 }),
+  open:      numeric('open',       { precision: 20, scale: 10 }),
+  high:      numeric('high',       { precision: 20, scale: 10 }),
+  low:       numeric('low',        { precision: 20, scale: 10 }),
+  changePct: numeric('change_pct', { precision: 10, scale: 4 }),
+  changeAmt: numeric('change_amt', { precision: 20, scale: 10 }),
+  quoteTime: varchar('quote_time', { length: 16 }),   // 源侧报价时间 HH:MM:SS
+  spotDate:  date('spot_date'),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+               .default(sql`NOW()`).notNull(),
+})

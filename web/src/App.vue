@@ -8,6 +8,7 @@ const navItems = [
   { label: '大宗商品', icon: '📦', to: '/',        names: ['home', 'detail'] },
   { label: '全球股市', icon: '📈', to: '/markets',  names: ['markets', 'market-detail'] },
   { label: '加密货币', icon: '₿',  to: '/crypto',   names: ['crypto'] },
+  { label: '外汇',     icon: '💱', to: '/fx',       names: ['fx', 'fx-detail'] },
   { label: '公募基金', icon: '💰', to: '/funds',    names: ['funds', 'fund-detail'] },
   { label: '基金公司', icon: '🏢', to: '/companies', names: ['companies', 'company-detail'] },
   { label: '私募基金', icon: '🏦', to: '/private-funds', names: ['private-funds', 'private-fund-detail'] },

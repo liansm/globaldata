@@ -33,6 +33,17 @@ const router = createRouter({
       component: () => import('@/pages/Crypto.vue'),
     },
     {
+      // 外汇：人民币汇率中间价（CFETS）+ 即期汇率（新浪），两个口径可切换
+      path: '/fx',
+      name: 'fx',
+      component: () => import('@/pages/Fx.vue'),
+    },
+    {
+      path: '/fx/:key',
+      name: 'fx-detail',
+      component: () => import('@/pages/FxDetail.vue'),
+    },
+    {
       path: '/funds',
       name: 'funds',
       component: () => import('@/pages/Funds.vue'),
