@@ -99,6 +99,11 @@ HiFleet API（默认基址 `https://api.hifleet.com`，可用 `HIFLEET_API_BASE`
   要根治得把中远名录换成**当前在役**船队源；在那之前，本脚本对这类船
   如实标成「搜不到 / 报位很旧」，**不编位置、不拿别的船顶替、不假装实时**。
 
+  这 4 艘已登记进模块顶部的 `RETIRED`：**匹配之前就挡掉，不搜、不查位**。
+  ⚠ 光「清空 MMSI」是不够的 —— 下一次运行阶段一会把它们**重新学回来**
+  （搜得到名字、身份就回填），阶段二再把旧报文写回图上，幽灵船位会自己长回来。
+  用 `--fix-retired` 一次擦净（清身份 + 删残留船位），`--dry-run` 只列不改。
+
 失败 vs 无数据（本项目最忌静默失败，这里分开算）
 ------------------------------------------------
 * **请求层失败**（HTTP 错 / `result != ok` / 网络）→ 记账、跑完 exit 1，必须可见。
@@ -117,6 +122,8 @@ HiFleet API（默认基址 `https://api.hifleet.com`，可用 `HIFLEET_API_BASE`
     python fetch_vlcc_position_hifleet.py --status --stale-days 3
     python fetch_vlcc_position_hifleet.py --fix-suspect --dry-run   # 列出可疑错配（不改）
     python fetch_vlcc_position_hifleet.py --fix-suspect             # 清掉硬可疑，下次重搜
+    python fetch_vlcc_position_hifleet.py --fix-retired --dry-run   # 列出已转手船的身份/残留船位
+    python fetch_vlcc_position_hifleet.py --fix-retired             # 擦净（清身份 + 删船位）
 
     # key 二选一：
     #   1) .env 里写  HIFLEET_API_KEY=sk_live_xxxx
@@ -167,6 +174,31 @@ VLCC_MIN_DWT = 200_000
 # 实测 NEW ADEN 真船 306193 vs 名录 306474（差 0.09%），冒名的那条 311080（差 1.50%）。
 # 容差取 1%：够放下来源间的正常尾数差异，又挡得住 1.5% 以上的冒名。
 DWT_ALIGN_TOL = 0.01
+
+# ---------------------------------------------------------------------------
+# 已退役（已转手改名）的名录条目 —— **不搜、不查位**
+# ---------------------------------------------------------------------------
+# 为什么需要这张表，而不是「清空 MMSI 就算完」：
+#   名录是**中远海能官网 2021-06-30 的 PDF 快照**，之后再没更新。清空 MMSI 只是
+#   把库里的身份擦掉，下一次运行阶段一**照样会搜到、照样回填**，阶段二再把那条
+#   2019/2022 年的旧报文写回图上 —— 幽灵船位会自己长回来。要让「清空」真正生效，
+#   必须在**匹配之前**就把这些名字挡掉。
+#
+# 怎么确认的（2026-10-01）：查船史源看改名链 —— Miramar / ShipSpotting / Splash247，
+# 以及中远自己的出售公告新闻。**不要靠「搜不到」推断已退役**：搜不到也可能只是
+# 源侧索引缺口，两者处理方式完全不同（前者跳过，后者要换源）。
+RETIRED = {
+    # 名录名           : (IMO, 现名 / 改名链, 转手时间, 依据)
+    "COSBRIGHT LAKE": ("9263227", "SUN I（Lake → Lake 1 → Lake 2）",       "2023-04", "Miramar / ShipSpotting"),
+    "COSGLORY LAKE":  ("9245782", "FIRENZE K（LILA HAIKOU → TOYOMI）",     "2023-02", "Miramar / ShipSpotting"),
+    "COSGREAT LAKE":  ("9263215", "BIG MAG（LILA ZHUHAI → WIN WIN）",      "2023-01", "Miramar / ShipSpotting"),
+    "COSGRAND LAKE":  ("9294575", "LILA JAMNAGAR",                          "2025-11", "出售公告新闻（Splash247）"),
+}
+
+
+def retired_info(name_ais: str):
+    return RETIRED.get(norm_name(name_ais))
+
 
 SQL_ENSURE = """
 CREATE TABLE IF NOT EXISTS vlcc_positions (
@@ -714,6 +746,26 @@ def show_status(conn, stale_days: int = 0) -> None:
     if by_src:
         print("  来源分布：" + "、".join(f"{s}={c}" for s, c in by_src))
 
+    # 已退役的单独列出来 —— 它们**不该**出现在「无船位」清单里被当成待办
+    if RETIRED:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT v.name_ais, v.mmsi, v.imo, p.ts
+                             FROM vlcc_vessels v
+                             LEFT JOIN (SELECT name_ais, MAX(ts) AS ts
+                                          FROM vlcc_positions GROUP BY 1) p
+                                    ON p.name_ais = v.name_ais
+                            WHERE v.name_ais = ANY(%s)
+                            ORDER BY v.name_ais""", (list(RETIRED),))
+            ret_rows = cur.fetchall()
+        live = [r for r in ret_rows if r[1] or r[2] or r[3]]
+        print(f"\n  已退役 {len(RETIRED)} 艘（已转手改名，不搜不查位）：")
+        for nm, mmsi, imo, ts in ret_rows:
+            now_to, when, ref = RETIRED[nm][1], RETIRED[nm][2], RETIRED[nm][3]
+            print(f"    {nm:<18s} → {now_to:<34s} {when}  [{ref}]")
+        if live:
+            print(f"    ⚠ 其中 {len(live)} 艘库里还残留身份/船位（应跑 `--fix-suspect` 或手工清）："
+                  + "、".join(f"{r[0]}(mmsi={r[1] or '—'}, ts={r[3] or '—'})" for r in live))
+
     if stale_days > 0:
         with conn.cursor() as cur:
             cur.execute("""
@@ -795,6 +847,64 @@ def fix_suspect(conn, dry_run: bool = False) -> int:
         if len(soft) > 20:
             print(f"    …… 其余 {len(soft) - 20} 艘略")
     return len(hard)
+
+
+def fix_retired(conn, dry_run: bool = False) -> int:
+    """把 RETIRED 里的已转手船「退役干净」：擦掉身份 + 删掉历史船位。
+
+    ⚠ 为什么不能只清身份：接口和前端是**按 `name_ais` 关联**名录与船位的
+    （见 `src/routes/vlcc.ts`），所以只要 `vlcc_positions` 里还留着这个名字，
+    即使名录的 MMSI 清了，图上照样会打一个几年前的幽灵点。
+    必须两边一起处理。
+
+    擦到什么程度：与 `--fix-suspect` 的硬档**完全一致**（mmsi/imo/dwt/flag 置空、
+    verified 置假），因为那三列的来源就是「从被搜到的记录里学来的」，
+    既然记录已经不可信，跟着一起作废。`built_year` / `name_en` / `source`
+    是名录 PDF 自己的事实，**保留**（它们记录的是「2021-06-30 时该船在册」）。
+    """
+    names = list(RETIRED)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT name_ais, mmsi, imo, dwt FROM vlcc_vessels
+                        WHERE name_ais = ANY(%s) ORDER BY name_ais""", (names,))
+        vrows = cur.fetchall()
+        cur.execute("""SELECT name_ais, COUNT(*), MIN(ts), MAX(ts) FROM vlcc_positions
+                        WHERE name_ais = ANY(%s) GROUP BY 1 ORDER BY 1""", (names,))
+        prows = cur.fetchall()
+
+    if not vrows:
+        print("[OK] 名录里没有 RETIRED 列出的船名。")
+        return 0
+
+    print(f"[i] RETIRED {len(names)} 艘：")
+    for nm, mmsi, imo, dwt in vrows:
+        now_to, when, ref = RETIRED[nm][1], RETIRED[nm][2], RETIRED[nm][3]
+        print(f"    {nm:<18s} → {now_to:<34s} {when}  [{ref}]")
+        print(f"      当前 mmsi={mmsi or '—'}  imo={imo or '—'}  "
+              f"dwt={f'{float(dwt):,.0f}' if dwt else '—'}")
+
+    pos_n = sum(p[1] for p in prows)
+    if prows:
+        print(f"[!] 残留船位 {pos_n} 条：")
+        for nm, c, lo, hi in prows:
+            print(f"    {nm:<18s} {c} 条  {lo} ~ {hi}")
+    else:
+        print("[OK] 没有残留船位。")
+
+    if dry_run:
+        print("    （--dry-run：未改动）")
+        return 0
+
+    with conn.cursor() as cur:
+        cur.execute("""UPDATE vlcc_vessels
+                          SET mmsi = NULL, imo = NULL, dwt = NULL, flag = NULL,
+                              verified = FALSE, updated_at = NOW()
+                        WHERE name_ais = ANY(%s)""", (names,))
+        n_v = cur.rowcount
+        cur.execute("DELETE FROM vlcc_positions WHERE name_ais = ANY(%s)", (names,))
+        n_p = cur.rowcount
+    conn.commit()
+    print(f"    已擦除身份 {n_v} 艘、删除船位 {n_p} 条 → 下次运行不会重新学回来（RETIRED 已在匹配前拦截）")
+    return n_p
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +1065,15 @@ def selftest() -> int:
     bad = dict(sample, la="", lo="")
     ck("无经纬度被丢", to_position_row("X", "1", bad)[0], None)
 
+    # ---- RETIRED 登记表 ------------------------------------------------------
+    # 这张表决定「哪些船根本不搜」，写错一个字符就等于放过或误伤一艘船，
+    # 所以键必须**已经是规范化形式**（否则 retired_info 永远匹配不上，静默失效）。
+    for nm, meta in RETIRED.items():
+        ck(f"RETIRED[{nm}] 键已规范化", nm, norm_name(nm))
+        ck(f"RETIRED[{nm}] 是 4 元组", len(meta), 4)
+    ck("retired_info 大小写/空白无关", retired_info("  cosgreat lake "), RETIRED["COSGREAT LAKE"])
+    ck("retired_info 未登记名返回 None", retired_info("NEW VISION"), None)
+
     print()
     if fails:
         print(f"[FAIL] 自检 {len(fails)} 项不通过：")
@@ -987,6 +1106,8 @@ def main() -> int:
     ap.add_argument("--status", action="store_true", help="只看库内覆盖率/新鲜度")
     ap.add_argument("--fix-suspect", action="store_true",
                     help="清掉「已配 MMSI 但 dwt 明显不是 VLCC」的错配（配 --dry-run 只列不改）")
+    ap.add_argument("--fix-retired", action="store_true",
+                    help="把 RETIRED（已转手改名）的船擦净：清身份 + 删残留船位（配 --dry-run 只列不改）")
     ap.add_argument("--stale-days", type=int, default=0, help="配合 --status：列出 >N 天无船位的船")
     args = ap.parse_args()
 
@@ -1004,6 +1125,13 @@ def main() -> int:
         conn = psycopg2.connect(DATABASE_URL)
         ensure_schema(conn)
         n = fix_suspect(conn, dry_run=args.dry_run)
+        conn.close()
+        return 0
+
+    if args.fix_retired:
+        conn = psycopg2.connect(DATABASE_URL)
+        ensure_schema(conn)
+        fix_retired(conn, dry_run=args.dry_run)
         conn.close()
         return 0
 
@@ -1062,8 +1190,15 @@ def main() -> int:
             return 1 if api.errors else 0
 
         # ---- 阶段一：补名录（MMSI/IMO/DWT/船旗）------------------------------
-        todo = [n for n in names if args.refresh_search or not roster[n]["mmsi"]]
+        # 已退役的（见 RETIRED）**一律不搜** —— 否则会把旧身份重新学回来，
+        # 下一轮阶段二就又把几年前的旧报文写回图上。
+        retired = [n for n in names if n in RETIRED]
+        active  = [n for n in names if n not in RETIRED]
+        todo = [n for n in active if args.refresh_search or not roster[n]["mmsi"]]
         learned = 0
+        if retired:
+            print(f"      已退役（跳过）：{len(retired)} 艘 —— "
+                  + "、".join(f"{n}→{RETIRED[n][1].split('（')[0]}" for n in retired))
         if args.search_only or (todo and not args.no_search):
             print(f"[2/3] 补名录：{len(todo)} 艘缺 MMSI，逐艘 shipSearch")
             for i, n in enumerate(todo, 1):
@@ -1115,7 +1250,10 @@ def main() -> int:
             return 1 if api.errors else 0
 
         # ---- 阶段二：取船位 --------------------------------------------------
-        targets = [(n, roster[n]["mmsi"]) for n in names if roster[n]["mmsi"]]
+        # 同样排除 RETIRED：库里若还残留它们的 MMSI（清空前的历史数据），
+        # 也绝不拿那个 MMSI 去查位。
+        targets = [(n, roster[n]["mmsi"]) for n in names
+                   if roster[n]["mmsi"] and n not in RETIRED]
         no_mmsi = [n for n in names if not roster[n]["mmsi"]]
         print(f"[3/3] 取船位：{len(targets)} 艘有 MMSI"
               + (f"（{len(no_mmsi)} 艘无 MMSI，跳过）" if no_mmsi else ""))
