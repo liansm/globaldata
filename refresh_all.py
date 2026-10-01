@@ -26,6 +26,15 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata
 BASE_DIR     = Path(__file__).parent
 
 # 刷新脚本执行顺序
+#
+# 元素格式：
+#   (脚本名, 说明)
+#   (脚本名, 说明, [额外参数...])
+#   (脚本名, 说明, [额外参数...], {"requires_env": "环境变量名"})
+#
+# requires_env 的脚本在环境变量缺失时 **SKIP（不判失败）** —— 缺 key 是
+# 「没配置」而不是「抓取坏了」，不该把整轮 refresh 的结论染红。
+# 但会显式打印 [SKIP] 原因，绝不静默跳过。
 FETCH_SCRIPTS = [
     ("fetch_markets.py",           "A股/港股指数 + 沪深港通资金流向（历史日线）"),
     ("fetch_index_spot.py",        "A股/港股指数实时快照（stock_zh/hk_index_spot_sina）"),
@@ -33,12 +42,27 @@ FETCH_SCRIPTS = [
     ("fetch_ccfi.py",              "CCFI 中国出口集装箱运价指数（上海航交所，每周五发布）"),
     ("fetch_ccfi_history.py",      "CCFI 历史周线回补（GreenPacific，2023-04 起全航线）"),
     ("fetch_bdi.py",               "BDI 系列航运指数（akshare，日频含历史）"),
+    ("fetch_ctfi.py",              "CTFI 中国进口原油运价指数 + VLCC 各航线 WS/TCE（上海航交所，日频滚存）"),
+    ("fetch_ctfi_history.py",      "CTFI 历史回补（中华航运网周报/月报，月报 2021-09 起 / 周报 2025-07 起）"),
     ("fetch_commodities.py",       "大宗商品价格（黄金/铜/油/煤炭等）"),
     ("fetch_cement.py",            "水泥价格：CEMPI 指数 + P.O42.5 均价（中国水泥网，日频含历史）"),
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
     ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
     ("fetch_fund_nav.py",          "公募基金最新净值快照（天天基金排行榜批量，4 个请求拿全市场）"),
+    ("fetch_ipo_calendar.py",      "新股日历（东财 A股/北交所 + 财华社/AAStocks/东财 港股，秒级）"),
+    ("fetch_vlcc_fleet.py",        "中国船东 VLCC 名录（招商轮船在役船队 + 中远海能 2021-06 官方快照）"),
+    # VLCC 船位：主源 = HiFleet（付费，覆盖全球含波斯湾/红海/马六甲/中国沿海）。
+    # 缺 HIFLEET_API_KEY 时 → SKIP，不判失败（「没配置」≠「抓取坏了」，但原因照样打印）。
+    # ⚠ 计费：逐船查询，一轮约 99 次查位（首次还要 ~99 次搜索补 MMSI）。
+    #   单次扣多少点官方**未公开** → 先实测：python fetch_vlcc_position_hifleet.py --limit 5 --dry-run
+    #   看余额前后差，再决定刷新频率与订阅档位。分数不够会显式失败（--max-errors，不静默）。
+    ("fetch_vlcc_position_hifleet.py", "VLCC 船位（HiFleet REST，逐船按 MMSI 查最新位置）",
+     [], {"requires_env": "HIFLEET_API_KEY"}),
+    # ⚠ aisstream 版（fetch_vlcc_position.py）**不接入**（2026-09-30 实测定论）：
+    #   免费但覆盖塌陷 —— 波斯湾 3 分钟 0 条、红海/印度洋/马六甲北/南中国海/上海口 全 0 条/秒，
+    #   全地球流的六成来自北海。用已学到的 MMSI 精确订阅仍是 0 条 → 当地没有接收站。
+    #   保留作海外段补充，手动跑：python fetch_vlcc_position.py --minutes 10
     # 注意：fetch_funds.py 不接入本脚本，单独手动运行（数据量大、耗时长）
     #   python fetch_funds.py --types 股票型,混合型,指数型   （权益类增量）
     #   python fetch_funds.py --years-back 5                （回补近5年持仓）
@@ -46,6 +70,9 @@ FETCH_SCRIPTS = [
     # fetch_fund_nav.py 同理：日常只有上面那一行（秒级）；下面两个模式耗时长，手动跑
     #   python fetch_fund_nav.py --gap                      （逐只补 L1 覆盖不到的非 ETF/定开等）
     #   python fetch_fund_nav.py --history                  （全历史回填，约 2 小时，可断点续跑）
+    # fetch_private_funds.py 同理，两个模式都耗时长，一律手动跑：
+    #   python fetch_private_funds.py                        （中基协备案全量，约 55 分钟，可续跑）
+    #   python fetch_private_funds.py --nav                  （代销池净值，约 13 分钟，幂等）
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,6 +157,33 @@ STATUS_QUERIES = [
                    MAX(p.price_date)::text AS latest
             FROM index_prices p
             WHERE p.index_key IN ('bdi', 'bci', 'bsi', 'bcti', 'bdti')
+        """,
+        "cols": ["series", "rows", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "index_prices · 航运 油运 CTFI  (当日口径：日频滚存 + 周报/月报期末值)",
+        "sql": """
+            SELECT COUNT(DISTINCT p.index_key) AS series,
+                   COUNT(p.id) AS rows,
+                   MIN(p.price_date)::text AS earliest,
+                   MAX(p.price_date)::text AS latest
+            FROM index_prices p
+            WHERE p.index_key LIKE 'ctfi_%'
+              AND p.index_key NOT LIKE '%_avg'
+        """,
+        "cols": ["series", "rows", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "index_prices · 航运 油运 CTFI  (期间均值：月均/周均，口径不同勿混)",
+        "sql": """
+            SELECT COUNT(DISTINCT p.index_key) AS series,
+                   COUNT(p.id) AS rows,
+                   MIN(p.price_date)::text AS earliest,
+                   MAX(p.price_date)::text AS latest
+            FROM index_prices p
+            WHERE p.index_key LIKE 'ctfi_%_avg'
         """,
         "cols": ["series", "rows", "earliest", "latest"],
         "optional": True,
@@ -244,6 +298,81 @@ STATUS_QUERIES = [
         "optional": True,
     },
     {
+        "title": "private_funds  (私募备案产品 + 代销池净值快照)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE in_registry) AS registry,
+                   COUNT(*) FILTER (WHERE has_nav) AS with_nav,
+                   MAX(latest_nav_date)::text AS nav_date
+            FROM private_funds
+        """,
+        "cols": ["total", "registry", "with_nav", "nav_date"],
+        "optional": True,
+    },
+    {
+        "title": "private_managers  (私募基金管理人)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   COUNT(fund_count) AS with_count
+            FROM private_managers
+        """,
+        "cols": ["total", "with_count"],
+        "optional": True,
+    },
+    {
+        "title": "private_fund_nav  (私募净值日线，仅代销池 ~0.5%)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT fund_no) AS funds,
+                   MIN(nav_date)::text AS earliest,
+                   MAX(nav_date)::text AS latest
+            FROM private_fund_nav
+        """,
+        "cols": ["rows", "funds", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "ipo_calendar  (新股日历 A股/北交所/港股)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   STRING_AGG(DISTINCT market, ' / ' ORDER BY market) AS markets,
+                   COUNT(apply_date) AS with_apply,
+                   COUNT(raise_amount) AS with_raise,
+                   MAX(COALESCE(listing_date, apply_date))::text AS latest
+            FROM ipo_calendar
+        """,
+        "cols": ["total", "markets", "with_apply", "with_raise", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "vlcc_vessels  (中国船东 VLCC 名录)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   STRING_AGG(DISTINCT owner, ' / ' ORDER BY owner) AS owners,
+                   COUNT(*) FILTER (WHERE mmsi IS NOT NULL) AS with_mmsi,
+                   COUNT(*) FILTER (WHERE dwt  IS NOT NULL) AS with_dwt,
+                   COUNT(*) FILTER (WHERE flag IS NOT NULL) AS with_flag,
+                   MAX(updated_at AT TIME ZONE 'Asia/Shanghai')::date::text AS updated
+            FROM vlcc_vessels
+        """,
+        "cols": ["total", "owners", "with_mmsi", "with_dwt", "with_flag", "updated"],
+        "optional": True,
+    },
+    {
+        "title": "vlcc_positions  (VLCC 船位，滚存；source=hifleet/aisstream)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT name_ais) AS ships,
+                   STRING_AGG(DISTINCT source, '/' ORDER BY source) AS src,
+                   MIN(ts)::text AS earliest,
+                   MAX(ts)::text AS latest,
+                   MAX(created_at AT TIME ZONE 'Asia/Shanghai')::text AS last_run
+            FROM vlcc_positions
+        """,
+        "cols": ["rows", "ships", "src", "earliest", "latest", "last_run"],
+        "optional": True,
+    },
+    {
         "title": "crypto_coins  (加密货币定义)",
         "sql": """
             SELECT COUNT(*) AS total
@@ -307,22 +436,41 @@ def print_status():
 # ─────────────────────────────────────────────────────────────────────────────
 # Run fetch scripts
 # ─────────────────────────────────────────────────────────────────────────────
+def parse_entry(entry):
+    """把 FETCH_SCRIPTS 的元素规整成 (script, desc, extra_args, options)。"""
+    script, desc = entry[0], entry[1]
+    extra = list(entry[2]) if len(entry) > 2 and entry[2] else []
+    opts  = entry[3] if len(entry) > 3 and entry[3] else {}
+    return script, desc, extra, opts
+
+
 def run_fetches():
     print(hdr("\n══════════════  开始刷新数据  ══════════════\n"))
     python = sys.executable
     results = []
 
-    for script, desc in FETCH_SCRIPTS:
+    for entry in FETCH_SCRIPTS:
+        script, desc, extra, opts = parse_entry(entry)
+
+        # 需要环境变量的脚本：缺了就 SKIP，不判失败（原因打印出来）
+        env_key = opts.get("requires_env")
+        if env_key and not os.environ.get(env_key):
+            print(f"  {warn('[SKIP]')} {script}  ({desc})")
+            print(f"         未配置 {env_key}，跳过（这不是失败）\n")
+            results.append((script, "skip", 0.0))
+            continue
+
         path = BASE_DIR / script
         if not path.exists():
             print(f"  {warn('[SKIP]')} {script}  ({desc})  — 文件不存在")
             results.append((script, "skip", 0))
             continue
 
-        print(f"  {CYAN}▶ {script}{RESET}  {desc}")
+        cmd_desc = desc + (f"  [{' '.join(extra)}]" if extra else "")
+        print(f"  {CYAN}▶ {script}{RESET}  {cmd_desc}")
         t0 = time.time()
         proc = subprocess.run(
-            [python, str(path)],
+            [python, str(path)] + extra,
             capture_output=False,   # 让输出直接打印到终端
             text=True,
         )
@@ -358,6 +506,8 @@ def run_fetches():
 # 按依赖顺序 TRUNCATE（先子表再父表，CASCADE 处理外键）
 CLEAR_TABLES = [
     "fetch_log",
+    "vlcc_positions",
+    "vlcc_vessels",
     "fund_nav",
     "fund_holdings",
     "funds",

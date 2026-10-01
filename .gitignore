@@ -25,7 +25,11 @@ undefined/
 # ── 前端 (web/) ──────────────────────────────────────────
 web/node_modules/
 web/dist/
-web/.buildtest/
+# 前端构建验证产物。用通配是因为 `--outDir .buildtest` **第二次跑会失败**：
+# vite 要先清空已存在的目录，>50 个文件会撞上沙箱的批量删除保护
+# （SAFE_DELETE_BULK_CONFIRM_REQUIRED），只能换新目录名 → 会留下 .buildtest2/3…
+# 所以这里必须写成通配，否则变体目录会被误提交。
+web/.buildtest*/
 web/src/auto-imports.d.ts
 web/src/components.d.ts
 

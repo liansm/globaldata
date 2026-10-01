@@ -10,7 +10,8 @@ const router = useRouter()
 const loading = ref(false)
 const error = ref('')
 const list = ref<Commodity[]>([])
-// 航运运价指数（BDI / BCI / BSI / BCTI / BDTI / CCFI 综合 + 12 条分航线），来自 /api/markets (market='航运')
+// 航运运价指数（BDI / BCI / BSI 干散货，BCTI / BDTI 油运，CTFI 中国进口原油 + VLCC 各航线 WS/TCE，
+// CCFI 综合 + 12 条分航线），来自 /api/markets (market='航运')
 const shipping = ref<MarketIndex[]>([])
 // 建材指数（水泥价格指数 CEMPI），来自 /api/markets (market='建材')
 const cementIdx = ref<MarketIndex[]>([])
@@ -34,19 +35,44 @@ onMounted(async () => {
   }
 })
 
-// 航运数据拆分为两个 section：CCFI 出口集装箱运价 + BDI 波罗的海/油轮运价
+// 航运数据拆分为三个 section：CCFI 出口集装箱 / BDI 干散货 / 油运（原油+成品油）
 const CCFI_ORDER = [
   'ccfi_total', 'ccfi_europe', 'ccfi_med', 'ccfi_wc_america', 'ccfi_ec_america',
   'ccfi_japan', 'ccfi_korea', 'ccfi_se_asia', 'ccfi_anz',
   'ccfi_south_africa', 'ccfi_south_america', 'ccfi_we_africa', 'ccfi_persian_gulf',
 ]
-const BDI_ORDER = ['bdi', 'bci', 'bsi', 'bcti', 'bdti']
+// 干散货（BDTI/BCTI 是油运指数，不在这一组 —— 见下面 OIL_ORDER）
+const BDI_ORDER = ['bdi', 'bci', 'bsi']
+// 油运：VLCC 原油 / 成品油运价 + TCE（等价期租租金，船东盈利的直接代理变量）
+// 顺序：BDTI/BCTI 国际油运指数 → CTFI 中国进口原油综合 → CT1 中东湾 → CT2 西非 → CT4 美湾
+// ctfi_month_close = 月报口径的「CTFI 月末值」，是**点值**（与 ctfi_total 同口径），
+// 只是日期用月末标签（源报告未写具体日，宁缺勿错）→ 归在本组，能把 ctfi_total 补到 2021-09
+const OIL_ORDER = [
+  'bdti', 'bcti',
+  'ctfi_total', 'ctfi_month_close',
+  'ctfi_ct1', 'ctfi_ct1_ws', 'ctfi_ct1_usd_ton', 'ctfi_ct1_tce_std', 'ctfi_ct1_tce_eco',
+  'ctfi_ct2', 'ctfi_ct2_ws', 'ctfi_ct2_usd_ton', 'ctfi_ct2_tce_std', 'ctfi_ct2_tce_eco',
+  'ctfi_ct4', 'ctfi_ct4_usd_ton', 'ctfi_ct4_tce_std', 'ctfi_ct4_tce_eco',
+]
+// ⚠ 期间均值（月均 / 周均）**口径不同于上面点值**，必须单独成组：
+// 均值把区间波动抹平，和当日点值并排比大小会失真。标题里写明口径是硬要求。
+const CTFI_AVG_ORDER = [
+  'ctfi_month_avg',
+  'ctfi_ct1_ws_month_avg', 'ctfi_ct1_ws_week_avg',
+  'ctfi_ct1_tce_std_month_avg', 'ctfi_ct1_tce_std_week_avg',
+  'ctfi_ct2_ws_month_avg', 'ctfi_ct2_ws_week_avg',
+  'ctfi_ct2_tce_std_month_avg', 'ctfi_ct2_tce_std_week_avg',
+  'ctfi_ct4_usd_month_avg', 'ctfi_ct4_tce_std_month_avg',
+]
 
 const shippingSections = computed(() => {
   const map = new Map(shipping.value.map(s => [s.key, s]))
   return [
     { title: 'CCFI 出口集装箱运价', icon: '🚢', keys: CCFI_ORDER },
-    { title: 'BDI 波罗的海 / 油轮运价', icon: '⚓', keys: BDI_ORDER },
+    { title: 'BDI 波罗的海干散货运价', icon: '⚓', keys: BDI_ORDER },
+    { title: '油运：原油 / 成品油运价与 VLCC TCE', icon: '🛢️', keys: OIL_ORDER },
+    { title: '油运 · CTFI 期间均值（月均 / 周均，均值口径，勿与上面当日点值直接比大小）',
+      icon: '📉', keys: CTFI_AVG_ORDER },
   ].map(s => ({
     ...s,
     items: s.keys.map(k => map.get(k)).filter(Boolean) as MarketIndex[],
@@ -345,7 +371,7 @@ function exchangeTagType(label: string | null) {
         </div>
       </section>
 
-      <!-- 航运数据：拆分为 CCFI 与 BDI 两个 section，来自 market_indices(market='航运') -->
+      <!-- 航运数据：拆分为 CCFI / BDI 干散货 / 油运 三个 section，来自 market_indices(market='航运') -->
       <section v-for="sec in shippingSections" :key="sec.title" class="section">
         <div class="section-header">
           <span class="section-icon">{{ sec.icon }}</span>

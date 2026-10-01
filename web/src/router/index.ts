@@ -53,6 +53,29 @@ const router = createRouter({
       name: 'company-detail',
       component: () => import('@/pages/CompanyDetail.vue'),
     },
+    {
+      path: '/private-funds',
+      name: 'private-funds',
+      component: () => import('@/pages/PrivateFunds.vue'),
+    },
+    {
+      // :code 是备案编码（如 SB595C），与中基协 fundNo 同码
+      path: '/private-fund/:code',
+      name: 'private-fund-detail',
+      component: () => import('@/pages/PrivateFundDetail.vue'),
+    },
+    {
+      // 新股日历：A股 / 北交所 / 港股，日历 + 列表双视图
+      path: '/ipo-calendar',
+      name: 'ipo-calendar',
+      component: () => import('@/pages/IpoCalendar.vue'),
+    },
+    {
+      // 油运信息：中国船东 VLCC 船队 + 最新 AIS 船位（地图只走合规白名单厂商）
+      path: '/oil-shipping',
+      name: 'oil-shipping',
+      component: () => import('@/pages/OilShipping.vue'),
+    },
   ],
 })
 

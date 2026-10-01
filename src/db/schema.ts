@@ -7,6 +7,8 @@ import {
   timestamp,
   serial,
   bigserial,
+  bigint,
+  boolean,
   unique,
   index,
 } from 'drizzle-orm/pg-core'
@@ -40,12 +42,26 @@ export const prices = pgTable('prices', {
 
 // --------------------------------------------------------------------------
 // market_indices — one row per index / capital-flow series
+//
+// 数据源分层（market 取值 → 抓取脚本）：
+//   'A股'|'港股'|'美股'|'欧洲'|'亚太' → fetch_markets.py + fetch_index_spot.py
+//   '资金流向'                       → fetch_markets.py（沪深港通）
+//   '航运'                           → fetch_bdi.py  BDI/BCI/BSI 干散货 + BDTI/BCTI 油运
+//                                                 （2006-07 起日频，**含全历史**）
+//                                       fetch_ccfi.py / fetch_ccfi_history.py  出口集装箱
+//                                                 （周频 / 2023-04 起）
+//                                       fetch_ctfi.py  **中国进口原油运价指数 + VLCC 各航线
+//                                                 WS / 美元每吨 / TCE**（日频，但页面上只给
+//                                                 当期值、历史是付费墙 → **只能滚存**）
+//   '建材'                           → fetch_cement.py（CEMPI）
+// ⚠ 同表内各序列的「可回补性」差别很大：BDI 系列含全历史，
+//   **CCFI / CTFI 只能靠定期运行累积，跑漏的期次永久缺失。**
 // --------------------------------------------------------------------------
 export const marketIndices = pgTable('market_indices', {
   key:       varchar('key',    { length: 60  }).primaryKey(),
   symbol:    varchar('symbol', { length: 60  }).notNull(),
   name:      varchar('name',   { length: 200 }).notNull(),
-  market:    varchar('market', { length: 50  }).notNull(),   // 'A股' | '港股' | '资金流向'
+  market:    varchar('market', { length: 50  }).notNull(),   // 'A股'|'港股'|'资金流向'|'航运'|'建材'|'美股'|'欧洲'|'亚太'
   unit:      varchar('unit',   { length: 50  }),
   updatedAt: timestamp('updated_at', { withTimezone: true })
                .default(sql`NOW()`).notNull(),
@@ -245,3 +261,200 @@ export const fetchLog = pgTable('fetch_log', {
   latestPrice:  numeric('latest_price', { precision: 14, scale: 4 }),
   changeDay:    numeric('change_day',   { precision: 10, scale: 4 }),
 })
+
+// --------------------------------------------------------------------------
+// 私募基金（2026-09-17 落地，fetch_private_funds.py）
+//
+// ⚠ 私募和公募不是一个物种：公募的「名录 / 规模 / 持仓 / 净值」四层，私募
+//   **只有名录能全量对标**。《私募投资基金募集行为管理办法》禁止公开宣传推介
+//   与披露业绩，规模/持仓/净值在公开渠道拿不到 —— 监管口径，不是技术问题。
+//
+// private_managers — 管理人（中基协公示，~1.84 万家）
+// private_funds    — 备案产品（中基协公示，~25 万只）+ 代销池净值快照
+// private_fund_nav — 净值日线。**两个来源、两种口径**（2026-09-20 起）：
+//     source=em_gaoduan 天天基金高端理财代销池：unit_nav=单位净值、acc_nav=累计净值（现金分红累加）
+//     source=sppw       私募排排网 fundNavTrend： acc_nav=**复权净值（分红再投）**、unit_nav 留空
+//   ⚠ 两源在「有分红」标的上终身收益最多差 2.5 倍，**禁止跨源拼同一条序列**。
+//     写库时对与代销池重叠的 fund_no 一律跳过（见 .workbuddy/load_simu_nav.py）。
+// --------------------------------------------------------------------------
+export const privateManagers = pgTable('private_managers', {
+  registerNo:       varchar('register_no',       { length: 40 }).primaryKey(),  // 登记编号
+  managerId:        bigint('manager_id', { mode: 'number' }),  // 中基协内部 id（大数，超出 int4）
+  managerName:      varchar('manager_name',      { length: 200 }).notNull(),
+  artificialPerson: varchar('artificial_person', { length: 120 }),  // 法定代表人
+  investType:       varchar('invest_type',       { length: 80  }),  // 机构类型
+  registerProvince: varchar('register_province', { length: 80  }),
+  officeAddress:    varchar('office_address',    { length: 300 }),
+  establishDate:    date('establish_date'),
+  registerDate:     date('register_date'),
+  fundCount:        integer('fund_count'),        // 在管基金数量
+  memberType:       varchar('member_type',       { length: 80  }),
+  hasSpecialTips:   boolean('has_special_tips'),
+  hasCreditTips:    boolean('has_credit_tips'),
+  updatedAt:        timestamp('updated_at', { withTimezone: true })
+                      .default(sql`NOW()`).notNull(),
+})
+
+export const privateFunds = pgTable('private_funds', {
+  fundNo:           varchar('fund_no',   { length: 40 }).primaryKey(),  // 备案编码，与代销池同码
+  fundName:         varchar('fund_name', { length: 300 }).notNull(),
+  managerName:      varchar('manager_name', { length: 200 }),
+  managerId:        bigint('manager_id', { mode: 'number' }),
+  managerType:      varchar('manager_type', { length: 40  }),   // 受托管理 / ...
+  workingState:     varchar('working_state',{ length: 40  }),   // 正在运作 / 延期清算 / ...
+  recordDate:       date('record_date'),                        // 备案时间
+  establishDate:    date('establish_date'),
+  mandatorName:     varchar('mandator_name', { length: 200 }),  // 托管人
+  isDeputeManage:   boolean('is_depute_manage'),
+  inRegistry:       boolean('in_registry').notNull().default(false),  // 在中基协备案库
+  hasNav:           boolean('has_nav').notNull().default(false),      // 有代销池净值
+  latestNav:        numeric('latest_nav',          { precision: 14, scale: 4 }),
+  latestAccNav:     numeric('latest_acc_nav',      { precision: 14, scale: 4 }),
+  latestNavDate:    date('latest_nav_date'),
+  latestDailyReturn:numeric('latest_daily_return', { precision: 10, scale: 4 }),
+  latestFundSize:   numeric('latest_fund_size',    { precision: 20, scale: 2 }),  // 元；多数源侧不给
+  navUpdatedAt:     timestamp('nav_updated_at', { withTimezone: true }),
+  updatedAt:        timestamp('updated_at', { withTimezone: true })
+                      .default(sql`NOW()`).notNull(),
+})
+
+export const privateFundNav = pgTable('private_fund_nav', {
+  id:          bigserial('id', { mode: 'number' }).primaryKey(),
+  fundNo:      varchar('fund_no',  { length: 40 }).notNull(),
+  navDate:     date('nav_date').notNull(),
+  unitNav:     numeric('unit_nav',     { precision: 14, scale: 4 }),
+  accNav:      numeric('acc_nav',      { precision: 14, scale: 4 }),  // 含分红口径：累计净值(em) / 复权净值(sppw)
+  dailyReturn: numeric('daily_return', { precision: 10, scale: 4 }),  // 日涨跌 %
+  source:      varchar('source',       { length: 16 }).notNull().default('em_gaoduan'),
+}, (t) => [
+  unique('private_fund_nav_uniq').on(t.fundNo, t.navDate),
+  index('idx_pf_nav_fund_date').on(t.fundNo, t.navDate),
+  index('idx_pf_nav_source').on(t.source),
+])
+
+// --------------------------------------------------------------------------
+// ipo_calendar — 新股日历（A股 / 北交所 / 港股，2026-09-28 落地）
+// Populated by fetch_ipo_calendar.py
+//
+// ⚠ 三个市场的字段重合度很低，**一张表统管、市场特有列一律可空**
+//   （不按市场分表，与本项目「绝对价格 / 指数」的分层习惯一致）：
+//     A股独有 → allotment_date(中签号公布) / pay_date(中签缴款) / pe_industry / win_rate
+//     港股独有 → apply_end_date(招股截止) / pricing_date(定价) / refund_date(退票)
+//                / grey_date(暗盘) / lot_size(每手) / entry_fee(入场费)
+//
+// ⚠ raise_amount 单位统一「亿」，币种看 currency（CNY / HKD）。
+//   A股募资额 = 发行总数(万股) × 发行价 / 1e4，由脚本自算；
+//   港股募资额只有**已上市**标的能在东财拿到，未上市新股源侧不披露
+//   → 留空，前端显示「—」。**不要用 0 充数。**
+//
+// ⚠ 招股节点两套叫法：A股是「申购日 → 中签号公布 → 中签缴款 → 上市」，
+//   港股是「招股起止 → 定价 → 公布售股结果 → 退票 → 暗盘 → 上市」。
+//   前端的「申购/招股」统一映射到 apply_date。
+// --------------------------------------------------------------------------
+export const ipoCalendar = pgTable('ipo_calendar', {
+  id:             bigserial('id', { mode: 'number' }).primaryKey(),
+  market:         varchar('market',   { length: 10  }).notNull(),   // 'A股' | '北交所' | '港股'
+  code:           varchar('code',     { length: 16  }).notNull(),
+  name:           varchar('name',     { length: 120 }).notNull(),
+  exchange:       varchar('exchange', { length: 30  }),
+  board:          varchar('board',    { length: 20  }),   // A股板块：非科创板 / 科创板 / 北交所
+  industry:       varchar('industry', { length: 60  }),   // 港股行业分类
+  issuePrice:     numeric('issue_price',      { precision: 14, scale: 4 }),  // 发行价 / 招股价下限
+  issuePriceHigh: numeric('issue_price_high', { precision: 14, scale: 4 }),  // 招股价区间上限（港股）
+  currency:       varchar('currency', { length: 6  }),    // CNY | HKD
+  issueShares:    numeric('issue_shares', { precision: 24, scale: 4 }),      // 发行总数（股）
+  raiseAmount:    numeric('raise_amount', { precision: 20, scale: 4 }),      // 募集资金（亿）
+  lotSize:        numeric('lot_size',  { precision: 14, scale: 2 }),         // 每手股数（港股）
+  entryFee:       numeric('entry_fee', { precision: 14, scale: 2 }),         // 入场费（港元，港股）
+  applyDate:      date('apply_date'),        // A股申购日 / 港股招股起始日
+  applyEndDate:   date('apply_end_date'),    // 港股招股截止日
+  pricingDate:    date('pricing_date'),      // 定价日（港股）
+  allotmentDate:  date('allotment_date'),    // 中签号公布日 / 公布售股结果日
+  payDate:        date('pay_date'),          // 中签缴款日（A股）
+  refundDate:     date('refund_date'),       // 退票寄发日（港股）
+  greyDate:       date('grey_date'),         // 暗盘日（港股独有节点）
+  listingDate:    date('listing_date'),
+  peIssue:        numeric('pe_issue',    { precision: 14, scale: 4 }),       // 发行市盈率
+  peIndustry:     numeric('pe_industry', { precision: 14, scale: 4 }),       // 行业市盈率
+  winRate:        numeric('win_rate',    { precision: 14, scale: 6 }),       // 中签率 %
+  source:         varchar('source', { length: 120 }).notNull(),  // 多源时用 + 连接，便于追溯
+  updatedAt:      timestamp('updated_at', { withTimezone: true })
+                    .default(sql`NOW()`).notNull(),
+}, (t) => [
+  unique('ipo_calendar_market_code_uniq').on(t.market, t.code),
+  index('idx_ipo_calendar_listing').on(t.listingDate),
+  index('idx_ipo_calendar_apply').on(t.applyDate),
+  index('idx_ipo_calendar_market').on(t.market),
+])
+
+// --------------------------------------------------------------------------
+// VLCC 船队（2026-09-30 落地，「油运信息」地图页）
+//   vlcc_vessels   ← fetch_vlcc_fleet.py            （名录：船东→船名，静态）
+//   vlcc_positions ← fetch_vlcc_position_hifleet.py （船位主源：HiFleet REST，付费）
+//                  ← fetch_vlcc_position.py         （船位副源：aisstream.io 流，免费但覆盖塌陷）
+//   source 列区分两条来源：'hifleet' / 'aisstream'。同一 (name_ais, ts) 唯一，两源可共存。
+//
+// 为什么单开表，不塞进 market_indices / index_prices
+// -------------------------------------------------
+// 这里是「**实体（船）+ 时空点（船位）**」，不是时间序列。船有船东/吨位/建造年等
+// 静态属性，船位是 (lat,lon,sog,cog…) —— 塞进 index_prices 的 `close` 会丢语义，
+// 而且一艘船位数据点没有「开高低收」。
+//
+// ⚠ 三条口径，别搞错
+// -------------------------------------------------
+// ① 名录口径 = **中国船东**（招商轮船 / 中远海能），**不是挂旗口径**。
+//    这两家的 VLCC 大量挂中国香港旗 / 新加坡旗 / 巴拿马旗 / 利比里亚旗，
+//    按「挂中国旗」筛会漏掉绝大多数。船旗只在 `flag` 列做参考，不参与筛选。
+// ② `name_ais` = 英文船名规范化（大写 + 折叠空白）→ **AIS 匹配键**。
+//    AIS 只认船名 / MMSI，**不认船东**；没有这份名录就没法从全球 AIS 流里
+//    挑出「中国的 VLCC」。所以名录不是装饰，是过滤器本身。
+// ③ 名录源侧**都不给 IMO/MMSI**（中远海能官方 PDF、chinashipbuild 都没有），
+//    由船位脚本 `--learn` 从 AIS 的 ShipStaticData 反推回写，并把 verified 置真。
+//    `verified=false` 只代表「还没被 AIS 实见过」，**不代表这船不存在**。
+//
+// ⚠ 船位时间语义：`ts` 是 **AIS 报文时间（UTC）**，不是我们收到的时间。
+//   远洋船没有岸基 AIS 覆盖时，最新报文可能已过去几小时甚至几天 ——
+//   这是 AIS 的固有限制，**不是数据坏了**。前端必须显示「更新于 X 小时前」，
+//   不能默认所有点都是实时的。
+// --------------------------------------------------------------------------
+export const vlccVessels = pgTable('vlcc_vessels', {
+  id:        bigserial('id', { mode: 'number' }).primaryKey(),
+  nameAis:   varchar('name_ais',   { length: 120 }).notNull(),
+  nameEn:    varchar('name_en',    { length: 120 }).notNull(),
+  nameCn:    varchar('name_cn',    { length: 120 }),   // 拿不到就留空，不猜
+  owner:     varchar('owner',      { length: 60  }).notNull(),   // '招商轮船' | '中远海能'
+  ownerFull: varchar('owner_full', { length: 200 }),
+  dwt:       numeric('dwt',        { precision: 14, scale: 2 }),
+  builtYear: integer('built_year'),
+  flag:      varchar('flag',       { length: 12 }),    // CN/HK/SG/PA/LR/MH/MT
+  source:    varchar('source',     { length: 200 }).notNull(),
+  imo:       varchar('imo',        { length: 16 }),
+  mmsi:      varchar('mmsi',       { length: 16 }),
+  verified:  boolean('verified').notNull().default(false),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+               .default(sql`NOW()`).notNull(),
+}, (t) => [
+  unique('vlcc_vessels_name_ais_uniq').on(t.nameAis),
+  index('idx_vlcc_vessels_owner').on(t.owner),
+])
+
+export const vlccPositions = pgTable('vlcc_positions', {
+  id:        bigserial('id', { mode: 'number' }).primaryKey(),
+  nameAis:   varchar('name_ais', { length: 120 }).notNull(),
+  mmsi:      varchar('mmsi',     { length: 16  }),
+  ts:        timestamp('ts', { withTimezone: true }).notNull(),
+  lat:       numeric('lat',     { precision: 10, scale: 6 }).notNull(),
+  lon:       numeric('lon',     { precision: 10, scale: 6 }).notNull(),
+  sog:       numeric('sog',     { precision: 8, scale: 2 }),
+  cog:       numeric('cog',     { precision: 8, scale: 2 }),
+  heading:   numeric('heading', { precision: 8, scale: 2 }),
+  navStatus: varchar('nav_status', { length: 40 }),
+  dest:      varchar('dest',    { length: 120 }),
+  draught:   numeric('draught', { precision: 8, scale: 2 }),
+  source:    varchar('source',  { length: 40 }).notNull().default('aisstream'),
+  createdAt: timestamp('created_at', { withTimezone: true })
+               .default(sql`NOW()`).notNull(),
+}, (t) => [
+  unique('vlcc_positions_name_ts_uniq').on(t.nameAis, t.ts),
+  index('idx_vlcc_positions_name_ts').on(t.nameAis, t.ts),
+])
