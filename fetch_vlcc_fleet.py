@@ -50,10 +50,27 @@ AIS 只认 **MMSI / 船名**，不认船东。要在地图上只显示「中国�
 * 船讯网 `searchv4.shipxy.com/index.ashx?kw=` → 恒返 `{"status":0,"ship":[],"port":[]}`（要登录态）
 * MarineTraffic 旧地图端点 `getData/get_data_json_4/...` → 恒返 `{"rows":[],"areaShips":0}`（已废弃）
 
+口径定案（2026-10-01，**别再来回摇摆**）
+----------------------------------------
+两个船东的名录时效性根本不同，各记各的 `roster_asof`，**不合并成「当前船队」**：
+* 招商轮船 = `chinashipbuild` **在役**库 → `roster_asof` = 抓取当日。
+* 中远海能 = 官网 **2021-06-30 官方快照** → `roster_asof` = `2021-06-30`，
+  语义是「**2021-06-30 在册**」，**不是「当前在役」**。
+* 已核实转手的船：`roster_status='retired'`（唯一出处 = `fetch_vlcc_position_hifleet.py`
+  的 `RETIRED` 表，每次运行投影过来）。本脚本的 UPSERT **不碰** status 两列。
+
+为什么不把中远也换成「当前在役」源：**公开渠道没有逐船名的中远在役清单**。
+  2025 年报（2026-03-26）只给「油轮 155 艘 / 2257.6 万载重吨」这类**船型汇总**；
+  券商研报（东方证券 2026-07-09）给到「VLCC 41 自有 + 7 租入 / 1472 万载重吨」，
+  **同样不给船名**；chinashipbuild 只覆盖招商；逐船名的在役库（Equasis / Miramar /
+  Clarksons）都是付费产品，不在本项目口径内。
+  ⇒ 宁可保留**有出处的快照**并把口径写清楚，也不去凑一个来源不明的「当前」。
+
 覆盖缺口（**待补，不要假装完整**）
 ----------------------------------
 * 中远海能：**2021-06-30 之后交付的 VLCC 不在名录里**（约 5~10 艘，如 2021H2 起的
   `新瑞洋/新隆洋/远瑞洋` 等公开报道出现的船名）→ 需人工补或换更新的官方清单
+* 中远海能：快照里**已售出的船**仍在表内（标 `retired`，不计入「在役」）
 * 其它中国船东（中石油华洋/昆仑、中石化、山东海运、岚桥、振华等）**尚未纳入**
 * 名录**没有 IMO/MMSI**：两个源都不给。由 `fetch_vlcc_position.py --learn` 从 AIS
   的 `ShipStaticData` 反推回写（那才是权威值，不猜）
@@ -77,6 +94,7 @@ AIS 只认 **MMSI / 船名**，不认船东。要在地图上只显示「中国�
 """
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -161,6 +179,13 @@ COSCO_VLCC_20210630 = """
 COSCO_SOURCE = "中远海能官网《本集团自有油轮运力》截至2021-06-30（船型列标注 VLCC）"
 CMES_SOURCE = "chinashipbuild.com 招商轮船船队库（在役，按 DWT≥20万 判 VLCC）"
 
+# ── 名录口径截止日（roster_asof）────────────────────────────────────────────
+# 中远海能那份 PDF 是**定版历史存档件**（官网只有这一版），故写死日期；
+# 招商那源是**在役**船队库，口径截止日 = 抓取当日 ⇒ 跑脚本那天。
+# 这两者不一致是**事实**，不是 bug —— 前端按各自的 roster_asof 如实展示。
+COSCO_ASOF = "2021-06-30"
+CMES_ASOF  = datetime.date.today().isoformat()   # 招商在役库：口径日 = 抓取当日
+
 # 已核实的「英文名 → 中文名」映射。**只放有独立证据的**，其余留空 —— 宁缺勿错。
 #   NEW VISION  = 新海辽：2019-08-28 大船集团交付，30.8 万吨（与名录 307,434 / 2019-08 吻合）
 #   NEW SPLENDOR= 凯辉  ：2023-01-04 交付，30.7 万吨
@@ -171,28 +196,38 @@ KNOWN_CN = {
 
 SQL_ENSURE = """
 CREATE TABLE IF NOT EXISTS vlcc_vessels (
-    id          BIGSERIAL PRIMARY KEY,
-    name_ais    VARCHAR(120) NOT NULL,      -- 规范化英文船名（AIS 匹配键）
-    name_en     VARCHAR(120) NOT NULL,      -- 英文船名原文
-    name_cn     VARCHAR(120),               -- 中文船名（拿不到就留空，不猜）
-    owner       VARCHAR(60)  NOT NULL,      -- 船东口径：招商轮船 / 中远海能
-    owner_full  VARCHAR(200),               -- 权属明细（含单船公司）
-    dwt         NUMERIC(14,2),              -- 载重吨
-    built_year  INTEGER,
-    flag        VARCHAR(12),                -- CN/HK/SG/PA/LR/MH/MT
-    source      VARCHAR(200) NOT NULL,
-    imo         VARCHAR(16),                -- 由 fetch_vlcc_position.py --learn 反推
-    mmsi        VARCHAR(16),
-    verified    BOOLEAN NOT NULL DEFAULT FALSE,  -- 是否已被 AIS 实见（ShipStaticData 佐证）
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id            BIGSERIAL PRIMARY KEY,
+    name_ais      VARCHAR(120) NOT NULL,    -- 规范化英文船名（AIS 匹配键）
+    name_en       VARCHAR(120) NOT NULL,    -- 英文船名原文
+    name_cn       VARCHAR(120),             -- 中文船名（拿不到就留空，不猜）
+    owner         VARCHAR(60)  NOT NULL,    -- 船东口径：招商轮船 / 中远海能
+    owner_full    VARCHAR(200),             -- 权属明细（含单船公司）
+    dwt           NUMERIC(14,2),            -- 载重吨
+    built_year    INTEGER,
+    flag          VARCHAR(12),              -- CN/HK/SG/PA/LR/MH/MT
+    source        VARCHAR(200) NOT NULL,
+    imo           VARCHAR(16),              -- 由 fetch_vlcc_position.py --learn 反推
+    mmsi          VARCHAR(16),
+    verified      BOOLEAN NOT NULL DEFAULT FALSE,  -- 是否已被 AIS 实见（ShipStaticData 佐证）
+    roster_asof   DATE,                     -- 名录口径截止日（招商=抓取日，中远=2021-06-30）
+    roster_status VARCHAR(12) NOT NULL DEFAULT 'active',  -- active | retired
+    status_note   VARCHAR(200),             -- retired 时：现名 / 转手时间 / 依据
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS vlcc_vessels_name_ais_uniq ON vlcc_vessels (name_ais);
 CREATE INDEX IF NOT EXISTS idx_vlcc_vessels_owner ON vlcc_vessels (owner);
+-- 幂等补列（老表升级用；没有 migrations，DDL 内联）
+ALTER TABLE vlcc_vessels ADD COLUMN IF NOT EXISTS roster_asof   DATE;
+ALTER TABLE vlcc_vessels ADD COLUMN IF NOT EXISTS roster_status VARCHAR(12) NOT NULL DEFAULT 'active';
+ALTER TABLE vlcc_vessels ADD COLUMN IF NOT EXISTS status_note   VARCHAR(200);
 """
 
+# ⚠ `roster_status` / `status_note` **故意不在 DO UPDATE 里**：
+#   它们的唯一出处是 fetch_vlcc_position_hifleet.py 的 RETIRED 表，本脚本每次重跑
+#   只是名录的搬运工，**不能把已经标成 retired 的船刷回 active**。
 UPSERT_SQL = """
 INSERT INTO vlcc_vessels
-    (name_ais, name_en, name_cn, owner, owner_full, dwt, built_year, flag, source)
+    (name_ais, name_en, name_cn, owner, owner_full, dwt, built_year, flag, source, roster_asof)
 VALUES %s
 ON CONFLICT (name_ais) DO UPDATE SET
     name_en    = EXCLUDED.name_en,
@@ -203,6 +238,7 @@ ON CONFLICT (name_ais) DO UPDATE SET
     built_year = COALESCE(EXCLUDED.built_year, vlcc_vessels.built_year),
     flag       = COALESCE(EXCLUDED.flag, vlcc_vessels.flag),
     source     = EXCLUDED.source,
+    roster_asof = COALESCE(EXCLUDED.roster_asof, vlcc_vessels.roster_asof),
     updated_at = NOW()
 """
 
@@ -250,6 +286,7 @@ def parse_cosco_snapshot() -> list[dict]:
             "built_year": int(year),
             "flag": flag,
             "source": COSCO_SOURCE,
+            "roster_asof": COSCO_ASOF,       # 中远：2021-06-30 快照（不是在役口径）
         })
     return out
 
@@ -316,6 +353,7 @@ def fetch_cmes_fleet(verbose: bool = True) -> tuple[list[dict], list[str]]:
             "built_year": int(ym.group(1)) if ym else None,
             "flag": None,               # 该源不给船旗
             "source": CMES_SOURCE,
+            "roster_asof": CMES_ASOF,   # 招商：在役库，口径日 = 抓取当日
         })
     return out, failures
 
@@ -351,7 +389,7 @@ def write_db(conn, rows: list[dict]) -> int:
         cur.execute(SQL_ENSURE)
         entries = [
             (r["name_ais"], r["name_en"], r["name_cn"], r["owner"], r["owner_full"],
-             r["dwt"], r["built_year"], r["flag"], r["source"])
+             r["dwt"], r["built_year"], r["flag"], r["source"], r["roster_asof"])
             for r in rows
         ]
         execute_values(cur, UPSERT_SQL, entries)
@@ -366,6 +404,9 @@ def show_status(conn) -> None:
                    COUNT(*)                        AS ships,
                    COUNT(mmsi)                     AS with_mmsi,
                    COUNT(*) FILTER (WHERE verified) AS verified,
+                   COUNT(*) FILTER (WHERE roster_status = 'retired') AS retired,
+                   MIN(roster_asof)                AS asof_lo,
+                   MAX(roster_asof)                AS asof_hi,
                    MIN(built_year)                 AS oldest,
                    MAX(built_year)                 AS newest
             FROM vlcc_vessels GROUP BY owner ORDER BY 2 DESC
@@ -374,9 +415,13 @@ def show_status(conn) -> None:
     if not rows:
         print("  (空表)")
         return
-    print(f"  {'船东':<12s}{'艘数':>5s}{'有MMSI':>8s}{'AIS实见':>9s}{'最早建':>8s}{'最新建':>8s}")
-    for o, n, m, v, lo, hi in rows:
-        print(f"  {o:<12s}{n:>5d}{m:>8d}{v:>9d}{str(lo or '—'):>8s}{str(hi or '—'):>8s}")
+    print(f"  {'船东':<12s}{'艘数':>5s}{'有MMSI':>8s}{'AIS实见':>9s}{'已转手':>7s}"
+          f"{'最早建':>8s}{'最新建':>8s}  名录口径日")
+    for o, n, m, v, ret, alo, ahi, lo, hi in rows:
+        asof = str(alo) if alo and alo == ahi else f"{alo or '—'}~{ahi or '—'}"
+        print(f"  {o:<12s}{n:>5d}{m:>8d}{v:>9d}{ret:>7d}"
+              f"{str(lo or '—'):>8s}{str(hi or '—'):>8s}  {asof}")
+    print("  ⚠ 中远口径 = 2021-06-30 官方快照（非在役）；招商 = 在役库，口径日=抓取日。")
 
 
 def main() -> int:

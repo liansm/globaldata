@@ -416,6 +416,23 @@ export const ipoCalendar = pgTable('ipo_calendar', {
 //   远洋船没有岸基 AIS 覆盖时，最新报文可能已过去几小时甚至几天 ——
 //   这是 AIS 的固有限制，**不是数据坏了**。前端必须显示「更新于 X 小时前」，
 //   不能默认所有点都是实时的。
+//
+// ⚠ 名录口径（2026-10-01 定案，别再问「要不要换成在役源」）
+// -------------------------------------------------
+// 两个船东的**名录时效性根本不同**，所以必须各记各的，不能混着当「当前船队」：
+//   * 招商轮船：`chinashipbuild` **在役**船队库 → `roster_asof` = 抓取当日。
+//   * 中远海能：官网《本集团自有油轮运力》**2021-06-30 官方 PDF 快照**
+//     → `roster_asof` = 2021-06-30，语义是「2021-06-30 在册」，**不是「当前在役」**。
+// 为什么不把中远也换成「当前在役」源：**公开渠道根本不存在逐船名的中远在役清单**。
+//   2025 年报（2026-03-26）只给「油轮 155 艘 / 2257.6 万载重吨」这类**船型汇总**；
+//   券商研报（东方证券 2026-07-09）给到「VLCC 41 自有 + 7 租入 / 1472 万载重吨」，
+//   同样**不给船名**；船队库（chinashipbuild）只覆盖招商；逐船名的在役库
+//   （Equasis / Miramar / Clarksons）都是付费产品，不在本项目口径内。
+//   ⇒ 硬凑一个「当前口径」只会引入来源不明的数据，**宁缺勿错**：保留有出处的快照，
+//     把「它是什么口径」写进 `roster_asof`，把「哪些已经不属于它了」写进 `roster_status`。
+// `roster_status = 'retired'` = 已核实转手/改名（内容见 `status_note`），**唯一出处是
+//   `fetch_vlcc_position_hifleet.py` 顶部的 `RETIRED` 表**，每次运行投影到本列。
+//   前端必须把 retired 显示成「已转手」，**不能和「AIS 静默期无船位」混为一谈**。
 // --------------------------------------------------------------------------
 export const vlccVessels = pgTable('vlcc_vessels', {
   id:        bigserial('id', { mode: 'number' }).primaryKey(),
@@ -431,6 +448,10 @@ export const vlccVessels = pgTable('vlcc_vessels', {
   imo:       varchar('imo',        { length: 16 }),
   mmsi:      varchar('mmsi',       { length: 16 }),
   verified:  boolean('verified').notNull().default(false),
+  // ── 名录口径（见上方长注释）──────────────────────────────────────────────
+  rosterAsof:   date('roster_asof'),                    // 该条名录的口径截止日；招商=抓取日，中远=2021-06-30
+  rosterStatus: varchar('roster_status', { length: 12 }).notNull().default('active'), // active | retired
+  statusNote:   varchar('status_note',   { length: 200 }),  // retired 时：现名 / 转手时间 / 依据
   updatedAt: timestamp('updated_at', { withTimezone: true })
                .default(sql`NOW()`).notNull(),
 }, (t) => [

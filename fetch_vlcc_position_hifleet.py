@@ -200,6 +200,51 @@ def retired_info(name_ais: str):
     return RETIRED.get(norm_name(name_ais))
 
 
+def retired_note(name_ais: str) -> str:
+    """把 RETIRED 元组拼成一句可读的说明 —— 进 `vlcc_vessels.status_note`，给前端 tooltip。
+
+    格式：`已转手 2023-04 → SUN I（Lake → Lake 1 → Lake 2）· 依据 Miramar / ShipSpotting`
+    （status_note 是 VARCHAR(200)，这里最长的一条约 90 字符，够。）
+    """
+    to, when, ref = RETIRED[name_ais][1], RETIRED[name_ais][2], RETIRED[name_ais][3]
+    return f"已转手 {when} → {to} · 依据 {ref}"
+
+
+def sync_retired_status(conn, verbose: bool = False) -> int:
+    """把 RETIRED 这个**唯一出处**投影到 `vlcc_vessels.roster_status` / `status_note`。
+
+    为什么不能只在 `--fix-retired` 时才写：
+      `RETIRED` 是代码常量，库里的 status 才是**前端/接口看得见的事实**。若只在手工
+      跑 `--fix-retired` 时同步，往 RETIRED 里新增一条后库里仍是 `active` —— 图上会
+      继续显示成「无船位」的待办，而不是「已转手」。所以每次运行都同步一次
+      （只 UPDATE 那几条，成本可忽略）。**本脚本 = roster_status 的唯一写入方**，
+      `fetch_vlcc_fleet.py` 的 UPSERT 刻意不碰这两列。
+    """
+    if not RETIRED:
+        return 0
+    names = list(RETIRED)
+    notes = [retired_note(n) for n in names]
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE vlcc_vessels v
+               SET roster_status = 'retired', status_note = n.note, updated_at = NOW()
+              FROM (SELECT unnest(%s::text[]) AS name_ais,
+                           unnest(%s::text[]) AS note) n
+             WHERE v.name_ais = n.name_ais
+        """, (names, notes))
+        n = cur.rowcount
+    conn.commit()
+    if verbose:
+        print(f"  [i] 已把 RETIRED {len(names)} 艘投影到名录 roster_status=retired（命中 {n} 行）")
+        if n < len(names):
+            # 列出未命中的 —— 「RETIRED 里有、名录里没有」必须可见，不要静默
+            with conn.cursor() as cur:
+                cur.execute("SELECT name_ais FROM vlcc_vessels WHERE name_ais = ANY(%s)", (names,))
+                hit = {r[0] for r in cur.fetchall()}
+            print(f"      ⚠ 未命中（名录里没有这些名字）：{'、'.join(sorted(set(names) - hit)) or '无'}")
+    return n
+
+
 SQL_ENSURE = """
 CREATE TABLE IF NOT EXISTS vlcc_positions (
     id         BIGSERIAL PRIMARY KEY,
@@ -219,6 +264,14 @@ CREATE TABLE IF NOT EXISTS vlcc_positions (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS vlcc_positions_name_ts_uniq ON vlcc_positions (name_ais, ts);
 CREATE INDEX IF NOT EXISTS idx_vlcc_positions_name_ts ON vlcc_positions (name_ais, ts DESC);
+"""
+
+# 名录口径列（本脚本拥有 roster_status 的写入权，见下方 sync_retired_status）。
+# 幂等 ALTER：即使前置的 fetch_vlcc_fleet.py 还没跑过，这里也能把列补上。
+SQL_ENSURE_VESSELS = """
+ALTER TABLE vlcc_vessels ADD COLUMN IF NOT EXISTS roster_asof   DATE;
+ALTER TABLE vlcc_vessels ADD COLUMN IF NOT EXISTS roster_status VARCHAR(12) NOT NULL DEFAULT 'active';
+ALTER TABLE vlcc_vessels ADD COLUMN IF NOT EXISTS status_note   VARCHAR(200);
 """
 
 UPSERT_POS_SQL = """
@@ -454,6 +507,13 @@ class HiFleet:
 def ensure_schema(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(SQL_ENSURE)
+        # 名录侧的口径列也兜底建一遍（本脚本拥有 roster_status 的写入权）
+        try:
+            cur.execute(SQL_ENSURE_VESSELS)
+        except psycopg2.errors.UndefinedTable:
+            # vlcc_vessels 还不存在 → 由 fetch_vlcc_fleet.py 负责建表，这里不越权
+            conn.rollback()
+            raise SystemExit("[FATAL] vlcc_vessels 不存在 —— 先跑 fetch_vlcc_fleet.py")
     conn.commit()
 
 
@@ -719,6 +779,7 @@ def show_status(conn, stale_days: int = 0) -> None:
         cur.execute("""
             SELECT v.owner,
                    COUNT(*)             AS ships,
+                   COUNT(*) FILTER (WHERE v.roster_status = 'retired') AS retired,
                    COUNT(v.mmsi)        AS with_mmsi,
                    COUNT(v.dwt)         AS with_dwt,
                    COUNT(v.flag)        AS with_flag,
@@ -730,11 +791,20 @@ def show_status(conn, stale_days: int = 0) -> None:
              GROUP BY v.owner ORDER BY 2 DESC
         """)
         rows = cur.fetchall()
+        cur.execute("""SELECT owner, MIN(roster_asof), MAX(roster_asof)
+                         FROM vlcc_vessels GROUP BY 1""")
+        asof = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
 
-    print(f"  {'船东':<10s}{'艘数':>5s}{'有MMSI':>8s}{'有DWT':>7s}{'有船旗':>7s}"
-          f"{'有船位':>8s}  最新船位")
-    for o, n, m, d, f, p, latest in rows:
-        print(f"  {o:<10s}{n:>5d}{m:>8d}{d:>7d}{f:>7d}{p:>8d}  {latest or '—'}")
+    # 「已转手」是**数据事实**，不是「无船位」的空缺 —— 单列一栏，别混进待办
+    print(f"  {'船东':<10s}{'艘数':>5s}{'已转手':>7s}{'在役*':>6s}{'有MMSI':>8s}{'有DWT':>7s}"
+          f"{'有船旗':>7s}{'有船位':>8s}  最新船位")
+    for o, n, ret, m, d, f, p, latest in rows:
+        print(f"  {o:<10s}{n:>5d}{ret:>7d}{n - ret:>6d}{m:>8d}{d:>7d}{f:>7d}{p:>8d}  {latest or '—'}")
+        lo, hi = asof.get(o, (None, None))
+        span = str(lo) if lo == hi else f"{lo or '—'} ~ {hi or '—'}"
+        print(f"      名录口径日 roster_asof = {span}")
+    print("  * 「在役」= 名录内非 retired 条数。⚠ 中远的 roster_asof 是 **2021-06-30 快照**，"
+          "其「在役」只代表「2021-06-30 在册且未被核实已转手」，**不等于今天的在役船队**。")
 
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*), MAX(ts) FROM vlcc_positions")
@@ -903,7 +973,11 @@ def fix_retired(conn, dry_run: bool = False) -> int:
         cur.execute("DELETE FROM vlcc_positions WHERE name_ais = ANY(%s)", (names,))
         n_p = cur.rowcount
     conn.commit()
-    print(f"    已擦除身份 {n_v} 艘、删除船位 {n_p} 条 → 下次运行不会重新学回来（RETIRED 已在匹配前拦截）")
+    # 同时把「已转手」写进名录口径列 —— 只清身份不改 status 的话，前端仍会
+    # 把它显示成「AIS 静默期无船位」的待办，而不是「已转手」。
+    n_s = sync_retired_status(conn, verbose=True)
+    print(f"    已擦除身份 {n_v} 艘、删除船位 {n_p} 条、标记 retired {n_s} 艘"
+          f" → 下次运行不会重新学回来（RETIRED 已在匹配前拦截）")
     return n_p
 
 
@@ -1073,6 +1147,13 @@ def selftest() -> int:
         ck(f"RETIRED[{nm}] 是 4 元组", len(meta), 4)
     ck("retired_info 大小写/空白无关", retired_info("  cosgreat lake "), RETIRED["COSGREAT LAKE"])
     ck("retired_info 未登记名返回 None", retired_info("NEW VISION"), None)
+    # retired_note 要进 vlcc_vessels.status_note VARCHAR(200) —— 超长会被 PG 截断/报错，
+    # 所以这里卡死长度；同时必须带上「现名」和「依据」，否则前端 tooltip 等于没说。
+    for nm in RETIRED:
+        note = retired_note(nm)
+        ck(f"retired_note[{nm}] 不超过 200 字符", len(note) <= 200, True)
+        ck(f"retired_note[{nm}] 含现名", RETIRED[nm][1].split("（")[0] in note, True)
+        ck(f"retired_note[{nm}] 含转手时间", RETIRED[nm][2] in note, True)
 
     print()
     if fails:
@@ -1149,6 +1230,8 @@ def main() -> int:
     conn = psycopg2.connect(DATABASE_URL)
     try:
         ensure_schema(conn)
+        # RETIRED 是唯一出处 → 每次运行都把它投影到名录（避免「加了退役船但库里还是 active」）
+        sync_retired_status(conn, verbose=True)
         roster = load_roster(conn)
         names = sorted(roster)
         if args.limit:

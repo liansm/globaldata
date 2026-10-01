@@ -159,6 +159,9 @@ let tdtAnnoLayer: any = null   // 天地图中文注记（cva_w）
 let lastGeoKey = ''   // 上一次实际渲染的标注 id 集合，用于跳过无谓重绘
 
 const withPos    = computed(() => vessels.value.filter(v => v.pos))
+// 名录里已核实转手的船（**不是**「无船位」）—— 见 types/vlcc.ts 的 rosterStatus 注释
+const retiredN   = computed(() => vessels.value.filter(v => v.rosterStatus === 'retired').length)
+const selectedVessel = computed(() => vessels.value.find(v => v.nameAis === selected.value) ?? null)
 const shownList  = computed(() => {
   const kw = keyword.value.trim().toUpperCase()
   return vessels.value.filter(v => {
@@ -547,6 +550,13 @@ function fmtStale(h: number | null | undefined) {
   if (h < 24) return h.toFixed(1) + 'h 前'
   return (h / 24).toFixed(1) + 'd 前'
 }
+
+// status_note 形如「已转手 2023-04 → SUN I（Lake → Lake 1 → Lake 2） · 依据 Miramar / ShipSpotting」。
+// 列表行只放**转手时间**（窄列放不下全句），完整句子走 title 悬浮提示。
+function retiredWhen(note: string | null | undefined) {
+  const m = (note ?? '').match(/已转手\s+(\S+)/)
+  return m ? m[1] : '已转手'
+}
 </script>
 
 <template>
@@ -562,6 +572,10 @@ function fmtStale(h: number | null | undefined) {
         <div class="stat" v-for="(v, k) in (stats?.byOwner ?? {})" :key="k">
           <b :style="{ color: ownerColor(k) }">{{ v.withPos }}/{{ v.total }}</b>
           <span>{{ k }}</span>
+        </div>
+        <div class="stat" v-if="stats?.retired">
+          <b class="muted">{{ stats.retired }}</b>
+          <span>艘已转手</span>
         </div>
         <div class="stat">
           <b>{{ stats?.latestTs ? new Date(stats.latestTs).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—' }}</b>
@@ -649,7 +663,8 @@ function fmtStale(h: number | null | undefined) {
             v-for="v in shownList"
             :key="v.nameAis"
             class="item"
-            :class="{ active: selected === v.nameAis, nopos: !v.pos }"
+            :class="{ active: selected === v.nameAis, nopos: !v.pos, retired: v.rosterStatus === 'retired' }"
+            :title="v.rosterStatus === 'retired' ? (v.statusNote || '') : ''"
             @click="selectVessel(v.nameAis)"
           >
             <div class="item-main">
@@ -665,7 +680,13 @@ function fmtStale(h: number | null | undefined) {
               </div>
             </div>
             <div class="item-right">
-              <template v-if="v.pos">
+              <!-- ⚠「已转手」≠「无船位」：前者是名录快照里已售出的船，后者是在役船处于
+                   AIS 静默期。混在一起会让前者被当成待补的数据缺口。 -->
+              <template v-if="v.rosterStatus === 'retired'">
+                <span class="retired-tag">已转手</span>
+                <span class="retired-when">{{ retiredWhen(v.statusNote) }}</span>
+              </template>
+              <template v-else-if="v.pos">
                 <span class="stale">{{ fmtStale(v.pos.staleHours) }}</span>
                 <span class="dest" v-if="v.pos.dest">{{ v.pos.dest }}</span>
               </template>
@@ -682,7 +703,13 @@ function fmtStale(h: number | null | undefined) {
           </div>
           <div v-loading="detailLoading" class="detail-body">
             <template v-if="detail">
-              <div v-if="detail.track.length >= 2" class="ok">
+              <!-- ⚠ 已转手优先判断：这种船的 track 恒为空，若走下面「只有 0 个点」的分支，
+                   会把它说成「AIS 静默期」—— 那是**在役船**的解释，用在这里是错的。 -->
+              <div class="warn" v-if="selectedVessel?.rosterStatus === 'retired'">
+                该船<b>已转手</b>，名录快照里的旧名不再有 AIS 报文，故无轨迹可画。
+                <br /><span class="hint">{{ selectedVessel.statusNote || '' }}</span>
+              </div>
+              <div v-else-if="detail.track.length >= 2" class="ok">
                 轨迹 {{ detail.track.length }} 点，
                 {{ new Date(detail.track[0].ts).toLocaleDateString('zh-CN') }} ~
                 {{ new Date(detail.track[detail.track.length - 1].ts).toLocaleDateString('zh-CN') }}
@@ -728,6 +755,7 @@ function fmtStale(h: number | null | undefined) {
   padding: 7px 13px; display: flex; flex-direction: column; align-items: flex-start; min-width: 76px;
 }
 .stat b { font-size: 16px; color: #1a1a2e; line-height: 1.2; }
+.stat b.muted { color: #a8b0be; }
 .stat span { font-size: 11px; color: #98a0b0; margin-top: 1px; }
 
 .guide {
@@ -815,6 +843,15 @@ function fmtStale(h: number | null | undefined) {
 .item:hover { background: #f5f8ff; }
 .item.active { background: #e8f1ff; }
 .item.nopos { opacity: .62; }
+/* 已转手（retired）：名录快照里有、但船已卖给别家 —— 用实色小标签和「无船位」区分，
+   不能再淡成一片灰，否则两者看起来一样（这正是改造前的 bug）。 */
+.item.retired { opacity: .78; }
+.item.retired .item-name .cn, .item.retired .item-name .en { color: #98a0b0; }
+.retired-tag {
+  font-size: 10px; color: #8a6d3b; background: #fdf3e3; border: 1px solid #f3e0c0;
+  border-radius: 4px; padding: 0 4px; line-height: 15px; flex-shrink: 0;
+}
+.retired-when { font-size: 10.5px; color: #a8b0be; }
 .item-name { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .item-name .cn { font-weight: 600; color: #1a1a2e; }
 .item-name .en { color: #8a94a6; font-size: 11.5px; }
