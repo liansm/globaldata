@@ -69,6 +69,9 @@ export async function vlccRoutes(app: FastifyInstance) {
         mmsi:      v.mmsi ?? p?.mmsi ?? null,
         verified:  v.verified,
         source:    v.source,
+        rosterAsof:   v.rosterAsof,
+        rosterStatus: v.rosterStatus,   // 'active' | 'retired'
+        statusNote:   v.statusNote,
         pos: p ? {
           ts:        p.ts,
           lat:       toNum(p.lat),
@@ -86,25 +89,43 @@ export async function vlccRoutes(app: FastifyInstance) {
     const filtered = onlyWithPos ? items.filter(i => i.pos) : items
 
     // 4) 概况（**用过滤前的全量**统计，否则前端会以为名录只有几艘船）
+    // ⚠ 「retired（已转手）」必须**单列**：它们没有船位不是「AIS 静默期」，而是
+    //   这船已经卖给别家了。混进「无船位」会让前端把它当成待补的缺口。
     const withPos = items.filter(i => i.pos).length
+    const retired = items.filter(i => i.rosterStatus === 'retired').length
     const tsList = items.map(i => i.pos?.ts).filter(Boolean) as Date[]
-    const byOwner: Record<string, { total: number; withPos: number }> = {}
+    const byOwner: Record<string, { total: number; withPos: number; retired: number }> = {}
     for (const i of items) {
-      const b = (byOwner[i.owner] ??= { total: 0, withPos: 0 })
+      const b = (byOwner[i.owner] ??= { total: 0, withPos: 0, retired: 0 })
       b.total++
       if (i.pos) b.withPos++
+      if (i.rosterStatus === 'retired') b.retired++
+    }
+    // 两个船东的名录口径日可能不同（中远=2021-06-30 快照，招商=抓取日），逐个回给前端
+    const asofByOwner: Record<string, { min: string; max: string }> = {}
+    for (const i of items) {
+      if (!i.rosterAsof) continue
+      const a = (asofByOwner[i.owner] ??= { min: i.rosterAsof, max: i.rosterAsof })
+      if (i.rosterAsof < a.min) a.min = i.rosterAsof
+      if (i.rosterAsof > a.max) a.max = i.rosterAsof
     }
 
     return {
       stats: {
         total: items.length,
         withPos,
+        retired,
         byOwner,
+        asofByOwner,
         latestTs: tsList.length ? new Date(Math.max(...tsList.map(t => +new Date(t)))) : null,
         // 名录覆盖口径，直接回给前端展示，避免「以为这就是全部中国 VLCC」
-        coverageNote: '口径 = 招商轮船 + 中远海能（中国船东）。中远海能名录为 2021-06 官方快照，'
-                    + '此后交付的新船与其它中国船东（中石油/中石化/山东海运等）尚未纳入。'
-                    + '船位源 = HiFleet（岸基 + 卫星）；个别船处于 AIS 静默期时无位置，属正常。',
+        coverageNote: '口径 = 招商轮船 + 中远海能（中国船东，非挂旗口径）。'
+                    + '⚠ 两名录时效不同：招商 = 在役船队库（口径日见各船东）；'
+                    + '中远 = 2021-06-30 官方运力快照，此后交付的新船与其它中国船东'
+                    + '（中石油/中石化/山东海运等）尚未纳入。'
+                    + '已核实转手的船标「已转手」并保留在表内（不计入在役），'
+                    + '它们没有船位属正常，不是数据缺失。'
+                    + '船位源 = HiFleet（岸基 + 卫星）；在役船处于 AIS 静默期时无位置，属正常。',
       },
       vessels: filtered,
     }
@@ -161,6 +182,9 @@ export async function vlccRoutes(app: FastifyInstance) {
         mmsi:      v.mmsi,
         verified:  v.verified,
         source:    v.source,
+        rosterAsof:   v.rosterAsof,
+        rosterStatus: v.rosterStatus,
+        statusNote:   v.statusNote,
       },
       days,
       track: track.map(p => ({

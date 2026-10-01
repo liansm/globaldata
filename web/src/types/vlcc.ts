@@ -28,13 +28,23 @@ export interface VlccVessel {
   mmsi: string | null
   verified: boolean
   source: string
+  /** 名录口径截止日（招商=抓取日，中远=2021-06-30 官方快照）。两者不同是事实，不是 bug。 */
+  rosterAsof: string | null
+  /** 'active' | 'retired'。retired = 已核实转手/改名，**没有船位属正常**，不是待补缺口。 */
+  rosterStatus: string
+  /** retired 时：现名 / 转手时间 / 依据 */
+  statusNote: string | null
   pos: VlccPosition | null
 }
 
 export interface VlccFleetStats {
   total: number
   withPos: number
-  byOwner: Record<string, { total: number; withPos: number }>
+  /** 名录内已核实转手的艘数（**不是**「无船位」，别混） */
+  retired: number
+  byOwner: Record<string, { total: number; withPos: number; retired: number }>
+  /** 各船东的名录口径日；min≠max 说明同船东内口径不一致（应报警） */
+  asofByOwner: Record<string, { min: string; max: string }>
   latestTs: string | null
   coverageNote: string
 }
