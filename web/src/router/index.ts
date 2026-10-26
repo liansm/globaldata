@@ -93,6 +93,12 @@ const router = createRouter({
       path: '/oil-shipping',
       redirect: { name: 'shipping', query: { tab: 'vessels' } },
     },
+    {
+      // AI 硬件：存储颗粒现货（dram.com.cn，DDR5/DDR4）+ GPU 云租价（aimultiple，含单卡买断参考价）
+      path: '/ai-hardware',
+      name: 'ai-hardware',
+      component: () => import('@/pages/AiHardware.vue'),
+    },
   ],
 })
 

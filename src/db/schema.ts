@@ -549,3 +549,92 @@ export const fxSpot = pgTable('fx_spot', {
   updatedAt: timestamp('updated_at', { withTimezone: true })
                .default(sql`NOW()`).notNull(),
 })
+
+// --------------------------------------------------------------------------
+// dram_products / dram_prices — 存储颗粒（DDR5 / DDR4）SDRAM 现货报价
+// --------------------------------------------------------------------------
+// 源：dram.com.cn（中国IC交易网，深圳），脚本 fetch_ai_hardware.py
+// ⚠ DDR3 已停抓（成交清淡、页面不展示），但 `generation` 保留该枚举值 —— 库里还有旧行，
+//   接口层过滤，不删数据（--purge-ddr3 可一次性清掉）。
+//
+// ⚠ 这不是「内存条价格」，是**颗粒**的现货价，单位 **美元/颗**：
+//   `DDR5 16Gb(2Gx8)` = 16Gb 颗粒 = 2GB，不是 16GB 内存条。二者差 8 倍量级。
+// ⚠ `grade` 必须参与分组：原厂正片(prime) 与 eTT(白牌) 同规格相差 5~6 倍，
+//   合成一条曲线毫无意义。
+// ⚠ 历史只有**滚动半年**（更早要站方买 Excel）→ 「错过就没有」的源，靠日更累积；
+//   且报价日不连续（周末无报价），查询端**不要按自然日补空/前值填充**。
+// ⚠ 与 TrendForce/DRAMeXchange 的全球现货口径不同（差 20%+），跨源不可拼接。
+// --------------------------------------------------------------------------
+export const dramProducts = pgTable('dram_products', {
+  key:        varchar('dram_key',   { length: 60  }).primaryKey(),  // 'ddr5_24gb_5200'
+  prodid:     varchar('prodid',     { length: 20  }),               // 源站内部 id，会变，仅供排查
+  name:       varchar('name',       { length: 120 }).notNull(),
+  generation: varchar('generation', { length: 10  }).notNull(),     // DDR5 / DDR4 / DDR3
+  densityGb:  integer('density_gb'),                                // 24 / 16 / 8 / 4（Gb，不是 GB）
+  speed:      varchar('speed',      { length: 30  }),               // '5200/6400'
+  grade:      varchar('grade',      { length: 10  }).notNull(),     // 'prime' | 'ett'
+  unit:       varchar('unit',       { length: 20  }).notNull().default('USD/chip'),
+  source:     varchar('source',     { length: 40  }).notNull().default('dram.com.cn'),
+  updatedAt:  timestamp('updated_at', { withTimezone: true })
+                .default(sql`NOW()`).notNull(),
+}, (t) => [
+  index('idx_dram_products_gen').on(t.generation),
+])
+
+export const dramPrices = pgTable('dram_prices', {
+  id:         bigserial('id', { mode: 'number' }).primaryKey(),
+  key:        varchar('dram_key',   { length: 60 }).notNull(),
+  priceDate:  date('price_date').notNull(),
+  low:        numeric('price_low',   { precision: 12, scale: 3 }),
+  open:       numeric('price_open',  { precision: 12, scale: 3 }),
+  close:      numeric('price_close', { precision: 12, scale: 3 }),
+  // ⚠ 源站历史表**没有最高价**，只有 最低/开盘/收盘 —— 不要用 close 冒充 high
+}, (t) => [
+  unique('dram_prices_uniq').on(t.key, t.priceDate),
+  index('idx_dram_prices_key_date').on(t.key, t.priceDate),
+])
+
+// --------------------------------------------------------------------------
+// gpu_products / gpu_prices — AI 算力（GPU 云租价）
+// --------------------------------------------------------------------------
+// 源：aimultiple.com/ai-gpus（聚合各家云厂商公开牌价），脚本 fetch_ai_hardware.py
+//
+// ⚠⚠ 三个口径陷阱，页面与接口都靠这三个字段区分，别混：
+//   ① `price_hourly` 是 **每卡** 时租，不是整节点价。源站的 `$113.93 (x8 GPUs)` 是
+//      p5 整机一小时的价格，直接当单卡价会虚高 8 倍（AWS 会显示成 B200 的 30 倍）。
+//      落库前已 ÷ 节点卡数，`gpus_per_node` 留着是为还原总价。
+//   ② `provider='market_min'` 是源站总表给的**单卡（x1）最低价**，不含整节点摊销价。
+//      所以会出现「最低价 $3.67，但明细里 Vultr 摊到 $3.20」—— 不是数据错，
+//      是整节点批量的每卡价更低。前端必须写清是哪一种。
+//   ③ 这是**租价（$/卡·小时）**，不是买断价。单卡买断参考价在 gpu_products 的
+//      unit_price_* 字段，来源是媒体转述的区间，静态、非日更，两者差三个数量级。
+// --------------------------------------------------------------------------
+export const gpuProducts = pgTable('gpu_products', {
+  key:       varchar('gpu_key', { length: 40 }).primaryKey(),   // 'h100_sxm'
+  name:      varchar('name',    { length: 60 }).notNull(),     // 'H100 SXM'
+  vendor:    varchar('vendor',  { length: 20 }).notNull(),
+  vramGb:    numeric('vram_gb',       { precision: 8, scale: 1 }),
+  bandwidthTbs: numeric('bandwidth_tbs', { precision: 8, scale: 2 }),  // TB/s
+  // 单卡买断**参考价**（NULL = 尚无公开报价，如 Rubin）
+  unitPriceLow:  numeric('unit_price_low',  { precision: 12, scale: 0 }),
+  unitPriceHigh: numeric('unit_price_high', { precision: 12, scale: 0 }),
+  unitPriceNote: varchar('unit_price_note', { length: 200 }),
+  unitPriceAsof: varchar('unit_price_asof', { length: 20 }),
+  unitPriceSrc:  varchar('unit_price_src',  { length: 200 }),
+  sortOrder: integer('sort_order').notNull().default(100),
+  source:    varchar('source', { length: 40 }).notNull().default('aimultiple.com'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).default(sql`NOW()`).notNull(),
+})
+
+export const gpuPrices = pgTable('gpu_prices', {
+  id:          bigserial('id', { mode: 'number' }).primaryKey(),
+  key:         varchar('gpu_key',  { length: 40 }).notNull(),
+  priceDate:   date('price_date').notNull(),
+  provider:    varchar('provider', { length: 60 }).notNull(),  // 云厂商 或 'market_min'
+  region:      varchar('region',   { length: 40 }),
+  priceHourly: numeric('price_hourly', { precision: 10, scale: 4 }).notNull(),
+  gpusPerNode: integer('gpus_per_node'),
+}, (t) => [
+  unique('gpu_prices_uniq').on(t.key, t.priceDate, t.provider, t.region),
+  index('idx_gpu_prices_key_date').on(t.key, t.priceDate),
+])
