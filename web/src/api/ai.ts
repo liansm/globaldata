@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { DramProduct, GpuProduct } from '@/types/ai'
+import type { DramProduct, GpuProduct, StorageResponse } from '@/types/ai'
 
 const http = axios.create({
   baseURL: '/api',
@@ -21,4 +21,12 @@ export function fetchDram(days = 500): Promise<DramProduct[]> {
  */
 export function fetchGpu(days = 365): Promise<GpuProduct[]> {
   return http.get<GpuProduct[]>('/ai/gpu', { params: { days } }).then(r => r.data)
+}
+
+/**
+ * 存储成品盘 / NAND 颗粒 —— 115 个品种一次拿全（约 3500 点），切品类不再发请求。
+ * 返回 `categories`（分组与更新节奏）和 `items`（含虚拟品种 `avg_ssd_street`）。
+ */
+export function fetchStorage(days = 500): Promise<StorageResponse> {
+  return http.get<StorageResponse>('/ai/storage', { params: { days } }).then(r => r.data)
 }

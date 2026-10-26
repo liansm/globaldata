@@ -638,3 +638,58 @@ export const gpuPrices = pgTable('gpu_prices', {
   unique('gpu_prices_uniq').on(t.key, t.priceDate, t.provider, t.region),
   index('idx_gpu_prices_key_date').on(t.key, t.priceDate),
 ])
+
+// --------------------------------------------------------------------------
+// storage_products / storage_prices — 存储成品盘 + NAND 颗粒
+// --------------------------------------------------------------------------
+// 源：dram.com.cn（与 DRAM 同一个站、同一套接口，只是 sortid 不同）
+//   3=Nand Flash / 5=SSD Street(零售) / 9=SSD OEM(白牌) / 10=HDD
+//
+// ⚠⚠⚠ 三个坑，改这里之前必须看：
+//   ① **`capacity_gb` 是归一化后的 GB**，NAND 的 `1Tb`(=1024Gb) 已在落库时 ÷8 折成 128GB。
+//      这与 `dram_products.density_gb`（存 Gb，要 ÷8）**语义相反**。
+//      所以每 GB 价 = `close / capacity_gb`，**不要再 ÷8**，否则差 8 倍。
+//   ② **`currency` 是按分类校正过的值，不是站方标的那一列**。站方标记有错：
+//      SSD OEM 有 3 条标 ￥ 实为 USD（0.15 元/GB 低于晶圆裸片价）、
+//      HDD 有 1 条标 $ 实为 CNY（$810 买 1TB 机械盘）。`currency_note` 写明校正原因。
+//   ③ 更新频率差两个数量级：NAND/SSD OEM 周级、SSD 零售日更、**HDD 半年只有 3~4 个点**。
+//      HDD 的曲线接近水平线不是抓漏，是上游不调价 —— 页面必须标出来。
+//
+// 另：零售品牌盘（ssd_street）有 66 个品种，其中一批已停更（停在 2026-08），
+//     所以接口额外给一条 `avg_ssd_street` 的**容量加权均价**曲线，前端不逐条画 66 根线。
+// --------------------------------------------------------------------------
+export const storageProducts = pgTable('storage_products', {
+  key:          varchar('storage_key',  { length: 60 }).primaryKey(),
+  prodid:       varchar('prodid',       { length: 20 }),
+  name:         varchar('name',         { length: 120 }).notNull(),  // 上游原名
+  displayName:  varchar('display_name', { length: 120 }).notNull(),
+  category:     varchar('category',     { length: 20 }).notNull(),   // nand_wafer/ssd_oem/ssd_street/hdd
+  brand:        varchar('brand',        { length: 30 }),
+  capacityGb:   numeric('capacity_gb',  { precision: 10, scale: 1 }), // **GB**，非 Gb
+  capacityRaw:  varchar('capacity_raw', { length: 24 }),             // 上游原写法 '1Tb'
+  formFactor:   varchar('form_factor',  { length: 16 }),             // 2.5 / M.2 / 3.5 / Wafer
+  interface:    varchar('interface',    { length: 16 }),             // SATA3 / PCIe4.0 ...
+  dtype:        varchar('dtype',        { length: 10 }),             // TLC / QLC / MLC
+  usage:        varchar('usage',        { length: 16 }),             // 桌面 / 监控 / 移动 / 笔记本
+  currency:     varchar('currency',     { length: 3 }).notNull(),    // CNY / USD（已校正）
+  unit:         varchar('unit',         { length: 20 }).notNull(),   // USD/chip ...
+  currencyNote: varchar('currency_note', { length: 160 }),
+  sortOrder:    integer('sort_order').notNull().default(100),
+  source:       varchar('source',       { length: 40 }).notNull().default('dram.com.cn'),
+  updatedAt:    timestamp('updated_at', { withTimezone: true }).default(sql`NOW()`).notNull(),
+}, (t) => [
+  index('idx_storage_products_cat').on(t.category),
+])
+
+export const storagePrices = pgTable('storage_prices', {
+  id:         bigserial('id', { mode: 'number' }).primaryKey(),
+  key:        varchar('storage_key', { length: 60 }).notNull(),
+  priceDate:  date('price_date').notNull(),
+  low:        numeric('price_low',   { precision: 12, scale: 2 }),
+  open:       numeric('price_open',  { precision: 12, scale: 2 }),
+  close:      numeric('price_close', { precision: 12, scale: 2 }),
+  // ⚠ 与 dram_prices 一样：源站历史表没有最高价，不要用 close 冒充 high
+}, (t) => [
+  unique('storage_prices_uniq').on(t.key, t.priceDate),
+  index('idx_storage_prices_key_date').on(t.key, t.priceDate),
+])
