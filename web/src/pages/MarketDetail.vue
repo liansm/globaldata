@@ -56,6 +56,7 @@ const backInfo = computed<BackInfo>(() => {
     return { label: '← 返回全球股市', target: '/markets' }
   }
   if (m === '航运') return { label: '← 返回航运信息', target: '/shipping' }
+  if (m === 'AI硬件') return { label: '← 返回 AI 硬件', target: '/ai-hardware' }
   return { label: '← 返回大宗商品', target: '/commodities' }
 })
 const backLabel = computed(() => backInfo.value.label)
@@ -87,6 +88,10 @@ async function loadDetail() {
   } finally {
     loading.value = false
   }
+  // ⚠ 分时只有 A 股指数有。航运运价 / 建材 CEMPI / AI硬件个股 / 美股调
+  //   `/api/markets/:key/minutes` 一律 400，控制台留一条红色报错，看着像页面坏了。
+  //   所以**等 market 回来再决定要不要请求**，不在 onMounted 里无条件发。
+  if (detail.value?.market === 'A股' && !isFlowKey(key.value)) loadMinutes()
 }
 
 async function loadMinutes() {
@@ -113,8 +118,7 @@ function switchToDaily(val: number | 'ytd') {
 function isFlowKey(k: string) { return k.startsWith('flow_') }
 
 onMounted(() => {
-  loadDetail()
-  if (!isFlowKey(key.value)) loadMinutes()
+  loadDetail()          // 分时由 loadDetail 在拿到 market 之后自己决定，见函数末尾
 })
 watch(key, () => {
   // 换一条序列：先清掉上一个页面的归属，避免高亮错一帧
@@ -122,7 +126,6 @@ watch(key, () => {
   showIntraday.value = !isFlowKey(key.value)
   minuteData.value   = null
   loadDetail()
-  if (!isFlowKey(key.value)) loadMinutes()
 })
 watch(days, loadDetail)
 

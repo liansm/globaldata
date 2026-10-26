@@ -13,20 +13,27 @@ import { ref } from 'vue'
  */
 export const STOCK_MARKETS = new Set(['A股', '港股', '美股', '欧洲', '亚太', '资金流向'])
 
-export type NavGroup = 'home' | 'markets' | 'shipping'
+export type NavGroup = 'home' | 'markets' | 'shipping' | 'ai'
 
 /** navGroup → 导航项的路由地址（App.vue 用它比对 `item.to`） */
 export const NAV_TO: Record<NavGroup, string> = {
   home: '/',
   markets: '/markets',
   shipping: '/shipping',
+  ai: '/ai-hardware',
 }
 
-/** market 字段 → 所属导航项；未知 market 归「大宗商品」（水泥 CEMPI 走的就是这条） */
+/**
+ * market 字段 → 所属导航项；未知 market 归「大宗商品」（水泥 CEMPI 走的就是这条）。
+ * ⚠ `AI硬件` 必须在 STOCK_MARKETS 之外单独判 —— 它既不是股市指数，也不在「全球股市」名下。
+ *   现在库里仍留着 14 只 `aih_*` 的旧个股序列（页面已不再展示），旧链接点进去
+ *   `MarketDetail` 要靠这条回到「AI 硬件」而不是「全球股市」。
+ */
 export function navForMarket(market?: string | null): NavGroup | null {
   if (!market) return null
   if (STOCK_MARKETS.has(market)) return 'markets'
   if (market === '航运') return 'shipping'
+  if (market === 'AI硬件') return 'ai'
   return 'home'
 }
 
@@ -40,6 +47,7 @@ export const detailNav = ref<NavGroup | null>(null)
 export function navForPath(path?: string | null): NavGroup | null {
   if (!path) return null
   if (path.startsWith('/shipping')) return 'shipping'
+  if (path.startsWith('/ai-hardware')) return 'ai'
   if (path.startsWith('/markets')) return 'markets'
   if (path === '/' || path.startsWith('/commodities')) return 'home'
   return null

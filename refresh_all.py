@@ -46,6 +46,11 @@ FETCH_SCRIPTS = [
     ("fetch_ctfi_history.py",      "CTFI 历史回补（中华航运网周报/月报，月报 2021-09 起 / 周报 2025-07 起）"),
     ("fetch_commodities.py",       "大宗商品价格（黄金/铜/油/煤炭等）"),
     ("fetch_cement.py",            "水泥价格：CEMPI 指数 + P.O42.5 均价（中国水泥网，日频含历史）"),
+    # AI 硬件（一个脚本两块数据）：
+    #   ① 存储颗粒现货 DDR5/DDR4 —— 源站历史只有**滚动半年**，跑漏的期次永久缺失
+    #      → 必须日更累积（9 品种 × 122 点、10 个请求、约 20 秒，全窗口幂等 upsert）
+    #   ② GPU 云租价 —— aimultiple 聚合各家云厂商牌价，日更才有走势
+    ("fetch_ai_hardware.py",       "AI 硬件价格：存储颗粒 DDR5/DDR4 + GPU 云租价（美元/GB、美元/卡·时）"),
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
     ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
@@ -119,6 +124,34 @@ STATUS_QUERIES = [
             FROM prices
         """,
         "cols": ["rows", "commodities", "earliest", "latest"],
+    },
+    {
+        # ⚠ 只应覆盖滚动半年（约 120~125 个报价日/品种）：earliest 明显早于半年前
+        #   说明站方延长了窗口，早于半年且 latest 很久没动 → 停更。
+        # ⚠ products 现在应为 9（DDR5 3 档 + DDR4 6 档）。库里可能还留着 DDR3 旧行，
+        #   接口已过滤，统计这里不过滤 —— 数字变大不代表又在抓 DDR3。
+        "title": "dram_prices  (存储颗粒现货 DDR5/DDR4)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT dram_key) AS products,
+                   MIN(price_date)::text AS earliest,
+                   MAX(price_date)::text AS latest
+            FROM dram_prices
+        """,
+        "cols": ["rows", "products", "earliest", "latest"],
+    },
+    {
+        # market_min = 全市场最低租价（源站口径：单卡 x1，不含整节点摊销）
+        "title": "gpu_prices  (GPU 云租价 美元/卡·小时)",
+        "sql": """
+            SELECT COUNT(*) FILTER (WHERE provider = 'market_min') AS min_quotes,
+                   COUNT(DISTINCT gpu_key) AS gpus,
+                   COUNT(DISTINCT provider) - 1 AS providers,
+                   MIN(price_date)::text AS earliest,
+                   MAX(price_date)::text AS latest
+            FROM gpu_prices
+        """,
+        "cols": ["min_quotes", "gpus", "providers", "earliest", "latest"],
     },
     {
         "title": "market_indices  (指数/资金流向定义)",
