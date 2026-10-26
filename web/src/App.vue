@@ -20,7 +20,10 @@ const navItems = [
   { label: 'AI硬件',   icon: '🧠', to: '/ai-hardware', names: ['ai-hardware'] },
   // 航运信息挂在「大宗商品」下面：运价指数（原大宗商品页底部那几组）+ 油船信息（原「油运信息」页）
   { label: '航运信息', icon: '🚢', to: '/shipping', names: ['shipping'] },
-  { label: '加密货币', icon: '₿',  to: '/crypto',   names: ['crypto'] },
+  // ⚠ 加密货币（2026-10-26 暂时下线）：导航项已摘除，`/crypto` 路由、`Crypto.vue` /
+  //   `CryptoDetail.vue`、`/api/crypto/*`、`fetch_crypto.py` **全部保留**，
+  //   想恢复只需把下面这行加回来（并把它重新加进 refresh_all.py 的 FETCH_SCRIPTS）：
+  //   { label: '加密货币', icon: '₿', to: '/crypto', names: ['crypto'] },
   { label: '外汇',     icon: '💱', to: '/fx',       names: ['fx', 'fx-detail'] },
   { label: '基金信息', icon: '💰', to: '/funds-info',
     names: ['funds-info', 'fund-detail', 'company-detail', 'private-fund-detail'] },

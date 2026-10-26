@@ -84,3 +84,65 @@ export interface GpuProduct {
   series:       GpuPoint[]
   providers:    GpuProviderQuote[]
 }
+
+/**
+ * 存储成品盘 / NAND 颗粒（源 dram.com.cn，与 DRAM 同站不同 sortid）
+ *
+ * ⚠ `capacityGb` 是**归一化后的 GB**（NAND 的 1Tb 已 ÷8 折成 128GB），
+ *   每 GB 价 = `close / capacityGb`。这与 `DramProduct.densityGb`（存 Gb，要 ÷8）
+ *   **语义相反**，两个 tab 之间不要互相套公式。
+ * ⚠ `currency` 是**按品类校正过**的（站方标记有错），显示要跟着它走：
+ *   NAND / SSD OEM 是美元，SSD 零售 / HDD 是人民币。
+ * ⚠ `virtual: true` 的 `avg_ssd_street` 是**接口合成的加权均价**，库里没有这一行；
+ *   它的 `series[].samples` 是当日参与加权的品种数（浮动篮子，不是固定 66 个）。
+ */
+export interface StoragePoint {
+  date:   string
+  close:  number
+  perGb:  number | null
+  low:    number | null
+  open:   number | null
+  samples?: number        // 仅均价序列有：当日参与加权的品种数
+}
+
+export type StorageCategory = 'nand_wafer' | 'ssd_oem' | 'ssd_street' | 'hdd'
+
+export interface StorageItem {
+  key:          string
+  name:         string
+  displayName:  string
+  category:     StorageCategory
+  brand:        string | null
+  capacityGb:   number | null
+  capacityRaw:  string | null
+  formFactor:   string | null
+  interface:    string | null
+  dtype:        string | null
+  usage:        string | null
+  currency:     'CNY' | 'USD'
+  unit:         string          // 'USD/chip' / 'CNY/disk' / 'CNY/GB'
+  currencyNote: string | null
+  virtual:      boolean
+  latestDate:   string | null
+  latestClose:  number | null
+  latestPerGb:  number | null
+  prevClose:    number | null
+  changePct:    number | null
+  points:       number
+  firstDate:    string | null
+  series:       StoragePoint[]
+}
+
+export interface StorageCategoryMeta {
+  key:        StorageCategory
+  label:      string
+  cadence:    string          // 更新节奏：周级 / 日更 / 季更
+  count:      number
+  currency:   'CNY' | 'USD' | null
+  latestDate: string | null
+}
+
+export interface StorageResponse {
+  categories: StorageCategoryMeta[]
+  items:      StorageItem[]
+}

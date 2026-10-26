@@ -50,10 +50,19 @@ FETCH_SCRIPTS = [
     #   ① 存储颗粒现货 DDR5/DDR4 —— 源站历史只有**滚动半年**，跑漏的期次永久缺失
     #      → 必须日更累积（9 品种 × 122 点、10 个请求、约 20 秒，全窗口幂等 upsert）
     #   ② GPU 云租价 —— aimultiple 聚合各家云厂商牌价，日更才有走势
-    ("fetch_ai_hardware.py",       "AI 硬件价格：存储颗粒 DDR5/DDR4 + GPU 云租价（美元/GB、美元/卡·时）"),
+    #   ③ 存储成品 NAND/SSD/HDD —— 与 ① 同站，115 个品种、115 个请求、约 2.5 分钟（全流程最慢的一条）
+    #      虽慢但不接会永久丢数据（同样是滚动半年窗口）
+    #      只要 DDR + GPU（约 30 秒）时手动跑：python fetch_ai_hardware.py --dram --gpu
+    ("fetch_ai_hardware.py",       "AI 硬件价格：存储（DDR/NAND/SSD/HDD 每 GB 价）+ GPU 云租价"),
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
-    ("fetch_crypto.py",            "加密货币价格（CoinGecko）"),
+    # ⚠ 加密货币（2026-10-26 暂时下线，不接入定时刷新）：
+    #   `fetch_crypto.py`、`/api/crypto/*`、前端 `/crypto` 路由与页面全部保留备用，
+    #   只是不再跑在 refresh_all 里（CoinGecko 免费档限流 ~5 次/分钟，10 币全流程约 3 分钟）。
+    #   需要时手动跑：python fetch_crypto.py            # 近 365 天日线回补 + 当日快照
+    #                 python fetch_crypto.py --no-history  # 只写当日快照
+    #   恢复接入：把下面这行加回 FETCH_SCRIPTS 即可
+    #   ("fetch_crypto.py", "加密货币（CoinGecko：近 365 天日线回补 + 当日快照）"),
     # 外汇：增量 = 中间价当日 + 中间价近 30 天 + 即期实时快照，秒级。
     # ⚠ 即期日线走新浪 getDayKLine（每对 1 请求、返回全历史），增量只写最近 7 天。
     #   全历史回补用 --full（中间价 2006 起分块 + 即期全量，约 1.5 分钟），手动跑：
@@ -152,6 +161,29 @@ STATUS_QUERIES = [
             FROM gpu_prices
         """,
         "cols": ["min_quotes", "gpus", "providers", "earliest", "latest"],
+    },
+    {
+        # ⚠ 分品类看 latest，不要只看总行数：
+        #   日更（DDR/SSD 零售）→ 周级（NAND/SSD 白牌）→ **季级（HDD）**，
+        #   HDD 的 latest 落后一两个月是上游不调价，不是抓取坏了。
+        # ⚠ capacity_gb 已是 GB（NAND 的 Tb 已 ÷8），所以 per_gb 直接 close/capacity_gb。
+        "title": "storage_prices  (NAND/SSD/HDD 存储成品)",
+        "sql": """
+            SELECT s.category,
+                   COUNT(DISTINCT s.storage_key) AS products,
+                   COUNT(*) AS rows,
+                   MAX(p.price_date)::text AS latest,
+                   ROUND(AVG(p.price_close / s.capacity_gb), 3)::text AS avg_per_gb
+            FROM storage_products s
+            JOIN storage_prices p USING (storage_key)
+            WHERE s.capacity_gb > 0
+              AND p.price_date = (SELECT MAX(price_date) FROM storage_prices
+                                   WHERE storage_key = s.storage_key)
+            GROUP BY s.category
+            ORDER BY s.category
+        """,
+        "cols": ["category", "products", "rows", "latest", "avg_per_gb"],
+        "multi": True,
     },
     {
         "title": "market_indices  (指数/资金流向定义)",
@@ -410,27 +442,8 @@ STATUS_QUERIES = [
         "cols": ["rows", "ships", "src", "earliest", "latest", "last_run"],
         "optional": True,
     },
-    {
-        "title": "crypto_coins  (加密货币定义)",
-        "sql": """
-            SELECT COUNT(*) AS total
-            FROM crypto_coins
-        """,
-        "cols": ["total"],
-        "optional": True,
-    },
-    {
-        "title": "crypto_prices  (加密货币日线)",
-        "sql": """
-            SELECT COUNT(*) AS rows,
-                   COUNT(DISTINCT coin_key) AS coins,
-                   MIN(price_date)::text AS earliest,
-                   MAX(price_date)::text AS latest
-            FROM crypto_prices
-        """,
-        "cols": ["rows", "coins", "earliest", "latest"],
-        "optional": True,
-    },
+    # 加密货币的 status 查询（crypto_coins / crypto_prices）随刷新一起下线，
+    # 表和数据仍保留；需要看时恢复接入后加回，或直接 psql 查。
     {
         "title": "fx_pairs  (人民币汇率货币对定义)",
         "sql": """
@@ -593,6 +606,9 @@ CLEAR_TABLES = [
     "fund_nav",
     "fund_holdings",
     "funds",
+    # ⚠ crypto_* 仍在清空清单里（「清空所有数据」就该清干净），
+    #   但加密货币已不接入刷新 —— 清完**不会被 refresh_all 自动补回**，
+    #   要恢复得手动 python fetch_crypto.py
     "crypto_prices",
     "crypto_coins",
     "index_minutes",

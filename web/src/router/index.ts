@@ -33,6 +33,12 @@ const router = createRouter({
       component: () => import('@/pages/Crypto.vue'),
     },
     {
+      // 单币走势：日收盘折线（非 K 线），断档处显式断开
+      path: '/crypto/:key',
+      name: 'crypto-detail',
+      component: () => import('@/pages/CryptoDetail.vue'),
+    },
+    {
       // 外汇：人民币汇率中间价（CFETS）+ 即期汇率（新浪），两个口径可切换
       path: '/fx',
       name: 'fx',

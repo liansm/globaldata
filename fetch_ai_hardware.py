@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-AI Hardware Prices (AI 硬件价格：存储颗粒 + GPU 算力)
-=====================================================
-一个脚本、两个数据源、两块口径完全不同的价格。**别混着讲**：
+AI Hardware Prices (AI 硬件价格：存储颗粒 + 存储成品 + GPU 算力)
+================================================================
+一个脚本、两个数据源、三块口径完全不同的价格。**别混着讲**：
 
     ① 存储颗粒现货 —— dram.com.cn（中国IC交易网，深圳）
        单位 **美元/颗**，DDR5 / DDR4 两代（DDR3 已停抓：成交清淡、页面不再展示）。
@@ -22,10 +22,35 @@ AI Hardware Prices (AI 硬件价格：存储颗粒 + GPU 算力)
    400G 与 PoE 供电模块（中位数毫无意义）、Digi-Key / Mouser / eBay / 新蛋 全 403。
    ASP 只存在于 LightCounting / Yole 付费报告与厂商财报 → **不做**，页面写明原因。
 
+    ③ 存储成品盘 / NAND 颗粒 —— **同一个站**的另外四个分类（menuid=41 下的 sortid）：
+         sortid=3  Nand Flash   晶圆/颗粒，**美元/颗，容量是 Gb**（1Tb=128GB）
+         sortid=9  SSD OEM      白牌整盘，**美元/个**
+         sortid=5  SSD Street   零售品牌盘，**人民币/个**
+         sortid=10 HDD          机械盘，**人民币/个**（更新极慢，季度级）
+       接口、解析、历史逻辑与 ① 完全一致，只是 sortid 不同。
+
+⚠ 硬盘口径（落库前必须理解）
+------------------------------
+1. **币种标记不可信，一律按分类反推**（实测 2026-10-26）：
+   SSD OEM 里 `White SSD 256GB PCIe 3.0` 标 `￥` 却是 38.00 —— 0.15 元/GB 比晶圆裸片还便宜，
+   实为美元；HDD 里 `西数WD 1TB NB` 标 `$` 却是 810.00 —— $810 买 1TB 机械盘同样荒谬，实为人民币。
+   本脚本按 `STORAGE_CATS` 的分类默认币种落库，并把「站方标记与分类默认不符」的条目打印出来。
+2. **NAND 的容量是 Gb 不是 GB**：`Flash 1Tb QLC Wafer $25.50` 是 1Tb=128GB → $0.20/GB。
+   当 GB 算会得出 $0.025/GB 的假便宜（比白牌成品盘还低 5 倍，这就是露馅的地方）。
+   本表 `capacity_gb` 存的是**已归一化的 GB**，与 `dram_products.density_gb`（存 Gb）语义相反，
+   所以 `perGb = close / capacity_gb`，**不要再 ÷8**。
+3. **上游名称里的容量经常写错**，正则救不了（`Ti600-11BNVME` 是 1TB、`S100G1X0E` 是 1TB
+   而型号里带 `100G`、`SU650 1TG` 是 1TB）→ 一律走 `CAPACITY_OVERRIDE`（按 prodid 写死）。
+4. **更新频率差两个数量级**：NAND/SSD OEM 周级、SSD 零售日更、**HDD 半年只有 3~4 个点**。
+   HDD 画出来是水平线不是抓漏，是上游真不调价 —— 页面上必须标出来。
+5. 零售品牌盘里有一批**已停更**（MG麦光/威士奇停在 8 月、海盗船只 1 个点、Micron 3 个点），
+   列表页仍挂着，历史不再前进。要做「零售均价」必须按容量加权，否则小容量盘会把均价抬高。
+
 Data sources
 ------------
     DRAM 列表 : http://www.dram.com.cn/ajax_asp/productprice_list.asp?menuid=41
     DRAM 历史 : http://www.dram.com.cn/ajax_asp/productpriceD_list.asp?menuid=41&prodid=<id>
+    NAND/SSD/HDD 列表 : 同上 + &sortid=<3|5|9|10>（历史接口 prodid 通用）
     GPU 报价  : https://aimultiple.com/ai-gpus   （单页静态 HTML，文本流可稳定解析）
 
 ⚠ DRAM 口径（落库前必须理解）
@@ -49,15 +74,18 @@ Data sources
 
 Tables
 ------
-    dram_products / dram_prices   存储颗粒（已有，本脚本接管维护）
+    dram_products / dram_prices   存储颗粒 DDR5/DDR4（已有，本脚本接管维护）
+    storage_products / storage_prices  NAND颗粒 / SSD白牌 / SSD零售 / HDD（本脚本新建）
     gpu_products  / gpu_prices    GPU 算力（本脚本新建）
 
 Usage
 -----
-    python fetch_ai_hardware.py             # 抓 DRAM + GPU，幂等 upsert（日常跑这个）
+    python fetch_ai_hardware.py             # 抓全部三块，幂等 upsert（日常跑这个）
     python fetch_ai_hardware.py --dry-run   # 只抓取打印，不写库
     python fetch_ai_hardware.py --dram      # 只跑存储颗粒
+    python fetch_ai_hardware.py --storage   # 只跑 NAND/SSD/HDD（115 品种，约 3 分钟）
     python fetch_ai_hardware.py --gpu       # 只跑 GPU
+    python fetch_ai_hardware.py --status    # 只回显库内现状，不抓取
     python fetch_ai_hardware.py --purge-ddr3  # 顺带删掉库里的 DDR3 旧数据（一次性）
 """
 
@@ -145,6 +173,64 @@ RUBIN_NOTE = ("NVIDIA Rubin 尚未公布单卡售价，云端亦无在租实例"
               "（2026-10 核实 aimultiple 全表 0 命中）")
 RUBIN_MODEL = ("Rubin", "rubin", "Rubin", "NVIDIA", 90)
 
+# ===========================================================================
+# ③ 存储成品盘 / NAND 颗粒（同站 menuid=41 的另外四个 sortid）
+# ===========================================================================
+STORAGE_LIST   = f"{DRAM_BASE}/ajax_asp/productprice_list.asp?menuid=41&sortid={{sid}}"
+STORAGE_DETAIL = DRAM_DETAIL          # 历史接口与 DRAM 完全同一个
+STORAGE_SOURCE = "dram.com.cn"
+
+# (sortid, category, 展示名, 默认币种, 计价单位后缀, perGB 合理下限, 上限)
+# ⚠ 币种是**按分类定的**，不是读站方那一列（站方标记有错，见 CCY_REASON）
+# ⚠ perGB 区间只用来「抓荒谬值」告警，不用来过滤 —— 越界要打印出来人工看，不静默丢
+STORAGE_CATS = [
+    (3,  "nand_wafer", "NAND 闪存颗粒", "USD", "chip", 0.05, 6.0),
+    (9,  "ssd_oem",    "SSD 白牌 OEM",  "USD", "disk", 0.05, 1.0),
+    (5,  "ssd_street", "SSD 零售品牌",  "CNY", "disk", 0.30, 5.0),
+    (10, "hdd",        "HDD 机械硬盘",  "CNY", "disk", 0.10, 2.0),
+]
+STORAGE_CAT_INDEX = {c[1]: c for c in STORAGE_CATS}
+
+CCY_REASON = {
+    "nand_wafer": "晶圆/颗粒以美元计价，站方标记一致",
+    "ssd_oem":    "白牌 OEM 以美元计价；站方把 3 条 PCIe3.0 标成 ￥ 是笔误（0.15 元/GB 低于晶圆裸片价）",
+    "ssd_street": "零售品牌盘以人民币计价，与京东/淘宝零售价同量级",
+    "hdd":        "机械盘以人民币计价；站方把「西数WD 1TB NB」标成 $ 是笔误（$810 买 1TB 不合常理）",
+}
+
+# 上游名称里容量写错/写残的，按 prodid 写死（prodid 若变，这里会打印「未命中」提醒）
+# 值：(归一化后的 GB, 原始写法, 说明)
+CAPACITY_OVERRIDE = {
+    "466542": (500,  "500GNVME", "500G 后直接接 NVME，严格边界匹配不到"),
+    "466541": (1024, "11BNVME",  "上游把 1TB 写成 11B"),
+    "465596": (2048, "2TBNVME",  "2TB 后直接接 NVME"),
+    "465595": (1024, "1TBNVME",  "1TB 后直接接 NVME"),
+    "465594": (2048, "2TBNVME",  "2TB 后直接接 NVME"),
+    "465625": (1024, "S100G1X0E", "西数型号里的 100G 不是容量（SN850X 1TB）"),
+    "465624": (2048, "S200G1X0E", "西数型号里的 200G 不是容量（SN850X 2TB）"),
+    "466109": (512,  "512B",     "上游把 512GB 写成 512B"),
+}
+
+# 品牌识别：按顺序匹配，命中即止（'ZHITAI致态' 必须先于其他 Z 开头项）
+BRAND_ALIAS = [
+    ("Kingston", "Kingston"), ("Samsung", "Samsung"), ("Micron", "Micron"),
+    ("ADATA", "ADATA"), ("ZHITAI", "致态"), ("MG麦光", "麦光"),
+    ("Vaseky", "威士奇"), ("海盗船", "海盗船"), ("宏基", "Acer"),
+    ("西数", "西数"), ("希捷", "希捷"), ("White", "White"), ("OEM", "OEM"),
+]
+
+# 容量：**大小写必须区分** —— Gb(bit) 与 GB(byte) 差 8 倍，用 re.I 会把 NAND 颗粒
+# 的 256Gb 读成 256GB，每 GB 价直接差 8 倍。
+CAP_BYTE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(TB|TGB|GB|TG|G|T)(?![0-9A-Za-z])")
+CAP_BIT_RE  = re.compile(r"(\d+(?:\.\d+)?)\s*(Tb|Gb)(?![0-9A-Za-z])")
+
+INTERFACE_RULES = [
+    (r"PCIe?\s*5\.0|M\.2\s*/\s*5\.0", "PCIe5.0"),
+    (r"PCIe?\s*4\.0|NVME\s*4\.0|PCIe4\.0", "PCIe4.0"),
+    (r"PCIe?\s*3\.0|NVME\s*3\.0|PCIe3\.0", "PCIe3.0"),
+    (r"SATA\s*3|SATA$|SATA\b", "SATA3"),
+]
+
 SQL_ENSURE = """
 CREATE TABLE IF NOT EXISTS dram_products (
     dram_key    VARCHAR(60)  PRIMARY KEY,
@@ -202,6 +288,45 @@ CREATE TABLE IF NOT EXISTS gpu_prices (
 
 CREATE INDEX IF NOT EXISTS idx_gpu_prices_key_date
     ON gpu_prices (gpu_key, price_date DESC);
+
+-- ③ 存储成品盘 / NAND 颗粒 ────────────────────────────────────────────────
+-- ⚠ capacity_gb 存的是**归一化后的 GB**（NAND 的 1Tb 已 ÷8 折成 128GB），
+--   与 dram_products.density_gb（存 Gb）语义**相反** —— 直接 close / capacity_gb 才是每 GB 价。
+CREATE TABLE IF NOT EXISTS storage_products (
+    storage_key   VARCHAR(60)  PRIMARY KEY,
+    prodid        VARCHAR(20),
+    name          VARCHAR(120) NOT NULL,   -- 上游原名，原样保留
+    display_name  VARCHAR(120) NOT NULL,
+    category      VARCHAR(20)  NOT NULL,   -- nand_wafer / ssd_oem / ssd_street / hdd
+    brand         VARCHAR(30),
+    capacity_gb   NUMERIC(10,1),           -- **GB**（NAND 颗粒也已 ÷8）
+    capacity_raw  VARCHAR(24),             -- 上游原写法 '1Tb' / '960GB/1TB'，用于核对
+    form_factor   VARCHAR(16),             -- 2.5 / M.2 / 3.5 / Wafer
+    interface     VARCHAR(16),             -- SATA3 / PCIe3.0 / PCIe4.0 / PCIe5.0
+    dtype         VARCHAR(10),             -- TLC / QLC / MLC（仅 NAND）
+    usage         VARCHAR(16),             -- 桌面 / 监控 / 移动 / 笔记本（仅 HDD）
+    currency      VARCHAR(3)   NOT NULL,   -- CNY / USD（**已按分类校正，非站方标记**）
+    unit          VARCHAR(20)  NOT NULL,   -- USD/chip / USD/disk / CNY/disk
+    currency_note VARCHAR(160),            -- 币种被校正的原因，前端要能显示
+    sort_order    SMALLINT     NOT NULL DEFAULT 100,
+    source        VARCHAR(40)  NOT NULL DEFAULT 'dram.com.cn',
+    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS storage_prices (
+    id          BIGSERIAL PRIMARY KEY,
+    storage_key VARCHAR(60) NOT NULL,
+    price_date  DATE        NOT NULL,
+    price_low   NUMERIC(12,2),
+    price_open  NUMERIC(12,2),
+    price_close NUMERIC(12,2),
+    UNIQUE (storage_key, price_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_storage_prices_key_date
+    ON storage_prices (storage_key, price_date DESC);
+CREATE INDEX IF NOT EXISTS idx_storage_products_cat
+    ON storage_products (category);
 """
 
 
@@ -402,6 +527,184 @@ def parse_gpu_providers(lines, models):
 
 
 # ---------------------------------------------------------------------------
+# ③ 存储成品盘 / NAND 解析
+# ---------------------------------------------------------------------------
+def parse_storage_list(html: str):
+    """列表页 → [(prodid, 原始名, 站方币种标记, 当前价), ...]"""
+    out = []
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
+        pid = re.search(r"prodid=(\d+)", tr)
+        cells = [cell_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
+        if pid and len(cells) >= 5 and cells[0]:
+            out.append((pid.group(1), cells[0], cells[1], cells[2]))
+    return out
+
+
+def extract_capacity(pid: str, cat: str, name: str):
+    """
+    名称 → (capacity_gb, capacity_raw, note)
+
+    ⚠ `capacity_gb` 一律是 **GB**：NAND 的 `1Tb`=1024Gb=128GB 已在此 ÷8 折好，
+      下游 `perGB = close / capacity_gb` 不需要再换算。
+    ⚠ 严格边界 `(?![0-9A-Za-z])` + 大小写敏感：`256Gb`≠`256GB`、`500GNVME` 抓不到
+      —— 抓不到的走 CAPACITY_OVERRIDE，**不猜**。
+    """
+    if pid in CAPACITY_OVERRIDE:
+        gb, raw, why = CAPACITY_OVERRIDE[pid]
+        return float(gb), raw, why
+
+    if cat == "nand_wafer":
+        m = CAP_BIT_RE.search(name)          # Gb / Tb（小写 b = bit）
+        if m:
+            v, u = float(m.group(1)), m.group(2)
+            bits = v * 1024 if u.lower() == "tb" else v
+            return bits / 8.0, m.group(0).strip(), None
+
+    m = CAP_BYTE_RE.search(name)             # GB / TB（大写 B = byte）
+    if m:
+        v, u = float(m.group(1)), m.group(2).upper()
+        return (v * 1024 if u.startswith("T") else v), m.group(0).strip(), None
+    return None, None, "无法识别容量"
+
+
+def extract_brand(name: str):
+    low = name.lower()
+    for pat, brand in BRAND_ALIAS:
+        if pat.lower() in low:
+            return brand
+    return None
+
+
+def extract_interface(name: str):
+    for pat, iface in INTERFACE_RULES:
+        if re.search(pat, name, re.I):
+            return iface
+    return None
+
+
+def describe_storage(pid: str, cat: str, name: str):
+    """上游原名 → (key, display, brand, capacity_gb, capacity_raw, form, iface, dtype, usage, note)"""
+    cap_gb, cap_raw, note = extract_capacity(pid, cat, name)
+    brand = extract_brand(name)
+
+    dtype = next((t for t in ("TLC", "QLC", "MLC", "SLC") if t in name.upper()), None)
+
+    if cat == "nand_wafer":
+        form, iface, usage = "Wafer", None, None
+    elif cat == "hdd":
+        form, iface = "3.5", "SATA3"
+        usage = ("监控" if "监控" in name else
+                 "移动" if ("移动" in name or "睿翼" in name) else
+                 "笔记本" if re.search(r"\bNB\b", name) else "桌面")
+        if usage in ("移动", "笔记本"):
+            form = "2.5"
+    else:
+        form = "M.2" if re.search(r"M\.2", name, re.I) else ("2.5" if "2.5" in name else None)
+        iface = extract_interface(name)
+        usage = None
+
+    # key 用名称 slug：prodid 会变、名称几乎不变；中文品牌保留可读
+    slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fa5]+", "_", name).strip("_").lower()
+    key = f"{cat}_{slug}"[:60]
+    return key, name, brand, cap_gb, cap_raw, form, iface, dtype, usage, note
+
+
+def run_storage(sess, dry_run):
+    """→ (products, fetched, warns)，products 行含全部元数据，fetched: key → [(date,low,open,close)]"""
+    print("\n" + "=" * 72)
+    print("③ 存储成品盘 / NAND 颗粒（dram.com.cn 同站的另外四个分类）")
+    print("=" * 72)
+
+    products, fetched, warns = [], {}, []
+    seen_key = {}
+
+    for sid, cat, label, ccy, unit_sfx, lo, hi in STORAGE_CATS:
+        url = STORAGE_LIST.format(sid=sid)
+        try:
+            r = sess.get(url, timeout=30, verify=False)
+            r.raise_for_status()
+        except Exception as e:
+            print(f"  ✗ {label} 列表失败: {type(e).__name__}: {str(e)[:80]}")
+            warns.append(f"{label} 列表抓取失败")
+            continue
+        html = r.content.decode("utf-8", errors="replace")
+        snap = re.search(r"<ins>([^<]+)</ins>", html)
+        listed = parse_storage_list(html)
+        print(f"\n  ── {label}（sortid={sid}）{len(listed)} 个品种"
+              f" · 站方快照 {snap.group(1) if snap else '未标注'} · 计价 {ccy}")
+
+        ccy_fix, no_cap = [], []
+        for pid, name, ccy_mark, now in listed:
+            d = describe_storage(pid, cat, name)
+            key, disp, brand, cap_gb, cap_raw, form, iface, dtype, usage, note = d
+
+            # 同 key 不同 prodid = 上游改了名/加了相似品种，必须让人看到
+            if key in seen_key and seen_key[key] != pid:
+                warns.append(f"key 冲突 {key}: prodid {seen_key[key]} vs {pid}（{name}）")
+            seen_key[key] = pid
+
+            # 站方币种标记与分类默认不一致 → 记下来（我们按分类默认落库）
+            mark = (ccy_mark or "").strip()
+            if mark == "$" and ccy != "USD":
+                ccy_fix.append(f"{name}（站方标 $，按 {ccy}）")
+            elif mark == "￥" and ccy != "CNY":
+                ccy_fix.append(f"{name}（站方标 ￥，按 {ccy}）")
+
+            if cap_gb is None:
+                no_cap.append(f"{name}（{note}）")
+
+            try:
+                dd = sess.get(STORAGE_DETAIL.format(pid=pid), timeout=30, verify=False)
+                dd.raise_for_status()
+                rows = parse_dram_detail(dd.content.decode("utf-8", errors="replace"))
+            except Exception as e:
+                print(f"    ✗ {pid} {name[:34]}: {type(e).__name__}: {str(e)[:70]}")
+                rows = []
+
+            fetched[key] = rows
+            products.append({
+                "key": key, "prodid": pid, "name": name, "display": disp,
+                "category": cat, "brand": brand, "cap_gb": cap_gb, "cap_raw": cap_raw,
+                "form": form, "iface": iface, "dtype": dtype, "usage": usage,
+                "currency": ccy, "unit": f"{ccy}/{unit_sfx}",
+                "ccy_note": CCY_REASON[cat], "sort": 100,
+            })
+
+            # perGB 合理性：只告警，不过滤（越界往往是名称容量写错，要人工看）
+            if cap_gb and rows:
+                last_close = rows[-1][3]
+                if last_close:
+                    per_gb = last_close / cap_gb
+                    if not (lo <= per_gb <= hi):
+                        warns.append(f"{label} {name} 每 GB {per_gb:.3f} {ccy} "
+                                     f"超出合理区间 [{lo}, {hi}]，容量 {cap_raw} 需人工核")
+            elif not rows:
+                warns.append(f"{label} {name} 无历史数据")
+
+        # 每类小结
+        cnt = [p for p in products if p["category"] == cat]
+        pts = [len(fetched[p["key"]]) for p in cnt]
+        ok = [x for x in pts if x > 0]
+        print(f"     已抓 {len(cnt)} 品种 · 历史 {sum(pts)} 行 · "
+              f"点数 min/中位/max = "
+              f"{min(ok) if ok else '-'}/{sorted(ok)[len(ok)//2] if ok else '-'}/{max(ok) if ok else '-'}")
+        if ccy_fix:
+            print(f"     ⚠ 币种已按分类校正（站方标记有误）{len(ccy_fix)} 条: {ccy_fix}")
+        if no_cap:
+            print(f"     ⚠ 容量识别失败 {len(no_cap)} 条（perGB 留空，价格照存）: {no_cap}")
+
+    total = sum(len(v) for v in fetched.values())
+    print(f"\n  NAND/SSD/HDD 合计 {len(products)} 品种 / {total} 行")
+    if warns:
+        print(f"  ⚠ 告警 {len(warns)} 条：")
+        for w in warns[:20]:
+            print(f"     · {w}")
+        if len(warns) > 20:
+            print(f"     · …… 其余 {len(warns) - 20} 条")
+    return products, fetched, warns
+
+
+# ---------------------------------------------------------------------------
 # DB
 # ---------------------------------------------------------------------------
 def ensure_schema(conn):
@@ -489,6 +792,59 @@ def upsert_gpu_prices(conn, rows):
         execute_values(cur, sql, rows, page_size=500)
     conn.commit()
     return len(rows)
+
+
+def upsert_storage_products(conn, products):
+    sql = """
+        INSERT INTO storage_products
+            (storage_key, prodid, name, display_name, category, brand,
+             capacity_gb, capacity_raw, form_factor, interface, dtype, usage,
+             currency, unit, currency_note, sort_order, source)
+        VALUES %s
+        ON CONFLICT (storage_key) DO UPDATE SET
+            prodid        = EXCLUDED.prodid,
+            name          = EXCLUDED.name,
+            display_name  = EXCLUDED.display_name,
+            category      = EXCLUDED.category,
+            brand         = EXCLUDED.brand,
+            capacity_gb   = EXCLUDED.capacity_gb,
+            capacity_raw  = EXCLUDED.capacity_raw,
+            form_factor   = EXCLUDED.form_factor,
+            interface     = EXCLUDED.interface,
+            dtype         = EXCLUDED.dtype,
+            usage         = EXCLUDED.usage,
+            currency      = EXCLUDED.currency,
+            unit          = EXCLUDED.unit,
+            currency_note = EXCLUDED.currency_note,
+            sort_order    = EXCLUDED.sort_order,
+            source        = EXCLUDED.source,
+            updated_at    = NOW()
+    """
+    rows = [(p["key"], p["prodid"], p["name"], p["display"], p["category"], p["brand"],
+             p["cap_gb"], p["cap_raw"], p["form"], p["iface"], p["dtype"], p["usage"],
+             p["currency"], p["unit"], p["ccy_note"], p["sort"], STORAGE_SOURCE)
+            for p in products]
+    with conn.cursor() as cur:
+        execute_values(cur, sql, rows, page_size=100)
+    conn.commit()
+
+
+def upsert_storage_prices(conn, key, rows):
+    if not rows:
+        return 0
+    sql = """
+        INSERT INTO storage_prices (storage_key, price_date, price_low, price_open, price_close)
+        VALUES %s
+        ON CONFLICT (storage_key, price_date) DO UPDATE SET
+            price_low   = EXCLUDED.price_low,
+            price_open  = EXCLUDED.price_open,
+            price_close = EXCLUDED.price_close
+    """
+    data = [(key, d, lo, op, cl) for (d, lo, op, cl) in rows]
+    with conn.cursor() as cur:
+        execute_values(cur, sql, data, page_size=500)
+    conn.commit()
+    return len(data)
 
 
 # ---------------------------------------------------------------------------
@@ -588,19 +944,29 @@ def main() -> int:
     dry_run     = "--dry-run" in argv
     only_dram   = "--dram" in argv
     only_gpu    = "--gpu" in argv
+    only_storage = "--storage" in argv
     purge_ddr3  = "--purge-ddr3" in argv
-    if not only_dram and not only_gpu:
-        only_dram = only_gpu = True
+    status_only = "--status" in argv
+    if not any([only_dram, only_gpu, only_storage]):
+        only_dram = only_gpu = only_storage = True
 
     sess = requests.Session()
     sess.headers.update(HEADERS)
 
     dram_products, dram_fetched, dram_empty = [], {}, []
     gpu_picked, gpu_target, gpu_providers = [], None, []
+    sto_products, sto_fetched, sto_warns = [], {}, []
 
-    if only_dram:
+    if not status_only and only_dram:
         dram_products, dram_fetched, dram_empty = run_dram(sess, dry_run)
-    if only_gpu:
+    if not status_only and only_storage:
+        try:
+            sto_products, sto_fetched, sto_warns = run_storage(sess, dry_run)
+        except Exception as e:
+            print(f"✗ 存储成品盘抓取失败: {type(e).__name__}: {str(e)[:120]}")
+            if not only_dram and not only_gpu:
+                return 1
+    if not status_only and only_gpu:
         try:
             gpu_picked, gpu_target, gpu_providers = run_gpu(sess, dry_run)
         except Exception as e:
@@ -608,10 +974,12 @@ def main() -> int:
             if only_dram is False:
                 return 1
 
-    if dry_run:
+    if dry_run and not status_only:
         print("\n--dry-run：未写库")
-        return 0 if not dram_empty else 1
-    if not dram_products and not gpu_picked:
+        # 只要**跑了的**那条链路有空洞就报失败，没跑的不算
+        bad = bool(dram_empty) if only_dram else False
+        return 1 if bad else 0
+    if not status_only and not dram_products and not gpu_picked and not sto_products:
         print("无数据可写")
         return 1
 
@@ -625,6 +993,12 @@ def main() -> int:
             upsert_dram_products(conn, dram_products)
             written = sum(upsert_dram_prices(conn, k, v) for k, v in dram_fetched.items())
             print(f"\n存储颗粒：写入/更新 {written} 行")
+
+        # ── 存储成品 / NAND ──
+        if sto_products:
+            upsert_storage_products(conn, sto_products)
+            written = sum(upsert_storage_prices(conn, k, v) for k, v in sto_fetched.items())
+            print(f"存储成品盘/NAND：写入/更新 {written} 行 / {len(sto_products)} 个品种")
 
         # ── GPU ──
         if gpu_picked:
@@ -694,6 +1068,41 @@ def main() -> int:
             print(f"\nGPU 最新租价（美元/卡·小时）:")
             for k, nm, price in cur.fetchall():
                 print(f"  {nm:14s} {('$%.2f' % price) if price is not None else '暂无公开报价'}")
+
+            # ── 存储成品 / NAND 现状 ──
+            # 每类给「品种数 / 最新报价日 / 每 GB 价中位数」，一眼看出哪类在动、哪类停更
+            cur.execute("""
+                SELECT s.category, COUNT(DISTINCT s.storage_key) AS n,
+                       MAX(p.price_date) AS last_date,
+                       ROUND(AVG(p.price_close / s.capacity_gb), 3) AS avg_per_gb,
+                       MIN(p.price_close / s.capacity_gb) AS min_pg,
+                       MAX(p.price_close / s.capacity_gb) AS max_pg
+                FROM storage_products s
+                JOIN storage_prices p USING (storage_key)
+                WHERE s.capacity_gb > 0
+                  AND p.price_date = (SELECT MAX(price_date) FROM storage_prices
+                                       WHERE storage_key = s.storage_key)
+                GROUP BY s.category
+                ORDER BY CASE s.category
+                          WHEN 'nand_wafer' THEN 1 WHEN 'ssd_oem' THEN 2
+                          WHEN 'ssd_street' THEN 3 ELSE 4 END
+            """)
+            print(f"\n存储成品 / NAND 各类现状（截至 {datetime.now():%Y-%m-%d %H:%M}）:")
+            print(f"  {'品类':16s} {'品种':>4s} {'最新报价日':12s} {'每GB均值':>9s} "
+                  f"{'最低':>8s} {'最高':>8s}")
+            for cat, n, last, avg_pg, mn, mx in cur.fetchall():
+                label = STORAGE_CAT_INDEX.get(cat, (0, cat, cat, "?", "?", 0, 0))[2]
+                ccy = STORAGE_CAT_INDEX.get(cat, (0, cat, cat, "?", "?", 0, 0))[3]
+                print(f"  {label:16s} {n:>4d} {str(last):12s} "
+                      f"{ccy} {float(avg_pg):>6.3f} {float(mn):>8.3f} {float(mx):>8.3f}")
+
+            cur.execute("""
+                SELECT COUNT(*), COUNT(DISTINCT storage_key),
+                       MIN(price_date), MAX(price_date)
+                FROM storage_prices
+            """)
+            tot, keys, d0, d1 = cur.fetchone()
+            print(f"  → storage_prices 共 {tot} 行 / {keys} 品种 / {d0} → {d1}")
     finally:
         conn.close()
 

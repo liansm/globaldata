@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { fetchCrypto } from '@/api/crypto'
 import type { CryptoCoin } from '@/types/crypto'
+
+const router = useRouter()
 
 const coins   = ref<CryptoCoin[]>([])
 const loading = ref(true)
@@ -61,7 +64,7 @@ function coinIcon(key: string): string {
   <div class="crypto-page">
     <header class="page-header">
       <h1 class="page-title">₿ 加密货币</h1>
-      <p class="page-sub">主流加密货币实时行情 · 数据来源 jin10.com</p>
+      <p class="page-sub">主流加密货币实时行情 · 数据来源 CoinGecko</p>
     </header>
 
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" style="margin-bottom:20px" />
@@ -79,6 +82,11 @@ function coinIcon(key: string): string {
           v-for="coin in coins"
           :key="coin.key"
           class="coin-card"
+          role="button"
+          tabindex="0"
+          :title="`查看 ${coin.name} 走势`"
+          @click="router.push(`/crypto/${coin.key}`)"
+          @keydown.enter="router.push(`/crypto/${coin.key}`)"
         >
           <!-- Header row -->
           <div class="card-header">
@@ -115,8 +123,9 @@ function coinIcon(key: string): string {
             </div>
           </div>
 
-          <!-- Date -->
+          <!-- Footer：日期 + 走势入口（卡片整块可点，这里只是提示） -->
           <div class="card-footer">
+            <span class="card-link">走势 →</span>
             <span class="card-date">{{ coin.latestDate ?? '—' }}</span>
           </div>
         </div>
@@ -174,12 +183,15 @@ function coinIcon(key: string): string {
   padding: 18px 18px 14px;
   box-shadow: 0 1px 4px rgba(0,0,0,.06);
   transition: box-shadow .18s, transform .18s;
-  cursor: default;
+  cursor: pointer;
+  outline: none;
 }
-.coin-card:hover {
+.coin-card:hover,
+.coin-card:focus-visible {
   box-shadow: 0 4px 16px rgba(0,0,0,.10);
   transform: translateY(-2px);
 }
+.coin-card:hover .card-link { color: #409eff; }
 
 /* header row */
 .card-header {
@@ -277,7 +289,14 @@ function coinIcon(key: string): string {
 
 /* footer */
 .card-footer {
-  text-align: right;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.card-link {
+  font-size: 11px;
+  color: #c0c6d0;
+  transition: color .18s;
 }
 .card-date {
   font-size: 11px;
