@@ -13,6 +13,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchMarketDetail, fetchMarketMinutes } from '@/api/markets'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
+import { STOCK_MARKETS, detailNav, navForMarket } from '@/lib/nav'
 import type { MarketDetail, MarketMinutes } from '@/types/market'
 
 use([CanvasRenderer, LineChart, BarChart, TitleComponent, TooltipComponent, GridComponent, DataZoomComponent, MarkLineComponent])
@@ -43,13 +44,22 @@ const daysOptions: { label: string; value: number | 'ytd' }[] = [
 // ── Intraday state ─────────────────────────────────────────────────────────
 const isAShare       = computed(() => detail.value?.market === 'A股')
 
-// 返回按钮：股市类指数回「全球股市」列表，航运/建材等大宗类回「大宗商品」列表
-const STOCK_MARKETS = new Set(['A股', '港股', '美股', '欧洲', '亚太', '资金流向'])
-const isStockMarket = computed(() =>
-  detail.value == null || STOCK_MARKETS.has(detail.value.market),
-)
-const backLabel  = computed(() => (isStockMarket.value ? '← 返回全球股市' : '← 返回列表'))
-const backTarget = computed(() => (isStockMarket.value ? '/markets' : '/commodities'))
+// 返回按钮按 market 分流：
+//   股市类 → 「全球股市」；航运 → 「航运信息」（运价已从大宗商品页迁过去）；
+//   其余（建材 CEMPI 等）→ 「大宗商品」。
+// ⚠ 不能只判「是不是股市」，否则航运指数会退回一个已经没有它的页面（返回后找不到刚看的序列）。
+//    STOCK_MARKETS 与「左侧导航高亮」共用 lib/nav.ts 里那一份，别在这里另起一套。
+type BackInfo = { label: string; target: string }
+const backInfo = computed<BackInfo>(() => {
+  const m = detail.value?.market
+  if (detail.value == null || STOCK_MARKETS.has(m as string)) {
+    return { label: '← 返回全球股市', target: '/markets' }
+  }
+  if (m === '航运') return { label: '← 返回航运信息', target: '/shipping' }
+  return { label: '← 返回大宗商品', target: '/commodities' }
+})
+const backLabel = computed(() => backInfo.value.label)
+const backTarget = computed(() => backInfo.value.target)
 const showIntraday   = ref(true)   // default to intraday; switched off for non-A-share
 const minuteLoading  = ref(false)
 const minuteData     = ref<MarketMinutes | null>(null)
@@ -66,10 +76,14 @@ async function loadDetail() {
       ? { from: ytdFrom() }
       : { days: days.value }
     detail.value = await fetchMarketDetail(key.value, params)
+    // 回填「本页属于哪个导航项」：/market/:key 的 route.name 分不出股市/航运/建材，
+    // 只能等 market 字段回来。App.vue 的高亮就读这个值。
+    detailNav.value = navForMarket(detail.value?.market)
     // Non-A-share indices have no minute data — fall back to daily view
     if (detail.value?.market !== 'A股') showIntraday.value = false
   } catch {
     error.value = '加载失败，请稍后重试'
+    detailNav.value = null
   } finally {
     loading.value = false
   }
@@ -103,12 +117,17 @@ onMounted(() => {
   if (!isFlowKey(key.value)) loadMinutes()
 })
 watch(key, () => {
+  // 换一条序列：先清掉上一个页面的归属，避免高亮错一帧
+  detailNav.value = null
   showIntraday.value = !isFlowKey(key.value)
   minuteData.value   = null
   loadDetail()
   if (!isFlowKey(key.value)) loadMinutes()
 })
 watch(days, loadDetail)
+
+// 离开详情页必须清空：否则回到 /markets 之外的地方，这个值还会被 App.vue 读到
+onBeforeUnmount(() => { detailNav.value = null })
 
 // ── Computed helpers ───────────────────────────────────────────────────────
 const isFlow = computed(() => detail.value?.market === '资金流向')

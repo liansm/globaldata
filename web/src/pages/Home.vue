@@ -10,73 +10,27 @@ const router = useRouter()
 const loading = ref(false)
 const error = ref('')
 const list = ref<Commodity[]>([])
-// 航运运价指数（BDI / BCI / BSI 干散货，BCTI / BDTI 油运，CTFI 中国进口原油 + VLCC 各航线 WS/TCE，
-// CCFI 综合 + 12 条分航线），来自 /api/markets (market='航运')
-const shipping = ref<MarketIndex[]>([])
 // 建材指数（水泥价格指数 CEMPI），来自 /api/markets (market='建材')
+// ⚠ 航运运价（CCFI / BDI / 油运）原先也在这里，2026-10-25 已整体迁到独立的
+//   「航运信息」页（pages/Shipping.vue）—— 这里**不要再加回来**，否则同一批序列两处维护。
 const cementIdx = ref<MarketIndex[]>([])
 
 onMounted(async () => {
   loading.value = true
   try {
-    const [commodities] = await Promise.all([fetchCommodities()])
+    const commodities = await fetchCommodities()
     list.value = commodities
-    // 航运/建材数据拉取失败不应阻断大宗商品页面，单独容错
+    // 建材数据拉取失败不应阻断大宗商品页面，单独容错
     fetchMarkets()
       .then(rows => {
-        shipping.value = rows.filter(r => r.market === '航运')
         cementIdx.value = rows.filter(r => r.market === '建材')
       })
-      .catch(() => { /* 航运 / 建材 section 静默不显示 */ })
+      .catch(() => { /* 水泥 section 静默不显示 */ })
   } catch {
     error.value = '加载失败，请检查后端服务是否启动'
   } finally {
     loading.value = false
   }
-})
-
-// 航运数据拆分为三个 section：CCFI 出口集装箱 / BDI 干散货 / 油运（原油+成品油）
-const CCFI_ORDER = [
-  'ccfi_total', 'ccfi_europe', 'ccfi_med', 'ccfi_wc_america', 'ccfi_ec_america',
-  'ccfi_japan', 'ccfi_korea', 'ccfi_se_asia', 'ccfi_anz',
-  'ccfi_south_africa', 'ccfi_south_america', 'ccfi_we_africa', 'ccfi_persian_gulf',
-]
-// 干散货（BDTI/BCTI 是油运指数，不在这一组 —— 见下面 OIL_ORDER）
-const BDI_ORDER = ['bdi', 'bci', 'bsi']
-// 油运：VLCC 原油 / 成品油运价 + TCE（等价期租租金，船东盈利的直接代理变量）
-// 顺序：BDTI/BCTI 国际油运指数 → CTFI 中国进口原油综合 → CT1 中东湾 → CT2 西非 → CT4 美湾
-// ctfi_month_close = 月报口径的「CTFI 月末值」，是**点值**（与 ctfi_total 同口径），
-// 只是日期用月末标签（源报告未写具体日，宁缺勿错）→ 归在本组，能把 ctfi_total 补到 2021-09
-const OIL_ORDER = [
-  'bdti', 'bcti',
-  'ctfi_total', 'ctfi_month_close',
-  'ctfi_ct1', 'ctfi_ct1_ws', 'ctfi_ct1_usd_ton', 'ctfi_ct1_tce_std', 'ctfi_ct1_tce_eco',
-  'ctfi_ct2', 'ctfi_ct2_ws', 'ctfi_ct2_usd_ton', 'ctfi_ct2_tce_std', 'ctfi_ct2_tce_eco',
-  'ctfi_ct4', 'ctfi_ct4_usd_ton', 'ctfi_ct4_tce_std', 'ctfi_ct4_tce_eco',
-]
-// ⚠ 期间均值（月均 / 周均）**口径不同于上面点值**，必须单独成组：
-// 均值把区间波动抹平，和当日点值并排比大小会失真。标题里写明口径是硬要求。
-const CTFI_AVG_ORDER = [
-  'ctfi_month_avg',
-  'ctfi_ct1_ws_month_avg', 'ctfi_ct1_ws_week_avg',
-  'ctfi_ct1_tce_std_month_avg', 'ctfi_ct1_tce_std_week_avg',
-  'ctfi_ct2_ws_month_avg', 'ctfi_ct2_ws_week_avg',
-  'ctfi_ct2_tce_std_month_avg', 'ctfi_ct2_tce_std_week_avg',
-  'ctfi_ct4_usd_month_avg', 'ctfi_ct4_tce_std_month_avg',
-]
-
-const shippingSections = computed(() => {
-  const map = new Map(shipping.value.map(s => [s.key, s]))
-  return [
-    { title: 'CCFI 出口集装箱运价', icon: '🚢', keys: CCFI_ORDER },
-    { title: 'BDI 波罗的海干散货运价', icon: '⚓', keys: BDI_ORDER },
-    { title: '油运：原油 / 成品油运价与 VLCC TCE', icon: '🛢️', keys: OIL_ORDER },
-    { title: '油运 · CTFI 期间均值（月均 / 周均，均值口径，勿与上面当日点值直接比大小）',
-      icon: '📉', keys: CTFI_AVG_ORDER },
-  ].map(s => ({
-    ...s,
-    items: s.keys.map(k => map.get(k)).filter(Boolean) as MarketIndex[],
-  })).filter(s => s.items.length > 0)
 })
 
 // Section definitions — order matters, first match wins
@@ -207,7 +161,7 @@ function exchangeTagType(label: string | null) {
     <div class="page-header">
       <div>
         <h1>全球大宗商品价格</h1>
-        <p class="subtitle">实时追踪主要商品现货 &amp; 期货行情 · 建材水泥 · 航运运价（BDI / CCFI）</p>
+        <p class="subtitle">实时追踪主要商品现货 &amp; 期货行情 · 建材水泥（航运运价见左侧「航运信息」）</p>
       </div>
     </div>
 
@@ -371,45 +325,16 @@ function exchangeTagType(label: string | null) {
         </div>
       </section>
 
-      <!-- 航运数据：拆分为 CCFI / BDI 干散货 / 油运 三个 section，来自 market_indices(market='航运') -->
-      <section v-for="sec in shippingSections" :key="sec.title" class="section">
-        <div class="section-header">
-          <span class="section-icon">{{ sec.icon }}</span>
-          <h2 class="section-title">{{ sec.title }}</h2>
-          <span class="section-count">{{ sec.items.length }} 个指数</span>
-        </div>
-
-        <div class="card-grid">
-          <div
-            v-for="item in sec.items"
-            :key="item.key"
-            class="card ship-card clickable"
-            @click="goMarketDetail(item)"
-          >
-            <div class="card-top">
-              <span class="card-name">{{ item.name }}</span>
-              <el-tag size="small" type="info" class="card-tag">{{ item.key }}</el-tag>
-            </div>
-
-            <div class="card-price-row">
-              <span class="card-price">
-                {{ fmt(item.latestClose) }}
-                <span class="card-unit">{{ item.unit ?? '点' }}</span>
-              </span>
-            </div>
-
-            <div
-              v-if="fmtChangePct(item.changePct)"
-              class="card-pct"
-              :class="changePctClass(item.changePct)"
-            >{{ fmtChangePct(item.changePct) }}</div>
-
-            <div class="card-footer">
-              <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-              <span class="card-arrow">→</span>
-            </div>
-          </div>
-        </div>
+      <!-- 航运运价（CCFI / BDI / 油运）已迁到独立的「航运信息」页，此处只留入口 -->
+      <section class="section">
+        <router-link to="/shipping" class="ship-entry">
+          <span class="ship-entry-icon">🚢</span>
+          <span class="ship-entry-text">
+            <b>航运运价已移至「航运信息」</b>
+            <span>CCFI 集装箱 / BDI 干散货 / BDTI·BCTI·CTFI 油运与 VLCC TCE，另含油船 AIS 船位</span>
+          </span>
+          <span class="ship-entry-arrow">→</span>
+        </router-link>
       </section>
     </template>
   </div>
@@ -608,6 +533,27 @@ h1 {
   font-size: 13px;
   color: #409eff;
 }
+
+/* ── 航运入口卡（运价已迁到「航运信息」页） ───────────────────────── */
+.ship-entry {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: linear-gradient(90deg, #eef5ff, #f7faff);
+  border: 1px solid #dbe8ff;
+  border-radius: 12px;
+  padding: 14px 18px;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+.ship-entry:hover {
+  border-color: #409eff;
+  box-shadow: 0 6px 18px rgba(64, 158, 255, 0.12);
+}
+.ship-entry-icon { font-size: 22px; line-height: 1; }
+.ship-entry-text { display: flex; flex-direction: column; gap: 3px; }
+.ship-entry-text b { font-size: 13.5px; color: #1a1a2e; }
+.ship-entry-text span { font-size: 12px; color: #7b8494; }
+.ship-entry-arrow { margin-left: auto; font-size: 15px; color: #409eff; }
 
 /* ── Row break (forces coal items onto a new grid row) ───────────── */
 .grid-row-break {

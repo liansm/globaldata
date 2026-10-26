@@ -82,10 +82,16 @@ const router = createRouter({
       component: () => import('@/pages/IpoCalendar.vue'),
     },
     {
-      // 油运信息：中国船东 VLCC 船队 + 最新 AIS 船位（地图只走合规白名单厂商）
+      // 航运信息：运价指数（CCFI/BDI/油运）+ 油船信息（VLCC 船位）两个 tab。
+      // 原先「航运运价」挂在「大宗商品」页底部、「油运信息」是独立页，现已合并到这。
+      path: '/shipping',
+      name: 'shipping',
+      component: () => import('@/pages/Shipping.vue'),
+    },
+    {
+      // 兼容旧链接：原「油运信息」独立页 → 航运信息的油船 tab
       path: '/oil-shipping',
-      name: 'oil-shipping',
-      component: () => import('@/pages/OilShipping.vue'),
+      redirect: { name: 'shipping', query: { tab: 'vessels' } },
     },
   ],
 })
