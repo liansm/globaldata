@@ -262,7 +262,7 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
     <el-result v-if="notFound" icon="warning" title="未找到该产品"
                :sub-title="`备案编码 ${route.params.code} 不在库中。可能是备案编码写错，或该产品尚未被采集（名录覆盖率见列表页说明）。`">
       <template #extra>
-        <el-button type="primary" @click="router.push('/private-funds')">返回私募列表</el-button>
+        <el-button type="primary" @click="router.push('/funds-info?tab=private')">返回私募列表</el-button>
       </template>
     </el-result>
 
@@ -271,7 +271,7 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
       <!-- ── 头部 ──────────────────────────────────────────────────────────── -->
       <div class="page-header">
         <div class="header-main">
-          <el-button link @click="router.push('/private-funds')" class="back">
+          <el-button link @click="router.push('/funds-info?tab=private')" class="back">
             ← 返回列表
           </el-button>
           <h1>{{ detail?.fundName ?? '—' }}</h1>

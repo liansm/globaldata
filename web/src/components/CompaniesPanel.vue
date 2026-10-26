@@ -1,4 +1,7 @@
 <script setup lang="ts">
+// 「基金信息」页 · 基金公司 tab。
+// 原 pages/Companies.vue 整页搬迁而来：去页面级容器、去 h1、「共 N 家」移到筛选栏右侧。
+// 列表 / 排序 / 搜索逻辑一行未改。
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchCompanies } from '@/api/companies'
@@ -98,17 +101,7 @@ function fmtDate(d: string | null) {
 </script>
 
 <template>
-  <div class="companies-page">
-    <div class="page-header">
-      <div>
-        <h1>基金公司</h1>
-        <p class="subtitle">
-          {{ total }} 家管理人 · 按旗下产品数 / 合计规模查看 · 点击公司进入产品列表
-        </p>
-      </div>
-      <span v-if="total" class="total-badge">共 {{ total }} 家</span>
-    </div>
-
+  <div class="companies-panel">
     <el-alert
       v-if="error"
       :title="error"
@@ -136,6 +129,8 @@ function fmtDate(d: string | null) {
         <el-radio-button value="count">按产品数</el-radio-button>
         <el-radio-button value="name">按名称</el-radio-button>
       </el-radio-group>
+
+      <span v-if="total" class="total-badge">共 {{ total }} 家</span>
     </div>
 
     <!-- 列表 -->
@@ -250,33 +245,12 @@ function fmtDate(d: string | null) {
 </template>
 
 <style scoped>
-.companies-page {
-  max-width: 1320px;
-  margin: 0 auto;
-  padding: 36px 20px 60px;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  margin-bottom: 24px;
-}
-
-h1 {
-  margin: 0 0 4px;
-  font-size: 26px;
-  font-weight: 700;
-  color: #1a1a2e;
-}
-
-.subtitle {
-  margin: 0;
-  color: #888;
-  font-size: 14px;
+.companies-panel {
+  /* 页面级 padding / max-width 由壳页 FundsInfo.vue 提供 */
 }
 
 .total-badge {
+  margin-left: auto;
   font-size: 13px;
   color: #409eff;
   background: #e8f3ff;

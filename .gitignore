@@ -29,7 +29,10 @@ web/dist/
 # vite 要先清空已存在的目录，>50 个文件会撞上沙箱的批量删除保护
 # （SAFE_DELETE_BULK_CONFIRM_REQUIRED），只能换新目录名 → 会留下 .buildtest2/3…
 # 所以这里必须写成通配，否则变体目录会被误提交。
-web/.buildtest*/
+# 通配前缀放宽成 `.build*`：2026-10-26 起过一次 `.buildcheck`，不匹配 `.buildtest*`
+# 就漏进 git status 了；而且沙箱的 safe-delete 也删不掉这些目录（trash 操作被拒），
+# 与其想办法删，不如一律忽略。
+web/.build*/
 web/src/auto-imports.d.ts
 web/src/components.d.ts
 

@@ -215,7 +215,7 @@ const maxRatio = computed(() => {
 })
 
 function goBack() {
-  router.push('/funds')
+  router.push('/funds-info')
 }
 
 function goCompany(key: string) {
