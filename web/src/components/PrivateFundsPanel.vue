@@ -1,4 +1,8 @@
 <script setup lang="ts">
+// 「基金信息」页 · 私募基金 tab。
+// 原 pages/PrivateFunds.vue 整页搬迁而来：去页面级容器、去 h1。
+// ⚠ 本组件内部自带一层 el-tabs（备案产品 / 管理人），嵌在外层 tab 里 → 内层改 card 型区分层级。
+// 口径提示条（私募不得公开披露业绩）是这一页的核心，**位置与措辞都不要动**。
 import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -181,16 +185,7 @@ const regCoverageTip = computed(() => {
 </script>
 
 <template>
-  <div class="pf-page">
-    <div class="page-header">
-      <div>
-        <h1>私募基金</h1>
-        <p class="subtitle">
-          备案名录 · 管理人 · 公开净值（天天基金代销池 + 私募排排网） —— 数据来源 中国证券投资基金业协会 / 天天基金 / 私募排排网
-        </p>
-      </div>
-    </div>
-
+  <div class="pf-panel">
     <!-- ⚠ 口径提示必须显著：私募与公募不是一个物种 -->
     <div class="scope-note">
       <div class="scope-row">
@@ -240,7 +235,7 @@ const regCoverageTip = computed(() => {
       </div>
     </div>
 
-    <el-tabs v-model="tab" @tab-change="onTabChange">
+    <el-tabs v-model="tab" type="card" @tab-change="onTabChange">
       <!-- ── 产品 ─────────────────────────────────────────────────────────── -->
       <el-tab-pane label="备案产品" name="funds">
         <el-alert v-if="fundError" :title="fundError" type="error" show-icon
@@ -401,12 +396,14 @@ const regCoverageTip = computed(() => {
 </template>
 
 <style scoped>
-.pf-page { max-width: 1280px; margin: 0 auto; padding: 36px 20px 60px; }
-
-.page-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
-
-h1 { margin: 0 0 4px; font-size: 26px; font-weight: 700; color: #1a1a2e; }
-.subtitle { margin: 0; color: #888; font-size: 14px; }
+.pf-panel {
+  /* 页面级 padding / max-width 由壳页 FundsInfo.vue 提供 */
+}
+/* ⚠ 本组件内部还有一层 el-tabs（备案产品 / 管理人），嵌在「基金信息」的 tab 里。
+   不加区分会看到两组长得一样的下划线 tab，读者分不清层级。
+   内层改 card 型（有边框的页签），视觉上明确是子级。 */
+.pf-panel :deep(.el-tabs--card > .el-tabs__header) { margin-bottom: 16px; }
+.pf-panel :deep(.el-tabs--card > .el-tabs__header .el-tabs__item) { font-size: 13px; height: 34px; line-height: 34px; }
 
 /* ── 口径提示条 ─────────────────────────────────────────────────────────── */
 .scope-note {

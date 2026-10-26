@@ -44,9 +44,26 @@ const router = createRouter({
       component: () => import('@/pages/FxDetail.vue'),
     },
     {
+      // 基金信息：公募基金 / 基金公司 / 私募基金 三个 tab 合并成一页（原为三个平行导航项）。
+      // 各 tab 仍可直达：/funds-info?tab=companies、?tab=private。
+      path: '/funds-info',
+      name: 'funds-info',
+      component: () => import('@/pages/FundsInfo.vue'),
+    },
+    {
+      // 兼容旧链接：原「公募基金」独立页 → 基金信息的公募 tab（默认 tab，不带 query）
       path: '/funds',
-      name: 'funds',
-      component: () => import('@/pages/Funds.vue'),
+      redirect: { name: 'funds-info' },
+    },
+    {
+      // 兼容旧链接：原「基金公司」独立页
+      path: '/companies',
+      redirect: { name: 'funds-info', query: { tab: 'companies' } },
+    },
+    {
+      // 兼容旧链接：原「私募基金」独立页
+      path: '/private-funds',
+      redirect: { name: 'funds-info', query: { tab: 'private' } },
     },
     {
       path: '/fund/:code',
@@ -54,20 +71,10 @@ const router = createRouter({
       component: () => import('@/pages/FundDetail.vue'),
     },
     {
-      path: '/companies',
-      name: 'companies',
-      component: () => import('@/pages/Companies.vue'),
-    },
-    {
       // :key 是规范化后的公司短名（如「中欧基金」），由后端 canonicalCompany 生成
       path: '/company/:key',
       name: 'company-detail',
       component: () => import('@/pages/CompanyDetail.vue'),
-    },
-    {
-      path: '/private-funds',
-      name: 'private-funds',
-      component: () => import('@/pages/PrivateFunds.vue'),
     },
     {
       // :code 是备案编码（如 SB595C），与中基协 fundNo 同码

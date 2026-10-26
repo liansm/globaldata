@@ -89,7 +89,7 @@ function onPageSizeChange(size: number) {
 }
 
 function goBack() {
-  router.push('/companies')
+  router.push('/funds-info?tab=companies')
 }
 
 function goFund(code: string) {

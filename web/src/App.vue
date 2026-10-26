@@ -8,18 +8,22 @@ const route = useRoute()
 // ⚠ 「全球股市」的 names 里**不能**再放 `market-detail`：/market/:key 也承载航运运价
 //   和建材 CEMPI（route.name 全是 market-detail），放进去就会出现
 //   「点 CCFI 综合指数，左侧亮全球股市」。详情页归属统一由 activeTo 解析。
+//
+// 顺序（2026-10-26 调整）：全球股市提到最前（看盘是最高频入口）→ 大宗商品 →
+// AI硬件（紧跟大宗商品，同属「实物/现货价格」语境）→ 航运信息 → 其余。
+// 「公募基金 / 基金公司 / 私募基金」三项已合并为「基金信息」，页内分 tab，
+// 三个详情页（fund-detail / company-detail / private-fund-detail）都归到这一项。
 const navItems = [
+  { label: '全球股市', icon: '📈', to: '/markets',  names: ['markets'] },
   { label: '大宗商品', icon: '📦', to: '/',        names: ['home', 'detail'] },
-  // 航运信息挂在「大宗商品」下面：运价指数（原大宗商品页底部那几组）+ 油船信息（原「油运信息」页）
-  { label: '航运信息', icon: '🚢', to: '/shipping', names: ['shipping'] },
   // AI 硬件：存储颗粒现货（DDR5/DDR4 真实报价，主口径 美元/GB）+ GPU 云租价（美元/卡·时）
   { label: 'AI硬件',   icon: '🧠', to: '/ai-hardware', names: ['ai-hardware'] },
-  { label: '全球股市', icon: '📈', to: '/markets',  names: ['markets'] },
+  // 航运信息挂在「大宗商品」下面：运价指数（原大宗商品页底部那几组）+ 油船信息（原「油运信息」页）
+  { label: '航运信息', icon: '🚢', to: '/shipping', names: ['shipping'] },
   { label: '加密货币', icon: '₿',  to: '/crypto',   names: ['crypto'] },
   { label: '外汇',     icon: '💱', to: '/fx',       names: ['fx', 'fx-detail'] },
-  { label: '公募基金', icon: '💰', to: '/funds',    names: ['funds', 'fund-detail'] },
-  { label: '基金公司', icon: '🏢', to: '/companies', names: ['companies', 'company-detail'] },
-  { label: '私募基金', icon: '🏦', to: '/private-funds', names: ['private-funds', 'private-fund-detail'] },
+  { label: '基金信息', icon: '💰', to: '/funds-info',
+    names: ['funds-info', 'fund-detail', 'company-detail', 'private-fund-detail'] },
   { label: '新股日历', icon: '🆕', to: '/ipo-calendar', names: ['ipo-calendar'] },
 ]
 

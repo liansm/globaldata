@@ -1,4 +1,8 @@
 <script setup lang="ts">
+// 「基金信息」页 · 公募基金 tab。
+// 原 pages/Funds.vue 整页搬迁而来，只做三件事：去掉页面级容器（padding/居中交给
+// 壳页 FundsInfo.vue）、去掉 h1（tab 已有页标题）、「共 N 只」从 header 移到筛选栏右侧。
+// 逻辑与列定义**一行未改** —— 搬迁不改行为，出问题好定位。
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchFunds, fetchFundTypes } from '@/api/funds'
@@ -121,15 +125,7 @@ function typeTagColor(t: string | null): 'info' | 'warning' | 'danger' | 'primar
 </script>
 
 <template>
-  <div class="funds-page">
-    <div class="page-header">
-      <div>
-        <h1>公募基金</h1>
-        <p class="subtitle">基金名录 · 最新规模 · 季度重仓持仓 · 数据来源 天天基金 / 雪球</p>
-      </div>
-      <span v-if="total" class="total-badge">共 {{ total.toLocaleString() }} 只</span>
-    </div>
-
+  <div class="funds-panel">
     <el-alert
       v-if="error"
       :title="error"
@@ -171,6 +167,8 @@ function typeTagColor(t: string | null): 'info' | 'warning' | 'danger' | 'primar
       <el-checkbox v-model="filter.withScale" @change="onWithScaleChange">
         仅有规模数据
       </el-checkbox>
+
+      <span v-if="total" class="total-badge">共 {{ total.toLocaleString() }} 只</span>
     </div>
 
     <!-- 列表 -->
@@ -259,33 +257,12 @@ function typeTagColor(t: string | null): 'info' | 'warning' | 'danger' | 'primar
 </template>
 
 <style scoped>
-.funds-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 36px 20px 60px;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  margin-bottom: 24px;
-}
-
-h1 {
-  margin: 0 0 4px;
-  font-size: 26px;
-  font-weight: 700;
-  color: #1a1a2e;
-}
-
-.subtitle {
-  margin: 0;
-  color: #888;
-  font-size: 14px;
+.funds-panel {
+  /* 页面级 padding / max-width 由壳页 FundsInfo.vue 提供，这里只管内容 */
 }
 
 .total-badge {
+  margin-left: auto;
   font-size: 13px;
   color: #409eff;
   background: #e8f3ff;
