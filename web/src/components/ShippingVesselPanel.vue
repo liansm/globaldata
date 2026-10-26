@@ -580,11 +580,11 @@ function retiredWhen(note: string | null | undefined) {
 </script>
 
 <template>
-  <div class="oil-page">
+  <div class="vessel-panel">
     <header class="page-head">
       <div class="title-block">
-        <h1>油运信息</h1>
-        <p class="sub">中国船东 VLCC 船队 · 最新 AIS 船位</p>
+        <h2>中国船东 VLCC 船队</h2>
+        <p class="sub">最新 AIS 船位 · 名录口径＝船东（非挂旗）· 主源 HiFleet</p>
       </div>
       <div class="stats">
         <div class="stat"><b>{{ stats?.total ?? '—' }}</b><span>艘 VLCC</span></div>
@@ -751,22 +751,21 @@ function retiredWhen(note: string | null | undefined) {
 </template>
 
 <style scoped>
-/* 整屏布局：页面自身占满一屏，内部用 flex 纵向分配 —— 标题栏/提示条占自然高度，
-   地图区 flex:1 吃掉剩余全部空间。原来地图写死 620px，在大屏上只有小半屏。
-   为什么用 vh 而不是 100%：.app-main 是 flex:1 的滚动容器，高度来自
-   .app-shell 的 min-height:100vh，对它写 height:100% 解析不出确定值。
-   高度值要和 App.vue 的 .sidebar(100vh)/.app-shell(min-height:100vh) 保持一致，
-   否则会出现「页面比一屏矮一点」或「多出一条滚动条」。 */
-.oil-page {
-  padding: 18px 22px 28px;
-  height: 100vh; display: flex; flex-direction: column;
+/* 嵌入「航运信息」页的 tab 里（原来是独立页，占 100vh）。
+   现在高度由父容器（tab pane）给，自己不撑满屏、也不带外 padding ——
+   页面层已经负责 padding 与标题，组件只管内容区的纵向分配。
+   仍然保留 height:100% + flex 纵向，因为地图区要靠 flex:1 吃掉剩余空间；
+   原来的 .app-main 场景换成 .el-tab-pane(height:100%)，行为一致。 */
+.vessel-panel {
+  height: 100%; min-height: 0;
+  display: flex; flex-direction: column;
 }
 
 .page-head {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 16px; flex-wrap: wrap; margin-bottom: 14px;
 }
-.title-block h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.4px; }
+.title-block h2 { margin: 0; font-size: 15px; font-weight: 600; color: #3f4756; letter-spacing: -0.2px; }
 .sub { margin: 4px 0 0; font-size: 12.5px; color: #8a94a6; }
 
 .stats { display: flex; gap: 10px; flex-wrap: wrap; }
