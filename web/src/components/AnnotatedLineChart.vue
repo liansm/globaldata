@@ -90,6 +90,11 @@ function buildMarkPoint(
       fontSize: 11,
       fontWeight: 600,
       color,
+      // 标注点（最高/最低）偶尔正落在曲线本体上 → 加一层白底保证数字可读。
+      // ⚠ markPoint 的 `z` 不起作用（实测改前改后截图 MD5 一致），只能靠背景。
+      backgroundColor: 'rgba(255,255,255,0.88)',
+      padding: [2, 4],
+      borderRadius: 3,
     },
   })
 
