@@ -83,10 +83,26 @@ Usage
     python fetch_ai_hardware.py             # 抓全部三块，幂等 upsert（日常跑这个）
     python fetch_ai_hardware.py --dry-run   # 只抓取打印，不写库
     python fetch_ai_hardware.py --dram      # 只跑存储颗粒
-    python fetch_ai_hardware.py --storage   # 只跑 NAND/SSD/HDD（115 品种，约 3 分钟）
+    python fetch_ai_hardware.py --storage   # 只跑 NAND/SSD/HDD（115 品种，约 2.5 分钟）
+    python fetch_ai_hardware.py --force-storage  # 无视节流窗口，强制重抓存储成品盘
     python fetch_ai_hardware.py --gpu       # 只跑 GPU
     python fetch_ai_hardware.py --status    # 只回显库内现状，不抓取
     python fetch_ai_hardware.py --purge-ddr3  # 顺带删掉库里的 DDR3 旧数据（一次性）
+
+跑多勤（2026-10-30 起）
+------------------------
+    ③ NAND/SSD/HDD 默认**最多每 3 天跑一次**（STORAGE_INTERVAL_DAYS），
+      其余两块仍日更：
+
+        ① DRAM 颗粒    每天（约 20s）    日更攒走势；同是滚动半年窗口，但只 20s，不值得节流
+        ② GPU 云租价   每天（约 10s）    牌价日更才有走势
+        ③ NAND/SSD/HDD ≤每 3 天（约 140s）115 品种 = 115 个详情请求，整轮 refresh 最大瓶颈；
+                                         同是滚动半年窗口，**漏几天不丢数据**
+
+      判断依据是库里 `storage_products.MAX(updated_at)`，不落本地状态文件：
+      表空 / 连不上库 / 源站故障导致 0 品种写入 → 下一轮自动重跑，不会被节流卡死。
+      被跳过时打印 `[SKIP]` 说明并 **退出码 0**（是「按计划没跑」，不是失败）。
+      要立即刷新：`--force-storage`。
 """
 
 import os
@@ -190,6 +206,19 @@ STORAGE_CATS = [
     (10, "hdd",        "HDD 机械硬盘",  "CNY", "disk", 0.10, 2.0),
 ]
 STORAGE_CAT_INDEX = {c[1]: c for c in STORAGE_CATS}
+
+# ③ 跑多勤？—— 存储成品盘（115 个品种 = 115 个详情请求）默认**每 3 天跑一次**
+#
+# 依据：这块的源站历史是**滚动半年**窗口（DRAM 段同理），只要半年内跑过一次，
+# 站方会把整段历史重新给一遍 —— 漏几天**不会丢数据**，和日频滚存（漏一天永久少一天）
+# 完全两回事。日更纯属浪费：一轮 168 秒里这块占 140 秒，是整轮 refresh 的最大瓶颈。
+#
+# 节流靠**库里的 MAX(updated_at)** 判断，不落本地状态文件：
+#   · 上次成功写入距今天数 < STORAGE_INTERVAL_DAYS → 跳过（打印原因，退出码 0）
+#   · 表空 / 没连上库 / --force-storage / --dry-run → 照跑
+#   · 源站故障导致 0 品种写入时 updated_at 不前进 → 下次自动重试，不会卡死
+# ⚠ 所以「多久跑一次」的语义是「**最多** 3 天一次，坏了随时会提前重试」，不是固定节拍。
+STORAGE_INTERVAL_DAYS = 3
 
 CCY_REASON = {
     "nand_wafer": "晶圆/颗粒以美元计价，站方标记一致",
@@ -939,16 +968,53 @@ def run_gpu(sess, dry_run):
 
 
 # ---------------------------------------------------------------------------
+def storage_age_days() -> float | None:
+    """距上次成功写入 storage_products 的天数；表不存在/表空/连不上库 → None（当作该跑）。
+
+    用库里 `updated_at` 而不是本地状态文件：脚本在别的机器/容器里跑也都认同一个事实，
+    而且「源站故障导致这轮没写入」时时间戳不前进 → 下一轮会自动重试，不会被节流卡住。
+    """
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+    except Exception:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(updated_at))) / 86400.0 "
+                "FROM storage_products"
+            )
+            v = cur.fetchone()[0]
+        return float(v) if v is not None else None
+    except Exception:
+        return None          # 表还没建 → 该跑
+    finally:
+        conn.close()
+
+
 def main() -> int:
     argv = sys.argv[1:]
     dry_run     = "--dry-run" in argv
     only_dram   = "--dram" in argv
     only_gpu    = "--gpu" in argv
     only_storage = "--storage" in argv
+    force_storage = "--force-storage" in argv
     purge_ddr3  = "--purge-ddr3" in argv
     status_only = "--status" in argv
     if not any([only_dram, only_gpu, only_storage]):
         only_dram = only_gpu = only_storage = True
+
+    # 存储成品盘节流（115 品种 / 约 140 秒，见 STORAGE_INTERVAL_DAYS）
+    storage_skipped = False
+    if not status_only and only_storage and not force_storage and not dry_run:
+        age = storage_age_days()
+        if age is not None and age < STORAGE_INTERVAL_DAYS:
+            print(f"\n[SKIP] 存储成品盘 / NAND：上次成功抓取 {age:.1f} 天前，"
+                  f"未到 {STORAGE_INTERVAL_DAYS} 天窗口")
+            print(f"       源站历史是滚动半年窗口，隔几天跑不丢数据；"
+                  f"要立即刷新加 --force-storage")
+            only_storage = False
+            storage_skipped = True
 
     sess = requests.Session()
     sess.headers.update(HEADERS)
@@ -980,6 +1046,11 @@ def main() -> int:
         bad = bool(dram_empty) if only_dram else False
         return 1 if bad else 0
     if not status_only and not dram_products and not gpu_picked and not sto_products:
+        # 只有存储段被节流跳过、其余也没数据时，是「按计划没跑」而不是失败
+        if storage_skipped:
+            print("\n[OK] 存储成品盘本轮按节流跳过（未到 %d 天窗口），不算失败"
+                  % STORAGE_INTERVAL_DAYS)
+            return 0
         print("无数据可写")
         return 1
 

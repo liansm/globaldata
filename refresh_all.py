@@ -56,13 +56,16 @@ FETCH_SCRIPTS = [
     #   周频 → 漏一期丢一期，但可翻 24 页回补 9 年，比日频源安全。
     ("fetch_coal_intl.py",         "国际动力煤 FOB（CCTD 国际煤炭周报，周频可回补）"),
     ("fetch_cement.py",            "水泥价格：CEMPI 指数 + P.O42.5 均价（中国水泥网，日频含历史）"),
-    # AI 硬件（一个脚本两块数据）：
-    #   ① 存储颗粒现货 DDR5/DDR4 —— 源站历史只有**滚动半年**，跑漏的期次永久缺失
-    #      → 必须日更累积（9 品种 × 122 点、10 个请求、约 20 秒，全窗口幂等 upsert）
-    #   ② GPU 云租价 —— aimultiple 聚合各家云厂商牌价，日更才有走势
-    #   ③ 存储成品 NAND/SSD/HDD —— 与 ① 同站，115 个品种、115 个请求、约 2.5 分钟（全流程最慢的一条）
-    #      虽慢但不接会永久丢数据（同样是滚动半年窗口）
-    #      只要 DDR + GPU（约 30 秒）时手动跑：python fetch_ai_hardware.py --dram --gpu
+    # AI 硬件（一个脚本三块数据）：
+    #   ① 存储颗粒现货 DDR5/DDR4 —— 源站历史只有**滚动半年**（半年内跑过就不丢），
+    #      但只有 9 品种 × 10 个请求、约 20 秒 → 日更，不值得为它加节流
+    #   ② GPU 云租价 —— aimultiple 聚合各家云厂商牌价，日更才有走势（约 10 秒）
+    #   ③ 存储成品 NAND/SSD/HDD —— 与 ① 同站，115 个品种、115 个请求、约 140 秒
+    #      **2026-10-30 起脚本内自带节流：最多每 3 天跑一次**（STORAGE_INTERVAL_DAYS，
+    #      依据库里 storage_products.MAX(updated_at)）。同是滚动半年窗口，
+    #      漏几天不丢数据；这样整轮 refresh 少了 140 秒的固定开销。
+    #      要立即刷新存储段：python fetch_ai_hardware.py --force-storage
+    #   所以日常这条：约 20~30 秒（DDR + GPU），每 3 天一次约 170 秒。
     ("fetch_ai_hardware.py",       "AI 硬件价格：存储（DDR/NAND/SSD/HDD 每 GB 价）+ GPU 云租价"),
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
