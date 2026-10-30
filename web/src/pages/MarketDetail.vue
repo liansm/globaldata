@@ -169,7 +169,15 @@ const chartOption = computed(() => {
   const areaEnd   = isFlow.value ? 'rgba(245,108,108,0)'   : 'rgba(64,158,255,0)'
   const hasVolume = !isFlow.value && volumes.some(v => v !== null)
 
+  // A股/港股/欧洲/亚太的 volume 按「股」入库(100 股 = 1 手)，只有美股的 volume
+  // 是明确的成交股数、没有「手」这个口径 → 单独按股展示。
+  const isUSMarket = detail.value.market === '美股'
   const fmtVol = (v: number) => {
+    if (isUSMarket) {
+      return v >= 1e8 ? `${(v / 1e8).toFixed(2)} 亿股`
+        : v >= 1e4 ? `${(v / 1e4).toFixed(2)} 万股`
+        : `${v.toFixed(0)} 股`
+    }
     const lots = v / 100
     return lots >= 1e8 ? `${(lots / 1e8).toFixed(2)} 亿手`
       : lots >= 1e4 ? `${(lots / 1e4).toFixed(2)} 万手`

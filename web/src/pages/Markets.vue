@@ -67,13 +67,31 @@ function fmtPoint(v: number | null) {
 }
 
 function fmtTurnover(v: number | null, market = '') {
-  if (v == null) return null
+  // 0 / 负数一律视为「源侧无此字段」：新浪美股指数的 amount 恒为 0，
+  // 原样显示会变成卡片上的「成交额 0」。
+  if (v == null || !(v > 0)) return null
   // 成交额单位是元（A股）或港元（港股），转换为亿元显示
   const yi = v / 1e8
   const unitLabel = market === '港股' ? '亿港元' : '亿'
   return yi >= 1
     ? yi.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + ' ' + unitLabel
     : v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })
+}
+
+/** 成交量回退显示：A股/港股单位是股(÷100=手)，美股是股。
+ *  亚太/欧洲指数的 volume 单位在源侧不明（韩国返回的是千股量级），一律不显示，宁缺勿错。 */
+function fmtVolume(v: number | null, market = '') {
+  if (v == null || !(v > 0)) return null
+  if (market === 'A股' || market === '港股') {
+    const lots = v / 100
+    return lots >= 1e8 ? `${(lots / 1e8).toFixed(2)} 亿手`
+      : lots >= 1e4 ? `${(lots / 1e4).toFixed(2)} 万手`
+      : `${lots.toFixed(0)} 手`
+  }
+  if (market === '美股') {
+    return v >= 1e8 ? `${(v / 1e8).toFixed(2)} 亿股` : `${(v / 1e4).toFixed(0)} 万股`
+  }
+  return null
 }
 
 function fmtDate(d: string | null) {
@@ -185,6 +203,9 @@ function changePctClass(v: number | null | undefined) {
               >{{ fmtChangePct(item.changePct) }}</div>
               <div v-if="fmtTurnover(item.latestTurnover, item.market)" class="card-turnover">
                 成交额 {{ fmtTurnover(item.latestTurnover, item.market) }}
+              </div>
+              <div v-else-if="fmtVolume(item.latestVolume, item.market)" class="card-turnover">
+                成交量 {{ fmtVolume(item.latestVolume, item.market) }}
               </div>
             </template>
 

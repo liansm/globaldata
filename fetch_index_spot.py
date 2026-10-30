@@ -93,6 +93,43 @@ def _safe_float(val):
         return None
 
 
+def _is_today_snapshot(cur, key, price, prev_close, turnover, today):
+    """判断这条 spot 快照是不是「当日真实盘中数据」；返回 (bool, 原因)。
+
+    sina 的 spot 接口不带日期字段。盘前（或隔天早上）抓到的「最新价 / 涨跌幅」
+    其实是**上一交易日收盘**的静态快照，直接记成 today 会让卡片显示
+    「2026-10-30 · 实时」而数字是 10-29 的 —— 比"数据不新"更难发现。
+
+    判定顺序：
+      1. 最新价 ≤ 0             → 源侧无行情（盘前 深证成指/创业板指 会返回 0）
+      2. 最新价 与某历史收盘吻合 → 是那天的收盘快照，日线里已有同一数字
+      3. A股 成交额 = 0         → 当日没成交，最新价是集合竞价参考价
+                                   （实测上证 3651.4075 vs 昨收 3651.4340）
+    以上三种都**不写库**，让页面回落到日线，避免出现「今天 · 实时」的假数据。
+    """
+    cur.execute(
+        """SELECT price_date, close FROM index_prices
+           WHERE index_key = %s ORDER BY price_date DESC LIMIT 3""",
+        (key,),
+    )
+    hist = cur.fetchall()
+    if price is None or price <= 0:
+        return False, "源侧最新价为 0"
+    for i, (d, close) in enumerate(hist):
+        if d.isoformat() == today or close is None or close <= 0:
+            continue
+        # 1e-6 相对容差 + 0.01 绝对容差：指数点位允许四舍五入误差
+        if abs(float(close) - price) > max(0.01, abs(price) * 1e-6):
+            continue
+        if prev_close is not None and i + 1 < len(hist) and hist[i + 1][1] is not None:
+            if abs(float(hist[i + 1][1]) - prev_close) > max(0.01, abs(prev_close) * 1e-6):
+                continue  # 昨收对不上，不是那天的快照
+        return False, f"等于 {d} 收盘价（盘前/收盘快照，日线已有）"
+    if turnover is not None and turnover <= 0:
+        return False, "成交额为 0（未开盘，最新价是竞价参考价）"
+    return True, ""
+
+
 # ---------------------------------------------------------------------------
 # Fetch spot snapshots
 # ---------------------------------------------------------------------------
@@ -159,6 +196,7 @@ def main() -> int:
         return 1
     print(f"  [OK] {len(a_map)} entries in A-share snapshot\n")
 
+    cur = conn.cursor()
     for cfg in AH_SPOT_CONFIGS:
         key    = cfg["key"]
         symbol = cfg["symbol"]
@@ -172,6 +210,10 @@ def main() -> int:
         change_pct = _safe_float(row.get("涨跌幅"))
         turnover   = _safe_float(row.get("成交额"))   # 元
         prev_close = _safe_float(row.get("昨收"))
+        ok, why = _is_today_snapshot(cur, key, price, prev_close, turnover, today)
+        if not ok:
+            print(f"  {name:8s}  price={price}  跳过：{why}")
+            continue
         print(f"  {name:8s}  price={price}  chg={change_pct}%  turnover={turnover}  昨收={prev_close}")
         rows.append((key, price, change_pct, turnover, prev_close, today))
 
@@ -197,8 +239,14 @@ def main() -> int:
             # stock_hk_index_spot_sina 无成交额列
             turnover   = None
             prev_close = _safe_float(row.get("昨收"))
+            ok, why = _is_today_snapshot(cur, key, price, prev_close, turnover, today)
+            if not ok:
+                print(f"  {name:8s}  price={price}  跳过：{why}")
+                continue
             print(f"  {name:8s}  price={price}  chg={change_pct}%  昨收={prev_close}")
             rows.append((key, price, change_pct, turnover, prev_close, today))
+
+    cur.close()
 
     # ── 写库 ─────────────────────────────────────────────────────────────────
     try:
