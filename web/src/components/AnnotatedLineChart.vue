@@ -95,10 +95,14 @@ function buildMarkPoint(
 
   return {
     silent: true,
-    data: [
-      point(maxI, '最高', MAX_COLOR, 'top'),
-      point(minI, '最低', MIN_COLOR, 'bottom'),
-    ],
+    // 整段价格一动不动时（GPU 租价常见、HDD 季更也常见）最高点与最低点是同一个点，
+    // 两个标注会原地叠成「3.67 / 3.67」——只留一个，标一个数值就够表达「没变」。
+    data: maxI === minI
+      ? [point(maxI, '数值', MAX_COLOR, 'top')]
+      : [
+          point(maxI, '最高', MAX_COLOR, 'top'),
+          point(minI, '最低', MIN_COLOR, 'bottom'),
+        ],
   }
 }
 
