@@ -473,16 +473,23 @@ STATUS_QUERIES = [
     },
     {
         "title": "vlcc_positions  (VLCC 船位，滚存；source=hifleet/aisstream)",
+        # today_rows = 今天(北京)录入的行数。单看 last_write 分不清「脚本没跑」和
+        # 「跑了但船位没变」—— 同一 (name_ais, ts) 重复命中只 UPDATE 不动 created_at，
+        # 所以 last_write 会停在前一天，看着像没刷新。today_rows 才是「今天抓到多少」。
         "sql": """
             SELECT COUNT(*) AS rows,
                    COUNT(DISTINCT name_ais) AS ships,
                    STRING_AGG(DISTINCT source, '/' ORDER BY source) AS src,
                    MIN(ts)::text AS earliest,
                    MAX(ts)::text AS latest,
-                   MAX(created_at AT TIME ZONE 'Asia/Shanghai')::text AS last_run
+                   COUNT(*) FILTER (
+                       WHERE (ts AT TIME ZONE 'Asia/Shanghai')::date
+                           = (NOW() AT TIME ZONE 'Asia/Shanghai')::date
+                   ) AS today_rows,
+                   MAX(created_at AT TIME ZONE 'Asia/Shanghai')::text AS last_write
             FROM vlcc_positions
         """,
-        "cols": ["rows", "ships", "src", "earliest", "latest", "last_run"],
+        "cols": ["rows", "ships", "src", "earliest", "latest", "today_rows", "last_write"],
         "optional": True,
     },
     # 加密货币的 status 查询（crypto_coins / crypto_prices）随刷新一起下线，

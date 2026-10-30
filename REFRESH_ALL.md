@@ -98,6 +98,12 @@ python refresh_all.py --status
 | 17 | `fetch_vlcc_fleet.py` | 中国船东 VLCC 名录（招商轮船在役 + 中远海能 2021-06 快照，99 艘） | `vlcc_vessels` |
 | 18 | `fetch_vlcc_position_hifleet.py` | VLCC 逐船最新船位（HiFleet 付费，按 MMSI 查询） | `vlcc_positions` |
 
+> **船位是每一轮都刷的**（约 90 秒 / 95 次查位，实测 0 积分消耗），不是手动脚本。
+> 但要注意两点，否则会误以为「没刷」：
+> 1. `--status` 里 `today_rows` 才是「今天抓到多少行」。`last_write` 是 `max(created_at)`，
+>    同一 `(name_ais, ts)` 重复命中只 UPDATE 不动 `created_at`，所以它可能停在前一天；
+> 2. 船位报文时间由 HiFleet 决定，早间跑可能拿到的还是前一晚的报文 —— 跑了但没新行。
+
 > 第 18 条缺 `HIFLEET_API_KEY` 时打印 `[SKIP]` 并跳过，**不计入失败**。它按查询次数计费，一轮约 99 次查位。
 
 ---
