@@ -242,13 +242,17 @@ function goDetail(row: MarketIndex) {
 /* 与 OilShipping 原先的整屏布局同源：页面占满一屏，内部 flex 纵向分配，
    地图区吃剩余高度。高度用 vh 而不是 100%，因为 .app-main 是 flex:1 的滚动容器，
    对它 height:100% 解析不出确定值（详见 App.vue 的 skeleton 注释）。 */
-/* 宽度上限 + 居中：与「大宗商品」(Home.vue) /「全球股市」(Markets.vue) 同一个版心
-   1100px —— 三页并排看是同一套栅格，卡片宽度也一致（约 255px）。 */
+
+/* ⚠ 版心（1100px）**不能加在页面根元素上**：根元素一旦被 max-width 收窄，
+   页面两侧的空白就不属于任何滚动容器，鼠标移过去滚轮完全没反应（和「大宗商品」
+   页手感不一致 —— 那边滚的是 .app-main，整窗有效）。
+   现在根元素保持整宽，靠 --side 给各层加「居中所需的左右内边距」，
+   滚动容器（.pane.scroll）因此横跨整窗 → 鼠标停在哪都能滚。 */
 .shipping-page {
+  --content-max: 1060px;   /* = Home.vue 的 1100 版心 - 左右各 20 padding */
+  --side: max(22px, calc((100% - var(--content-max)) / 2));
   width: 100%;
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 16px 22px 18px;
+  padding: 16px 0 18px;
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -257,6 +261,7 @@ function goDetail(row: MarketIndex) {
 .page-head {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 16px; flex-wrap: wrap; margin-bottom: 8px; flex-shrink: 0;
+  padding: 0 var(--side);
 }
 .page-head h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.4px; }
 .subtitle { margin: 4px 0 0; font-size: 12.5px; color: #8a94a6; }
@@ -275,13 +280,16 @@ function goDetail(row: MarketIndex) {
    所以整条链都要显式 flex。少一环（比如漏了 __content）就会出现「地图 0 高」。 */
 .tabs-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ship-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-:deep(.el-tabs__header) { margin-bottom: 12px; flex-shrink: 0; }
+:deep(.el-tabs__header) { margin-bottom: 12px; flex-shrink: 0; padding: 0 var(--side); }
 :deep(.el-tabs__content) { flex: 1; min-height: 0; overflow: hidden; }
 :deep(.el-tab-pane) { height: 100%; }
 .tab-label { font-size: 13.5px; font-weight: 500; }
 
-.pane { height: 100%; min-height: 0; display: flex; flex-direction: column; }
-.pane.scroll { overflow-y: auto; display: block; padding-right: 4px; }
+/* 两个 pane 都横跨整窗（滚动/滚轮要覆盖到两侧空白），版心靠左右内边距实现。
+   ⚠ padding 加在滚动容器上而不是内层：这样滚动条贴窗口右侧、且出现/消失都不
+   挤压内容宽度（padding 是定值），不会有「一滚就横向抖一下」。 */
+.pane { height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 0 var(--side); }
+.pane.scroll { overflow-y: auto; display: block; }
 
 /* ── 概览 ─────────────────────────────────────────────────────────────── */
 /* 4 列与下面的卡片网格一致（原来 auto-fit + minmax(180px) 是按可用宽度自己排，
