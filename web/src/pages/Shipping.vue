@@ -47,8 +47,10 @@ function onTabChange(name: string | number) {
 }
 
 // ── 运价分组 ─────────────────────────────────────────────────────────────────
-// 分组顺序刻意调整过：油运在前 —— 它是本页另一个 tab（油船）的直接对应物，
-// 运价 + 船位放一起才回答得了「油运现在什么情况」。集装箱与干散货是另一条线，排在后面。
+// 分组顺序：BDI 干散货 → CCFI 集装箱 → 油运（点值）→ 油运（期间均值）。
+// 2026-10-30 按需求调整：**油运整体下移到集装箱之后**（原先油运在最前）。
+// 干散货与集装箱的相对顺序不变，只把油运这两组挪到最后 —— 与顶部概览卡片的
+// 顺序（BDI → CCFI → BDTI → BCTI）保持一致，上下对得上。
 const CCFI_ORDER = [
   'ccfi_total', 'ccfi_europe', 'ccfi_med', 'ccfi_wc_america', 'ccfi_ec_america',
   'ccfi_japan', 'ccfi_korea', 'ccfi_se_asia', 'ccfi_anz',
@@ -81,11 +83,11 @@ const CTFI_AVG_ORDER = [
 const groups = computed(() => {
   const map = new Map(shipping.value.map(s => [s.key, s]))
   return [
+    { key: 'dry',     title: 'BDI 波罗的海干散货运价', icon: '⚓', keys: BDI_ORDER },
+    { key: 'ccfi',    title: 'CCFI 出口集装箱运价', icon: '🚢', keys: CCFI_ORDER },
     { key: 'oil',     title: '油运：原油 / 成品油运价与 VLCC TCE', icon: '🛢️', keys: OIL_ORDER },
     { key: 'oil-avg', title: '油运 · CTFI 期间均值（月均 / 周均，均值口径，勿与上面当日点值直接比大小）',
       icon: '📉', keys: CTFI_AVG_ORDER },
-    { key: 'dry',     title: 'BDI 波罗的海干散货运价', icon: '⚓', keys: BDI_ORDER },
-    { key: 'ccfi',    title: 'CCFI 出口集装箱运价', icon: '🚢', keys: CCFI_ORDER },
   ].map(g => ({
     ...g,
     items: g.keys.map(k => map.get(k)).filter(Boolean) as MarketIndex[],
@@ -95,9 +97,10 @@ const groups = computed(() => {
 const totalCount = computed(() => groups.value.reduce((n, g) => n + g.items.length, 0))
 
 // ── 概览 ─────────────────────────────────────────────────────────────────────
-// 四个「看一眼就够」的代表序列：油运双指数 + 干散货 + 集装箱。
-// 只取点值口径（ctfi_total 而非月均），别把均值混进来。
-const OVERVIEW_KEYS = ['bdti', 'bcti', 'bdi', 'ccfi_total']
+// 四个「看一眼就够」的代表序列：干散货 → 集装箱 → 油运双指数。
+// 顺序跟下面的分组一致（油运放最后）；只取点值口径（ctfi_total 而非月均），
+// 别把均值混进来。
+const OVERVIEW_KEYS = ['bdi', 'ccfi_total', 'bdti', 'bcti']
 const overview = computed(() => {
   const map = new Map(shipping.value.map(s => [s.key, s]))
   return OVERVIEW_KEYS.map(k => map.get(k)).filter(Boolean) as MarketIndex[]
@@ -130,7 +133,7 @@ function goDetail(row: MarketIndex) {
       <div>
         <h1>航运信息</h1>
         <p class="subtitle">
-          航运与油运运价（CCFI 集装箱 / BDI 干散货 / BDTI·BCTI·CTFI 油运）
+          航运与油运运价（BDI 干散货 / CCFI 集装箱 / BDTI·BCTI·CTFI 油运）
           <span class="dot">·</span> 中国船东 VLCC 船队与 AIS 船位
         </p>
       </div>
@@ -239,8 +242,17 @@ function goDetail(row: MarketIndex) {
 /* 与 OilShipping 原先的整屏布局同源：页面占满一屏，内部 flex 纵向分配，
    地图区吃剩余高度。高度用 vh 而不是 100%，因为 .app-main 是 flex:1 的滚动容器，
    对它 height:100% 解析不出确定值（详见 App.vue 的 skeleton 注释）。 */
+
+/* ⚠ 版心（1100px）**不能加在页面根元素上**：根元素一旦被 max-width 收窄，
+   页面两侧的空白就不属于任何滚动容器，鼠标移过去滚轮完全没反应（和「大宗商品」
+   页手感不一致 —— 那边滚的是 .app-main，整窗有效）。
+   现在根元素保持整宽，靠 --side 给各层加「居中所需的左右内边距」，
+   滚动容器（.pane.scroll）因此横跨整窗 → 鼠标停在哪都能滚。 */
 .shipping-page {
-  padding: 16px 22px 18px;
+  --content-max: 1060px;   /* = Home.vue 的 1100 版心 - 左右各 20 padding */
+  --side: max(22px, calc((100% - var(--content-max)) / 2));
+  width: 100%;
+  padding: 16px 0 18px;
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -249,6 +261,7 @@ function goDetail(row: MarketIndex) {
 .page-head {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 16px; flex-wrap: wrap; margin-bottom: 8px; flex-shrink: 0;
+  padding: 0 var(--side);
 }
 .page-head h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.4px; }
 .subtitle { margin: 4px 0 0; font-size: 12.5px; color: #8a94a6; }
@@ -267,18 +280,24 @@ function goDetail(row: MarketIndex) {
    所以整条链都要显式 flex。少一环（比如漏了 __content）就会出现「地图 0 高」。 */
 .tabs-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ship-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-:deep(.el-tabs__header) { margin-bottom: 12px; flex-shrink: 0; }
+:deep(.el-tabs__header) { margin-bottom: 12px; flex-shrink: 0; padding: 0 var(--side); }
 :deep(.el-tabs__content) { flex: 1; min-height: 0; overflow: hidden; }
 :deep(.el-tab-pane) { height: 100%; }
 .tab-label { font-size: 13.5px; font-weight: 500; }
 
-.pane { height: 100%; min-height: 0; display: flex; flex-direction: column; }
-.pane.scroll { overflow-y: auto; display: block; padding-right: 4px; }
+/* 两个 pane 都横跨整窗（滚动/滚轮要覆盖到两侧空白），版心靠左右内边距实现。
+   ⚠ padding 加在滚动容器上而不是内层：这样滚动条贴窗口右侧、且出现/消失都不
+   挤压内容宽度（padding 是定值），不会有「一滚就横向抖一下」。 */
+.pane { height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 0 var(--side); }
+.pane.scroll { overflow-y: auto; display: block; }
 
 /* ── 概览 ─────────────────────────────────────────────────────────────── */
+/* 4 列与下面的卡片网格一致（原来 auto-fit + minmax(180px) 是按可用宽度自己排，
+   和网格的列宽对不上，上下左边线是歪的）。概览固定 4 条序列，正好四列；
+   万一某条缺数据，第四格留空也不影响阅读。 */
 .overview {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px; margin-bottom: 22px;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px; margin-bottom: 22px;
 }
 .ov-card {
   background: linear-gradient(180deg, #fff, #fbfcff);
@@ -304,7 +323,18 @@ function goDetail(row: MarketIndex) {
 .group-title { margin: 0; font-size: 15px; font-weight: 600; color: #1a1a2e; }
 .group-count { margin-left: auto; font-size: 12px; color: #aaa; }
 
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 12px; }
+/* ── 卡片网格：与「大宗商品」页同一套 ───────────────────────────────────────
+   auto-fill + minmax(210px, 1fr)，和 Home.vue 一致：在 1100 版心里正好排 4 列
+   （单卡约 255px），窗口再宽也还是 4 列（版心封顶），窄屏自动 3/2/1 列。
+   不再手写列数 —— 手写列数一旦和版心宽度对不上，就会出现「6 列但单卡 165px」。 */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+}
+/* 概览 4 条固定 4 列，与 4 列网格逐列对齐 */
+@media (max-width: 900px) { .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .overview { grid-template-columns: 1fr; } }
 .card {
   background: #fff; border: 1px solid #e8e8f0; border-radius: 12px;
   padding: 13px 15px 11px; cursor: pointer;

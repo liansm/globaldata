@@ -186,6 +186,19 @@ def _safe_float(val):
         return None
 
 
+def _pos_or_none(val):
+    """成交量 / 成交额专用：0 视为「源侧无此字段」或占位值，统一存 NULL。
+
+    指数的日成交量/成交额不可能真为 0，新浪用 0 占位的地方（美股 index 的 amount
+    恒为 0；富时/DAX/CAC40/Nikkei 的 volume 常年 0）如果原样入库，前端就会画出
+    一排 0 柱、卡片显示「成交额 0」。
+    """
+    f = _safe_float(val)
+    if f is None:
+        return None
+    return None if f <= 0 else f
+
+
 def _find_col(df: "pd.DataFrame", candidates: list) -> str | None:
     """Return the first column name from *candidates* that exists in *df*."""
     for c in candidates:
@@ -239,8 +252,8 @@ def fetch_astock_index(cfg):
             "high":     _safe_float(row.get(high_col))     if high_col     else None,
             "low":      _safe_float(row.get(low_col))      if low_col      else None,
             "close":    close,
-            "volume":   _safe_float(row.get(volume_col))   if volume_col   else None,
-            "turnover": _safe_float(row.get(turnover_col)) if turnover_col else None,
+            "volume":   _pos_or_none(row.get(volume_col))   if volume_col   else None,
+            "turnover": _pos_or_none(row.get(turnover_col)) if turnover_col else None,
         })
 
     if not entries:
@@ -283,7 +296,7 @@ def fetch_hk_index(cfg):
             "high":    _safe_float(row.get("high")   or row.get("最高")),
             "low":     _safe_float(row.get("low")    or row.get("最低")),
             "close":   close,
-            "volume":  _safe_float(row.get("volume") or row.get("成交量")),
+            "volume":  _pos_or_none(row.get("volume") or row.get("成交量")),
         })
 
     if not entries:
@@ -326,8 +339,8 @@ def _parse_global_df(df, label) -> list | None:
             "high":     _safe_float(row.get(high_col))     if high_col     else None,
             "low":      _safe_float(row.get(low_col))      if low_col      else None,
             "close":    close,
-            "volume":   _safe_float(row.get(volume_col))   if volume_col   else None,
-            "turnover": _safe_float(row.get(turnover_col)) if turnover_col else None,
+            "volume":   _pos_or_none(row.get(volume_col))   if volume_col   else None,
+            "turnover": _pos_or_none(row.get(turnover_col)) if turnover_col else None,
         })
     return entries or None
 

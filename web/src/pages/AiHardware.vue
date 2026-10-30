@@ -233,7 +233,7 @@ const dramUnit = ref<'perGb' | 'perChip'>('perGb')
 
 // 区间：源站只有滚动半年，所以最多就是「全部」，其余是切片
 const RANGES = [
-  { key: 'all', label: '全部（源站半年窗口）', days: 9999 },
+  { key: 'all', label: '全部（半年窗口）', days: 9999 },
   { key: '3m',  label: '近 3 个月', days: 92 },
   { key: '1m',  label: '近 1 个月', days: 31 },
 ] as const
@@ -254,7 +254,13 @@ const ccySign = computed(() => (selected.value?.currency === 'CNY' ? '¥' : '$')
 // ⚠ 只用来描述**单价**；「每 GB」是另一档，别混进这个 computed（会两边都错）
 const itemUnitLabel = computed(() => (selected.value?.priceUnit === '/颗' ? '每颗' : '每个'))
 
-const dramChartOption = computed(() => {
+/**
+ * 走势图 option。
+ * `lg = true` 是「放大弹窗」那一份：容器宽度约为小栏的 3 倍，所以 x 轴标签、
+ * 边距、字号都跟着放大 —— 只把同一份数据画大而不调刻度，宽屏上只会稀稀拉拉几个点，
+ * 看起来像数据变少了。
+ */
+function buildDramOption(lg = false) {
   const pts = dramPoints.value
   if (!pts.length) return {}
   const perGb = dramUnit.value === 'perGb'
@@ -264,7 +270,7 @@ const dramChartOption = computed(() => {
 
   // 122 个报价日塞进 408px，标签必然重叠；显式按「最多 6 个」抽稀，
   // 光靠 hideOverlap 不够（它只隐藏，不保证留下的几个间距够）
-  const step = Math.max(1, Math.ceil(pts.length / 6))
+  const step = Math.max(1, Math.ceil(pts.length / (lg ? 14 : 6)))
   // 刻度精度必须跟着**极差**走，不能只看绝对值：
   //   · 均价曲线整段 ¥0.85~0.99，toFixed(0) 会把 6 个刻度全挤成 "¥1"；
   //   · HDD 的 ¥/GB 在 0.222~0.225 之间，2 位小数会让 6 个刻度全变成 "¥0.23"。
@@ -290,10 +296,12 @@ const dramChartOption = computed(() => {
             }</span>`
       },
     },
-    grid: { top: 18, right: 26, bottom: 46, left: 54 },
+    grid: lg
+      ? { top: 26, right: 34, bottom: 58, left: 64 }
+      : { top: 18, right: 26, bottom: 46, left: 54 },
     xAxis: {
       type: 'category', data: pts.map(s => s.date),
-      axisLabel: { rotate: 30, fontSize: 10.5, color: '#8a94a6', interval: step - 1 },
+      axisLabel: { rotate: 30, fontSize: lg ? 11.5 : 10.5, color: '#8a94a6', interval: step - 1 },
       axisLine: { lineStyle: { color: '#e4e7ee' } },
       axisTick: { show: false },
     },
@@ -303,13 +311,13 @@ const dramChartOption = computed(() => {
       // 不等距刻度（padding 是按极差算的，不是按「好看的数字」算的）
       scale: true,
       splitNumber: 5,
-      axisLabel: { fontSize: 10.5, color: '#8a94a6', formatter: (v: number) => `${sign}${v.toFixed(tickDec)}` },
+      axisLabel: { fontSize: lg ? 11.5 : 10.5, color: '#8a94a6', formatter: (v: number) => `${sign}${v.toFixed(tickDec)}` },
       splitLine: { lineStyle: { color: '#f0f2f7' } },
     },
     dataZoom: [
       { type: 'inside', throttle: 60 },
       {
-        type: 'slider', height: 16, bottom: 8,
+        type: 'slider', height: lg ? 20 : 16, bottom: lg ? 10 : 8,
         borderColor: 'transparent', backgroundColor: '#f5f7fb',
         fillerColor: 'rgba(64,158,255,.12)',
         handleStyle: { color: '#409eff' },
@@ -334,7 +342,8 @@ const dramChartOption = computed(() => {
       },
     }],
   }
-})
+}
+const dramChartOption = computed(() => buildDramOption(false))
 
 const dramStats = computed(() => {
   const p = selected.value
@@ -388,7 +397,7 @@ watch(gpus, rows => {
   gpuSelectedKey.value = rows.some(g => g.key === 'b200_sxm') ? 'b200_sxm' : rows[0].key
 })
 
-const gpuChartOption = computed(() => {
+function buildGpuOption(lg = false) {
   const g = gpuSelected.value
   if (!g || g.series.length < 2) return {}
   const vals = g.series.map(s => s.price)
@@ -404,10 +413,12 @@ const gpuChartOption = computed(() => {
         return `${x.axisValue}<br/><b>$${Number(x.value).toFixed(2)}</b> /卡·小时`
       },
     },
-    grid: { top: 18, right: 26, bottom: 30, left: 56 },
+    grid: lg
+      ? { top: 26, right: 34, bottom: 44, left: 70 }
+      : { top: 18, right: 26, bottom: 30, left: 56 },
     xAxis: {
       type: 'category', data: g.series.map(s => s.date),
-      axisLabel: { rotate: 35, fontSize: 10.5, color: '#8a94a6', hideOverlap: true },
+      axisLabel: { rotate: 35, fontSize: lg ? 11.5 : 10.5, color: '#8a94a6', hideOverlap: true },
       axisLine: { lineStyle: { color: '#e4e7ee' } },
       axisTick: { show: false },
     },
@@ -415,7 +426,7 @@ const gpuChartOption = computed(() => {
       type: 'value',
       min: Math.max(0, minVal - padding),
       max: maxVal + padding,
-      axisLabel: { fontSize: 10.5, color: '#8a94a6', formatter: (v: number) => `$${v.toFixed(2)}` },
+      axisLabel: { fontSize: lg ? 11.5 : 10.5, color: '#8a94a6', formatter: (v: number) => `$${v.toFixed(2)}` },
       splitLine: { lineStyle: { color: '#f0f2f7' } },
       scale: true,
     },
@@ -438,7 +449,26 @@ const gpuChartOption = computed(() => {
       },
     }],
   }
-})
+}
+const gpuChartOption = computed(() => buildGpuOption(false))
+
+// ── 放大查看（弹窗）──────────────────────────────────────────────────────────
+// 右栏固定 430px，图只有约 400×272，122 个报价日挤在里面看不清细节。
+// 弹窗不是「另外画一张图」，而是同一份 option 换个尺寸重画（buildXxxOption(true)
+// 只是把刻度密度、边距、字号调大）—— 口径 / 区间状态与小栏共用，
+// 在弹窗里切了区间，小栏也跟着变，不会出现两张图不一致。
+const zoomOpen = ref(false)
+const zoomIsDram = computed(() => tab.value === 'memory')
+const zoomOption = computed(() => (zoomIsDram.value ? buildDramOption(true) : buildGpuOption(true)))
+const zoomAvailable = computed(() => Object.keys(zoomOption.value).length > 0)
+const zoomTitle = computed(() => zoomIsDram.value
+  ? `${selected.value?.title ?? ''}　${dramUnit.value === 'perGb' ? '每 GB 价' : '单位价'}`
+  : `${gpuSelected.value?.name ?? ''}　云租价（美元/卡·小时）`)
+const zoomSubtitle = computed(() => zoomIsDram.value
+  ? `${ccySign.value}${fmt(dramUnit.value === 'perGb' ? selected.value?.perGb : selected.value?.price)}`
+    + ` ${dramUnit.value === 'perGb' ? '/GB' : `/${itemUnitLabel.value}`}`
+    + ` · ${dramPoints.value.length} 个报价日 · ${fmtDate(dramPoints.value[0]?.date)} → ${fmtDate(dramPoints.value[dramPoints.value.length - 1]?.date)}`
+  : `$${fmt(gpuSelected.value?.latestHourly)} /卡·小时 · ${gpuSelected.value?.points ?? 0} 个报价日 · 截至 ${fmtDate(gpuSelected.value?.latestDate)}`)
 
 // ── 展示工具 ─────────────────────────────────────────────────────────────────
 function fmt(v: number | null | undefined, d = 2) {
@@ -606,9 +636,17 @@ const gpuCount = computed(() => gpus.value.filter(g => g.latestHourly != null).l
                     <!-- 均价是指数、没有"单价"概念 → 禁用，而不是让人点了看到一条平的线 -->
                     <el-radio-button value="perChip" :disabled="selected?.virtual">按单位</el-radio-button>
                   </el-radio-group>
-                  <el-select v-model="dramRange" size="small" style="width: 132px">
-                    <el-option v-for="r in RANGES" :key="r.key" :label="r.label" :value="r.key" />
-                  </el-select>
+                  <div class="toolbar-right">
+                    <el-select v-model="dramRange" size="small" style="width: 150px">
+                      <el-option v-for="r in RANGES" :key="r.key" :label="r.label" :value="r.key" />
+                    </el-select>
+                    <!-- 放大入口放在工具栏里，不浮在图上：涨势图的最高点标注就在右上角，
+                         悬浮按钮会和 $19.80 那个数字正面撞上 -->
+                    <button
+                      v-if="Object.keys(dramChartOption).length"
+                      class="chart-zoom" type="button" title="放大查看走势图" @click="zoomOpen = true"
+                    ><el-icon><FullScreen /></el-icon></button>
+                  </div>
                 </div>
 
                 <div class="chart-box">
@@ -765,6 +803,12 @@ const gpuCount = computed(() => gpus.value.filter(g => g.latestHourly != null).l
                 </p>
 
                 <!-- 走势：新库只有 1~2 个点，说清楚而不是画空图 -->
+                <div v-if="Object.keys(gpuChartOption).length" class="chart-toolbar">
+                  <span class="toolbar-hint">各云厂商公开报价的日度走势</span>
+                  <button
+                    class="chart-zoom" type="button" title="放大查看走势图" @click="zoomOpen = true"
+                  ><el-icon><FullScreen /></el-icon></button>
+                </div>
                 <div class="chart-box">
                   <AnnotatedLineChart
                     v-if="Object.keys(gpuChartOption).length"
@@ -826,6 +870,42 @@ const gpuCount = computed(() => gpus.value.filter(g => g.latestHourly != null).l
           </div>
         </el-tab-pane>
       </el-tabs>
+
+      <!-- 放大查看：不是另画一张图，而是同一份数据换个尺寸重画。
+           口径 / 区间与小栏共用同一组 ref —— 弹窗里切了，小栏跟着变。 -->
+      <el-dialog
+        v-model="zoomOpen"
+        :title="zoomTitle"
+        width="min(1380px, 94vw)"
+        top="7vh"
+        append-to-body
+        destroy-on-close
+        class="chart-zoom-dialog"
+      >
+        <div class="zoom-sub">{{ zoomSubtitle }}</div>
+
+        <div v-if="zoomIsDram" class="zoom-toolbar">
+          <el-radio-group v-model="dramUnit" size="small">
+            <el-radio-button value="perGb">每 GB</el-radio-button>
+            <el-radio-button value="perChip" :disabled="selected?.virtual">按单位</el-radio-button>
+          </el-radio-group>
+          <el-select v-model="dramRange" size="small" style="width: 156px">
+            <el-option v-for="r in RANGES" :key="r.key" :label="r.label" :value="r.key" />
+          </el-select>
+        </div>
+
+        <AnnotatedLineChart
+          v-if="zoomAvailable" :option="zoomOption" :decimals="2" autoresize
+          class="zoom-chart"
+        />
+
+        <p class="zoom-foot">
+          区间最高 / 最低点的标注会随可见窗口自动重算；鼠标滚轮或底部滑块可缩放。
+          <template v-if="zoomIsDram">
+            源站只保留滚动半年，所以「全部」最多也就这些点，再往前要付费。
+          </template>
+        </p>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -961,11 +1041,33 @@ const gpuCount = computed(() => gpus.value.filter(g => g.latestHourly != null).l
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; margin: 2px 0 6px; flex-wrap: wrap;
 }
+.toolbar-right { display: flex; align-items: center; gap: 6px; }
 .chart-box { margin: 2px -6px 2px; }
+/* 放大按钮放进工具栏，不浮在图右上角 —— 涨势图的最高点标注正好落在那里，
+   悬浮按钮会和 $19.80 那个数字正面撞上（实测过） */
+.chart-zoom {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; flex-shrink: 0;
+  border: 1px solid #e4e7ee; border-radius: 6px; background: #fff;
+  color: #8a94a6; cursor: pointer; transition: all .15s;
+}
+.chart-zoom:hover { color: #409eff; border-color: #b9d6ff; background: #f5f9ff; }
+.chart-zoom .el-icon { font-size: 13px; }
+.toolbar-hint { font-size: 11.5px; color: #a8b0be; }
 .chart-placeholder {
   font-size: 11.5px; color: #a8b0be; line-height: 1.7; text-align: center;
   padding: 34px 18px; background: #fafbfe; border-radius: 10px;
 }
+
+/* ── 放大弹窗 ─────────────────────────────────────────────────────────── */
+.zoom-sub { font-size: 12px; color: #8a94a6; margin: -6px 0 8px; }
+.zoom-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 6px;
+}
+/* 用 min() 而不是固定 vh：屏高小时别把 footer 顶出视口 */
+.zoom-chart { width: 100%; height: min(62vh, 620px); }
+.zoom-foot { font-size: 11.5px; color: #a8b0be; line-height: 1.7; margin: 6px 0 0; }
 
 .detail-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
 .dstat {

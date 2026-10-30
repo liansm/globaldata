@@ -37,6 +37,11 @@ export async function marketsRoutes(app: FastifyInstance) {
           WHERE index_key = ${marketIndices.key}
           ORDER BY price_date DESC LIMIT 1
         )`.as('latest_turnover'),
+        latestVolume: sql<string>`(
+          SELECT volume FROM index_prices
+          WHERE index_key = ${marketIndices.key}
+          ORDER BY price_date DESC LIMIT 1
+        )`.as('latest_volume'),
         prevClose: sql<string>`(
           SELECT close FROM index_prices
           WHERE index_key = ${marketIndices.key}
@@ -94,6 +99,8 @@ export async function marketsRoutes(app: FastifyInstance) {
         latestDate:     useSpot ? (r.spotDate ?? r.latestDate) : r.latestDate,
         latestClose:    displayClose,
         latestTurnover: useSpot ? spotTurnover : latestTurnover,
+        // 成交额缺失时前端回退显示成交量（新浪美股 amount 恒为 0 → turnover 为 NULL）
+        latestVolume:   toNum(r.latestVolume),
         changePct,
         // Non-null when spot data is active — used by frontend to show "实时" badge + time
         latestSpotUpdatedAt: useSpot ? (r.spotUpdatedAt ?? null) : null,

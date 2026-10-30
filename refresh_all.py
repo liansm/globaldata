@@ -5,9 +5,10 @@ refresh_all.py — 一键刷新所有数据
 2. 按顺序运行所有 fetch 脚本，显示每个脚本的耗时和结果
 
 用法:
-    python refresh_all.py            # 先展示状态，再刷新全部
-    python refresh_all.py --status   # 仅展示状态，不刷新
-    python refresh_all.py --fetch    # 仅刷新，不展示状态
+    python refresh_all.py             # 先展示状态，再刷新全部
+    python refresh_all.py --status    # 仅展示状态，不刷新
+    python refresh_all.py --fetch     # 仅刷新，不展示状态
+    python refresh_all.py --with-vlcc # 刷新，并额外跑 VLCC 船位（约 90s，默认跳过）
 """
 
 import argparse
@@ -45,14 +46,26 @@ FETCH_SCRIPTS = [
     ("fetch_ctfi.py",              "CTFI 中国进口原油运价指数 + VLCC 各航线 WS/TCE（上海航交所，日频滚存）"),
     ("fetch_ctfi_history.py",      "CTFI 历史回补（中华航运网周报/月报，月报 2021-09 起 / 周报 2025-07 起）"),
     ("fetch_commodities.py",       "大宗商品价格（黄金/铜/油/煤炭等）"),
+    # 动力煤港口价（CCI5500/5000/4500）单独一条：
+    #   sxcoal 原源 2026-10 起付费墙化（result 全部返回 "*"），改由 ctctc 市场快讯转载抓取，
+    #   沿用原 commodity_key（coal_port_*）→ 前端无需改。属「当日滚存」，漏一天永久少一天。
+    ("fetch_coal_flash.py",        "动力煤港口价 CCI5500/5000/4500（太原煤炭交易中心转载，日频滚存）"),
+    # 国际动力煤 FOB（纽卡斯尔/理查兹/欧洲三港，美元/吨）单独一条：
+    #   sxcoal 的 coal_import_*_fob 已付费墙化停车，本脚本抓 CCTD「国际煤炭」栏目
+    #   周报（每周二，免费），新建 coal_*_fob 三个 key（6000 大卡），**不覆盖**原序列。
+    #   周频 → 漏一期丢一期，但可翻 24 页回补 9 年，比日频源安全。
+    ("fetch_coal_intl.py",         "国际动力煤 FOB（CCTD 国际煤炭周报，周频可回补）"),
     ("fetch_cement.py",            "水泥价格：CEMPI 指数 + P.O42.5 均价（中国水泥网，日频含历史）"),
-    # AI 硬件（一个脚本两块数据）：
-    #   ① 存储颗粒现货 DDR5/DDR4 —— 源站历史只有**滚动半年**，跑漏的期次永久缺失
-    #      → 必须日更累积（9 品种 × 122 点、10 个请求、约 20 秒，全窗口幂等 upsert）
-    #   ② GPU 云租价 —— aimultiple 聚合各家云厂商牌价，日更才有走势
-    #   ③ 存储成品 NAND/SSD/HDD —— 与 ① 同站，115 个品种、115 个请求、约 2.5 分钟（全流程最慢的一条）
-    #      虽慢但不接会永久丢数据（同样是滚动半年窗口）
-    #      只要 DDR + GPU（约 30 秒）时手动跑：python fetch_ai_hardware.py --dram --gpu
+    # AI 硬件（一个脚本三块数据）：
+    #   ① 存储颗粒现货 DDR5/DDR4 —— 源站历史只有**滚动半年**（半年内跑过就不丢），
+    #      但只有 9 品种 × 10 个请求、约 20 秒 → 日更，不值得为它加节流
+    #   ② GPU 云租价 —— aimultiple 聚合各家云厂商牌价，日更才有走势（约 10 秒）
+    #   ③ 存储成品 NAND/SSD/HDD —— 与 ① 同站，115 个品种、115 个请求、约 140 秒
+    #      **2026-10-30 起脚本内自带节流：最多每 3 天跑一次**（STORAGE_INTERVAL_DAYS，
+    #      依据库里 storage_products.MAX(updated_at)）。同是滚动半年窗口，
+    #      漏几天不丢数据；这样整轮 refresh 少了 140 秒的固定开销。
+    #      要立即刷新存储段：python fetch_ai_hardware.py --force-storage
+    #   所以日常这条：约 20~30 秒（DDR + GPU），每 3 天一次约 170 秒。
     ("fetch_ai_hardware.py",       "AI 硬件价格：存储（DDR/NAND/SSD/HDD 每 GB 价）+ GPU 云租价"),
     ("fetch_commodity_spot.py",    "期货实时快照（futures_zh_spot / futures_foreign_commodity_realtime）"),
     ("fetch_commodity_minutes.py", "期货分时 1 分钟 K 线（futures_zh_minute_sina）"),
@@ -71,13 +84,14 @@ FETCH_SCRIPTS = [
     ("fetch_fund_nav.py",          "公募基金最新净值快照（天天基金排行榜批量，4 个请求拿全市场）"),
     ("fetch_ipo_calendar.py",      "新股日历（东财 A股/北交所 + 财华社/AAStocks/东财 港股，秒级）"),
     ("fetch_vlcc_fleet.py",        "中国船东 VLCC 名录（招商轮船在役船队 + 中远海能 2021-06 官方快照）"),
-    # VLCC 船位：主源 = HiFleet（付费，覆盖全球含波斯湾/红海/马六甲/中国沿海）。
-    # 缺 HIFLEET_API_KEY 时 → SKIP，不判失败（「没配置」≠「抓取坏了」，但原因照样打印）。
-    # ⚠ 计费：逐船查询，一轮约 99 次查位（首次还要 ~99 次搜索补 MMSI）。
-    #   单次扣多少点官方**未公开** → 先实测：python fetch_vlcc_position_hifleet.py --limit 5 --dry-run
-    #   看余额前后差，再决定刷新频率与订阅档位。分数不够会显式失败（--max-errors，不静默）。
-    ("fetch_vlcc_position_hifleet.py", "VLCC 船位（HiFleet REST，逐船按 MMSI 查最新位置）",
-     [], {"requires_env": "HIFLEET_API_KEY"}),
+    # ⚠ VLCC 船位（fetch_vlcc_position_hifleet.py）**2026-10-30 起不接入默认刷新**，
+    #   而是放进 OPT_IN_SCRIPTS（见下方定义），原因是耗时：一轮约 90 秒、
+    #   逐船 95 次查位，占整轮 refresh 的近两成 —— 而船位是「最新位置」快照，
+    #   每次跑覆盖同一条记录（(name_ais, ts) 去重），**漏跑不丢历史数据**，
+    #   时效要求远不如日频序列（后者漏一天永久少一天），没必要天天跟着整轮跑。
+    #   要看最新船位：
+    #     python fetch_vlcc_position_hifleet.py        # 只刷船位，约 90 秒
+    #     python refresh_all.py --fetch --with-vlcc    # 连同整轮一起跑
     # ⚠ aisstream 版（fetch_vlcc_position.py）**不接入**（2026-09-30 实测定论）：
     #   免费但覆盖塌陷 —— 波斯湾 3 分钟 0 条、红海/印度洋/马六甲北/南中国海/上海口 全 0 条/秒，
     #   全地球流的六成来自北海。用已学到的 MMSI 精确订阅仍是 0 条 → 当地没有接收站。
@@ -93,6 +107,28 @@ FETCH_SCRIPTS = [
     #   python fetch_private_funds.py                        （中基协备案全量，约 55 分钟，可续跑）
     #   python fetch_private_funds.py --nav                  （代销池净值，约 13 分钟，幂等）
 ]
+
+# 手动/按需脚本：**不进默认刷新**，用 --with-vlcc（或将来 --with-<name>）显式打开。
+#
+# 加入标准：单条耗时 ≥ 60 秒，且「漏跑不丢历史」（快照/覆盖写，而不是日频滚存）。
+# 不满足第二条的（比如 DRAM 现货只有滚动半年窗口）宁可留在 FETCH_SCRIPTS 里慢着跑，
+# 否则漏一天就永久缺一天数据。
+#
+# 放在这个 dict 里也意味着：--status 依然会显示它的数据状态，不需要它跑起来才能看。
+OPT_IN_SCRIPTS = {
+    # VLCC 船位：主源 = HiFleet（付费，覆盖全球含波斯湾/红海/马六甲/中国沿海）。
+    # 缺 HIFLEET_API_KEY → SKIP 不判失败（「没配置」≠「抓取坏了」，原因照样打印）。
+    # 耗时/计费：一轮约 90 秒、95 次逐船查位（首次还要 ~99 次搜索补 MMSI）。
+    #   实测查位 0 积分（余额 996→996），所以「贵」不是问题，**耗时**才是。
+    #   单次扣点官方未公开 → 改订阅档前先实测：
+    #   python fetch_vlcc_position_hifleet.py --limit 5 --dry-run  看余额前后差
+    #   分数不够会显式失败（--max-errors，不静默）。
+    "vlcc": (
+        "fetch_vlcc_position_hifleet.py",
+        "VLCC 船位（HiFleet REST，逐船按 MMSI 查最新位置，约 90s）",
+        [], {"requires_env": "HIFLEET_API_KEY"},
+    ),
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ANSI colors
@@ -184,6 +220,40 @@ STATUS_QUERIES = [
         """,
         "cols": ["category", "products", "rows", "latest", "avg_per_gb"],
         "multi": True,
+    },
+    {
+        # ⚠ 只看港口 3 档：CCI 进口/产地 6 条的源（sxcoal）已付费墙化，
+        #   停在 2026-09-30 —— 那是「源侧拿不到」，不是抓取坏了。
+        "title": "prices · 煤炭 港口CCI  (5500/5000/4500，日频滚存)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT commodity_key) AS series,
+                   MIN(price_date)::text AS earliest,
+                   MAX(price_date)::text AS latest
+            FROM prices
+            WHERE commodity_key IN ('coal_port_5500', 'coal_port_5000', 'coal_port_4500')
+        """,
+        "cols": ["rows", "series", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        # 2026-10-29 新增：sxcoal 付费墙化的替代口径（近似，非等价）
+        #   gz_*      = 广州港进口煤场地含税价（元/吨）  ← 替代 CCI进口
+        #   shenhua_* = 神华巴图塔外购车板价（元/吨）    ← 替代 CCI产地
+        #   *_fob     = 国际三港 FOB（美元/吨，周频）    ← 替代 CCI进口FOB
+        "title": "prices · 煤炭 替代口径  (进口场地价/车板价/国际FOB)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT commodity_key) AS series,
+                   MIN(price_date)::text AS earliest,
+                   MAX(price_date)::text AS latest
+            FROM prices
+            WHERE commodity_key LIKE 'coal_gz%'
+               OR commodity_key LIKE 'coal_shenhua%'
+               OR commodity_key IN ('coal_newc_fob', 'coal_richards_fob', 'coal_ara_fob')
+        """,
+        "cols": ["rows", "series", "earliest", "latest"],
+        "optional": True,
     },
     {
         "title": "market_indices  (指数/资金流向定义)",
@@ -429,17 +499,24 @@ STATUS_QUERIES = [
         "optional": True,
     },
     {
-        "title": "vlcc_positions  (VLCC 船位，滚存；source=hifleet/aisstream)",
+        "title": "vlcc_positions  (VLCC 船位；⚠ 不随 refresh 跑，手动 --with-vlcc)",
+        # today_rows = 今天(北京)录入的行数。单看 last_write 分不清「脚本没跑」和
+        # 「跑了但船位没变」—— 同一 (name_ais, ts) 重复命中只 UPDATE 不动 created_at，
+        # 所以 last_write 会停在前一天，看着像没刷新。today_rows 才是「今天抓到多少」。
         "sql": """
             SELECT COUNT(*) AS rows,
                    COUNT(DISTINCT name_ais) AS ships,
                    STRING_AGG(DISTINCT source, '/' ORDER BY source) AS src,
                    MIN(ts)::text AS earliest,
                    MAX(ts)::text AS latest,
-                   MAX(created_at AT TIME ZONE 'Asia/Shanghai')::text AS last_run
+                   COUNT(*) FILTER (
+                       WHERE (ts AT TIME ZONE 'Asia/Shanghai')::date
+                           = (NOW() AT TIME ZONE 'Asia/Shanghai')::date
+                   ) AS today_rows,
+                   MAX(created_at AT TIME ZONE 'Asia/Shanghai')::text AS last_write
             FROM vlcc_positions
         """,
-        "cols": ["rows", "ships", "src", "earliest", "latest", "last_run"],
+        "cols": ["rows", "ships", "src", "earliest", "latest", "today_rows", "last_write"],
         "optional": True,
     },
     # 加密货币的 status 查询（crypto_coins / crypto_prices）随刷新一起下线，
@@ -539,12 +616,14 @@ def parse_entry(entry):
     return script, desc, extra, opts
 
 
-def run_fetches():
+def run_fetches(include=()):
     print(hdr("\n══════════════  开始刷新数据  ══════════════\n"))
     python = sys.executable
     results = []
 
-    for entry in FETCH_SCRIPTS:
+    scripts = list(FETCH_SCRIPTS) + [OPT_IN_SCRIPTS[k] for k in include]
+
+    for entry in scripts:
         script, desc, extra, opts = parse_entry(entry)
 
         # 需要环境变量的脚本：缺了就 SKIP，不判失败（原因打印出来）
@@ -592,6 +671,10 @@ def run_fetches():
 
     print()
     print(f"  完成: {ok(str(total_ok))}  失败: {err(str(total_fail)) if total_fail else '0'}  跳过: {total_skip}  总耗时: {total_time:.1f}s")
+    if not include and OPT_IN_SCRIPTS:
+        names = ", ".join(f"{k}（{v[0]}）" for k, v in OPT_IN_SCRIPTS.items())
+        flags = " / ".join(f"--with-{k}" for k in OPT_IN_SCRIPTS)
+        print(warn(f"  按需脚本未跑: {names} —— 需要时加 {flags}"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -662,9 +745,14 @@ def main():
     parser = argparse.ArgumentParser(description="globaldata 数据刷新工具")
     parser.add_argument("--status", action="store_true", help="仅展示数据库状态")
     parser.add_argument("--fetch",  action="store_true", help="仅运行 fetch 脚本")
+    parser.add_argument("--with-vlcc", action="store_true",
+                        help="连 VLCC 船位一起刷（约 90s，默认不跑，见 OPT_IN_SCRIPTS）")
     parser.add_argument("--clear",       action="store_true", help="清空所有表数据（需二次确认）")
     parser.add_argument("--force_clear", action="store_true", help="强制清空所有表数据（无需确认）")
     args = parser.parse_args()
+
+    include = tuple(k for k in OPT_IN_SCRIPTS
+                    if getattr(args, "with_" + k, False))
 
     if args.force_clear:
         clear_all(force=True)
@@ -681,7 +769,7 @@ def main():
         print_status()
 
     if run_fetch:
-        run_fetches()
+        run_fetches(include)
 
     if show_status and not args.fetch:
         print(hdr("\n══════════════  刷新后数据库状态  ══════════════"))
