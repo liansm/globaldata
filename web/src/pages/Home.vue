@@ -46,6 +46,10 @@ const SECTIONS = [
     keys: ['intl_oil_wti', 'intl_oil_brent', 'intl_gas', 'gold_oil_ratio',
            '__row_break__',
            'coal_port_5500', 'coal_port_5000', 'coal_port_4500',
+           // 以下 4 条是 sxcoal 付费墙化后的**近似口径替代**（非等价，见 DATASOURCES.md）：
+           //   广州港进口煤场地含税价 / 神华巴图塔外购车板价 / 国际三港 FOB
+           '__row_break__',
+           'coal_gz_au_5500', 'coal_gz_id_4500', 'coal_shenhua_5500', 'coal_newc_fob',
            '__row_break__',
            'lithium_carbonate', 'polysilicon'],
   },

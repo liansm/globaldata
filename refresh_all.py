@@ -45,6 +45,15 @@ FETCH_SCRIPTS = [
     ("fetch_ctfi.py",              "CTFI 中国进口原油运价指数 + VLCC 各航线 WS/TCE（上海航交所，日频滚存）"),
     ("fetch_ctfi_history.py",      "CTFI 历史回补（中华航运网周报/月报，月报 2021-09 起 / 周报 2025-07 起）"),
     ("fetch_commodities.py",       "大宗商品价格（黄金/铜/油/煤炭等）"),
+    # 动力煤港口价（CCI5500/5000/4500）单独一条：
+    #   sxcoal 原源 2026-10 起付费墙化（result 全部返回 "*"），改由 ctctc 市场快讯转载抓取，
+    #   沿用原 commodity_key（coal_port_*）→ 前端无需改。属「当日滚存」，漏一天永久少一天。
+    ("fetch_coal_flash.py",        "动力煤港口价 CCI5500/5000/4500（太原煤炭交易中心转载，日频滚存）"),
+    # 国际动力煤 FOB（纽卡斯尔/理查兹/欧洲三港，美元/吨）单独一条：
+    #   sxcoal 的 coal_import_*_fob 已付费墙化停车，本脚本抓 CCTD「国际煤炭」栏目
+    #   周报（每周二，免费），新建 coal_*_fob 三个 key（6000 大卡），**不覆盖**原序列。
+    #   周频 → 漏一期丢一期，但可翻 24 页回补 9 年，比日频源安全。
+    ("fetch_coal_intl.py",         "国际动力煤 FOB（CCTD 国际煤炭周报，周频可回补）"),
     ("fetch_cement.py",            "水泥价格：CEMPI 指数 + P.O42.5 均价（中国水泥网，日频含历史）"),
     # AI 硬件（一个脚本两块数据）：
     #   ① 存储颗粒现货 DDR5/DDR4 —— 源站历史只有**滚动半年**，跑漏的期次永久缺失
@@ -184,6 +193,40 @@ STATUS_QUERIES = [
         """,
         "cols": ["category", "products", "rows", "latest", "avg_per_gb"],
         "multi": True,
+    },
+    {
+        # ⚠ 只看港口 3 档：CCI 进口/产地 6 条的源（sxcoal）已付费墙化，
+        #   停在 2026-09-30 —— 那是「源侧拿不到」，不是抓取坏了。
+        "title": "prices · 煤炭 港口CCI  (5500/5000/4500，日频滚存)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT commodity_key) AS series,
+                   MIN(price_date)::text AS earliest,
+                   MAX(price_date)::text AS latest
+            FROM prices
+            WHERE commodity_key IN ('coal_port_5500', 'coal_port_5000', 'coal_port_4500')
+        """,
+        "cols": ["rows", "series", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        # 2026-10-29 新增：sxcoal 付费墙化的替代口径（近似，非等价）
+        #   gz_*      = 广州港进口煤场地含税价（元/吨）  ← 替代 CCI进口
+        #   shenhua_* = 神华巴图塔外购车板价（元/吨）    ← 替代 CCI产地
+        #   *_fob     = 国际三港 FOB（美元/吨，周频）    ← 替代 CCI进口FOB
+        "title": "prices · 煤炭 替代口径  (进口场地价/车板价/国际FOB)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT commodity_key) AS series,
+                   MIN(price_date)::text AS earliest,
+                   MAX(price_date)::text AS latest
+            FROM prices
+            WHERE commodity_key LIKE 'coal_gz%'
+               OR commodity_key LIKE 'coal_shenhua%'
+               OR commodity_key IN ('coal_newc_fob', 'coal_richards_fob', 'coal_ara_fob')
+        """,
+        "cols": ["rows", "series", "earliest", "latest"],
+        "optional": True,
     },
     {
         "title": "market_indices  (指数/资金流向定义)",

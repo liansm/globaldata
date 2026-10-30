@@ -689,13 +689,20 @@ def main() -> int:
             print(f"  [OK] 金油比: {latest.get('date')} @ {latest.get('price')} 倍")
 
         # ── sxcoal / 汾渭CCI (coal by calorific grade) ──────────────────────
+        # ⚠ 2026-10 起**源侧付费墙化**（2026-10-29 实测）：hub/thermalcoal 的
+        #   __NEXT_DATA__.initialTabMap 里 CCI 各品种 result 全部返回 "*"（打码），
+        #   chartConfig.data 是空数组 → 页面只剩「日期 + *」，解析必然 0 条。
+        #   故本段**改为 SKIP 不判失败**（它现在必然拿不到，不该把整轮 refresh 染红），
+        #   但仍保留探测代码：哪天源站放开，这里会自动恢复。
+        #   港口 5500/5000/4500 已由 `fetch_coal_flash.py` 接管（ctctc 市场快讯转载，
+        #   同口径，2026-08~10 重叠 33 个 (品种,日期) 与库内值零差异）。
         print()
         print("Fetching coal prices by calorific grade (sxcoal.com 汾渭CCI)...")
         cci_list = sxcoal_cci_fetch("sxcoal CCI")
 
         if cci_list is None:
-            print("  [SKIP] all coal CCI grades")
-            failed.append("coal_cci")
+            print("  [SKIP] sxcoal CCI 已付费墙化（result 返回 \"*\"），"
+                  "港口价改由 fetch_coal_flash.py 抓取")
         else:
             found_keys = []
             for item in cci_list:
@@ -721,8 +728,8 @@ def main() -> int:
                       f"{item['unit']} ({chg})")
 
             if not found_keys:
-                print("  [SKIP] no matching CCI grades found")
-                failed.append("coal_cci")
+                # 同上：源侧打码属「拿不到」而非「抓取坏了」，不判失败
+                print("  [SKIP] 页面里没有可识别的 CCI 品种（源侧已打码）")
 
         # ── CCTD 动力煤价格 (cctd.com.cn) ────────────────────────────────────
         print()
@@ -743,11 +750,17 @@ def main() -> int:
                 hist = hist_age if (type_prefix == "bohai" and kcal == 5500
                                     and hist_age) else []
 
-                # Merge: homepage price is authoritative latest; prepend it so
-                # it takes precedence over any same-date entry in the API series
+                # Merge: **历史 API 序列优先**，首页值只用来补 API 里没有的日期。
+                # ⚠ 2026-10-29 修正：原来首页值优先，结果 10-23 那天首页给 774，
+                #   而同日 hist 序列是 ~1034 —— 两个数差 260，明显不是同一口径
+                #   （首页那块标「元/吨」，量级却像 BSPI 指数点数；CCTD 官方
+                #   「环渤海动力煤参考价 5500」为 1018~1034 元/吨，与 hist 一致）。
+                #   → 让 hist 优先，避免单点 774 把整条曲线染脏。
                 if hist:
-                    entries = ([{"date": item["date"], "price": item["price"]}]
-                               + [e for e in hist if e["date"] != item["date"]])
+                    hist_dates = {e["date"] for e in hist}
+                    entries = list(hist)
+                    if item["date"] not in hist_dates:
+                        entries.append({"date": item["date"], "price": item["price"]})
                 else:
                     entries = [{"date": item["date"], "price": item["price"]}]
 
@@ -761,8 +774,9 @@ def main() -> int:
                 )
                 saved_count += 1
                 chg = f"{item['change']:+.2f}" if item["change"] is not None else "±?"
-                print(f"  [OK] {item['commodity']}: {item['date']} "
-                      f"@ {item['price']} 元/吨 ({chg})")
+                # 打印**实际入库的最新值**（hist 优先后可能与首页值不同）
+                print(f"  [OK] {item['commodity']}: {latest.get('date')} "
+                      f"@ {latest.get('price')} 元/吨 ({chg})")
 
             # Second historical series (product field)
             if hist_product:

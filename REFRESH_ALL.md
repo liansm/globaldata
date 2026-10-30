@@ -80,7 +80,9 @@ python refresh_all.py --status
 
 | # | 脚本 | 抓什么 | 落表 |
 |---|---|---|---|
-| 9 | `fetch_commodities.py` | 60 个品种日线：上金所 + 国内期货主力连续 + 外盘 | `commodities` `prices` |
+| 9 | `fetch_commodities.py` | 60 个品种日线：上金所 + 国内期货主力连续 + 外盘（煤炭段已废，见 9b） | `commodities` `prices` |
+| 9b | `fetch_coal_flash.py` | **动力煤港口价**：汾渭 CCI 港口指数 5500/5000/4500 + CCTD 环渤海参考价 5000/4500 + **广州港进口煤场地含税价（澳洲5500/印尼4500）** + **神华巴图塔外购车板价（5500/5000/4500）**（ctctc.cn 市场快讯转载） | `prices`（港口沿用原 `coal_port_*`，进口/车板为新建 key） |
+| 9c | `fetch_coal_intl.py` | **国际动力煤 FOB（美元/吨，周频）**：澳洲纽卡斯尔 / 南非理查兹港 / 欧洲三港，CCTD「国际煤炭」栏目周报 | `prices`（`coal_newc_fob` / `coal_richards_fob` / `coal_ara_fob`） |
 | 10 | `fetch_cement.py` | CEMPI 水泥价格指数 + P.O42.5 均价（元/吨） | `index_prices` `prices` |
 | 11 | `fetch_ai_hardware.py` | ① DDR5/DDR4 颗粒现货（库里 11 个 key）② NAND/SSD/HDD 成品（110+ 品种，每 GB 价）③ GPU 云租价（6 型号 × 17 家，美元/卡·小时） | `dram_*` `storage_*` `gpu_*` |
 | 12 | `fetch_commodity_spot.py` | 期货实时快照 | `commodity_spot` |
@@ -139,6 +141,8 @@ python refresh_all.py --status
 | `fetch_commodity_minutes.py` | 只写当日分时（避免历史被换月合约的隔夜 tick 覆盖） |
 | `fetch_fund_nav.py`（默认模式） | 只写当日净值快照；全历史要 `--history`（约 2 小时） |
 | `fetch_ipo_calendar.py` | 新股日历本身自带过去+未来，不算严格滚存，但港股「招股截止/暗盘」有时效性 |
+| `fetch_coal_flash.py` | 港口/进口/车板价快讯只发当天，历史靠翻 ctctc 站点分页回补（`--pages N`，列表约 17 页到底 ≈ 11 个月） |
+| `fetch_coal_intl.py` | CCTD 国际煤炭周报每周二发、数据截止上周五；全量 `--pages 24` 可回补 475 期 ≈ 9 年 |
 
 ### D. 快照覆盖 —— 每键一行，每次直接覆盖（3 个）
 
@@ -173,6 +177,7 @@ python refresh_all.py --status
 | `flow_north` 有缺口 | 同上，源侧停更 |
 | `commodity_minutes` 休市日不增长 | 只写当日分时 |
 | `dram_prices` 的 `earliest` 只到半年前 | 源站滚动半年窗口，属正常；跑满 125 个报价日/品种才算覆盖完整 |
+| `coal_import_5500/4700/3800`、`coal_import_3800_fob/4700_fob`、`coal_ordos_5500`、`coal_datong_5500`、`coal_yulin_5800` 停在 2026-09-30 | 原源 sxcoal **付费墙化**（CCI 数值全返回 `*`）。这些是汾渭**自编指数**，无免费等价源，**不是抓取坏了**。港口 3 档已换 ctctc 源救活；进口/产地/FOB 用**近似口径新建 key** 顶上（`coal_gz_*` / `coal_shenhua_*` / `coal_*_fob`，见 `DATASOURCES.md`），未覆盖原序列 |
 
 ### ⚠ 已知小 bug
 
