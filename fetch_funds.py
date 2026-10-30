@@ -1005,6 +1005,8 @@ def main() -> int:
     ap.add_argument("--holdings-only", action="store_true",
                     help="跳过规模段，只抓持仓。规模 TTL 到期时会把 2.8 万只全部重抓，"
                          "只想补季报时用这个")
+    ap.add_argument("--scale-only", action="store_true",
+                    help="跳过持仓段，只刷规模。只想更新 funds.scale（对齐东财最新规模）时用这个")
     ap.add_argument("--years-back",   type=int, default=0,     help="持仓回补年数（0=仅当年）")
     ap.add_argument("--bonds",        action="store_true", help="同时抓债券持仓（默认仅股票）")
     ap.add_argument("--refresh-scale", action="store_true", help="忽略 30 天节流，强制刷新规模")
@@ -1203,9 +1205,12 @@ def main() -> int:
             run_scale_concurrent(todo_scale, conn, progress, args.workers, stat)
 
         # ── 4. 持仓：直接传完整 scope，run_holdings_concurrent 内部按 DB+进度判断 ──
-        run_holdings_concurrent(scope_codes, conn, progress, args.workers,
-                                 years, args.bonds, today, stat,
-                                 force_dates=force_dates or None)
+        if args.scale_only:
+            print("  [INFO] --scale-only：跳过持仓段")
+        else:
+            run_holdings_concurrent(scope_codes, conn, progress, args.workers,
+                                     years, args.bonds, today, stat,
+                                     force_dates=force_dates or None)
 
         cur.execute("SELECT MAX(report_date) FROM fund_holdings")
         latest = cur.fetchone()[0]
