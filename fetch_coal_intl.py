@@ -61,6 +61,14 @@ Usage
     python fetch_coal_intl.py --dry-run       # 只解析打印，不写库
     python fetch_coal_intl.py --status        # 只看库内现状
 
+增量口径（2026-10-30 修正）
+---------------------------
+库内最新日期往前 21 天作停点，**并按发布日逐篇过滤**：发布日早于停点的一律
+不下载正文。原因：本栏目 20 条/页、周频 ≈ 20 周/页，页级停点几乎永不触发，
+旧版每次增量都要下载 40 篇文章、重写 40 周数据（47.7s）；改后只下 4~5 篇（约 5s），
+写到库里的数据完全一样（都是那 3~4 期）。
+⚠ 因此**改了正则/新增 key 必须用 `--pages N` 回补**，增量模式拿不到历史。
+
 Compliance note
 ---------------
 数据原始出处为中国煤炭市场网（CCTD）。该栏目免费公开、无 robots 限制，
@@ -298,7 +306,22 @@ def main() -> int:
                 break
 
             page_hits = 0
+            page_skipped = 0
             for a in arts:
+                # ⚠ 逐篇按**发布日**过滤，不能只靠「整页最新早于停点」判断：
+                #   本栏目 20 条/页、周频 ≈ 20 周，增量那点需求永远落在第 1 页
+                #   范围内，页级停点根本不会触发 → 每天白下载 40 篇文章、
+                #   重写 40 周数据，单脚本 47.7s（2026-10-30 实测）。
+                #   数据日期比发布日早 3~5 天，所以「发布日 < 停点」的一定也是
+                #   库里已有的更老一期，直接跳过（不下载正文）。
+                #   --pages 视为回补，不设停点。
+                if args.pages == 0 and stop_before:
+                    try:
+                        if date.fromisoformat(a["pub"]) < stop_before:
+                            page_skipped += 1
+                            continue
+                    except (TypeError, ValueError):
+                        pass
                 html = fetch_text(a["url"])
                 if html is None:
                     continue
@@ -315,7 +338,8 @@ def main() -> int:
                 hit_articles += 1
                 time.sleep(SLEEP)
 
-            print(f"  page {page:<3d} 条目 {len(arts):>3d}  解析 {page_hits:>3d}")
+            skip_txt = f"  跳过旧文 {page_skipped:>3d}" if page_skipped else ""
+            print(f"  page {page:<3d} 条目 {len(arts):>3d}  解析 {page_hits:>3d}{skip_txt}")
 
             # 整页都早于停点即收工（显式 --pages 视为回补，不设停点）
             pubs = [a["pub"] for a in arts]

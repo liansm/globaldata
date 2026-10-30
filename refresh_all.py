@@ -5,9 +5,10 @@ refresh_all.py — 一键刷新所有数据
 2. 按顺序运行所有 fetch 脚本，显示每个脚本的耗时和结果
 
 用法:
-    python refresh_all.py            # 先展示状态，再刷新全部
-    python refresh_all.py --status   # 仅展示状态，不刷新
-    python refresh_all.py --fetch    # 仅刷新，不展示状态
+    python refresh_all.py             # 先展示状态，再刷新全部
+    python refresh_all.py --status    # 仅展示状态，不刷新
+    python refresh_all.py --fetch     # 仅刷新，不展示状态
+    python refresh_all.py --with-vlcc # 刷新，并额外跑 VLCC 船位（约 90s，默认跳过）
 """
 
 import argparse
@@ -80,13 +81,14 @@ FETCH_SCRIPTS = [
     ("fetch_fund_nav.py",          "公募基金最新净值快照（天天基金排行榜批量，4 个请求拿全市场）"),
     ("fetch_ipo_calendar.py",      "新股日历（东财 A股/北交所 + 财华社/AAStocks/东财 港股，秒级）"),
     ("fetch_vlcc_fleet.py",        "中国船东 VLCC 名录（招商轮船在役船队 + 中远海能 2021-06 官方快照）"),
-    # VLCC 船位：主源 = HiFleet（付费，覆盖全球含波斯湾/红海/马六甲/中国沿海）。
-    # 缺 HIFLEET_API_KEY 时 → SKIP，不判失败（「没配置」≠「抓取坏了」，但原因照样打印）。
-    # ⚠ 计费：逐船查询，一轮约 99 次查位（首次还要 ~99 次搜索补 MMSI）。
-    #   单次扣多少点官方**未公开** → 先实测：python fetch_vlcc_position_hifleet.py --limit 5 --dry-run
-    #   看余额前后差，再决定刷新频率与订阅档位。分数不够会显式失败（--max-errors，不静默）。
-    ("fetch_vlcc_position_hifleet.py", "VLCC 船位（HiFleet REST，逐船按 MMSI 查最新位置）",
-     [], {"requires_env": "HIFLEET_API_KEY"}),
+    # ⚠ VLCC 船位（fetch_vlcc_position_hifleet.py）**2026-10-30 起不接入默认刷新**，
+    #   而是放进 OPT_IN_SCRIPTS（见下方定义），原因是耗时：一轮约 90 秒、
+    #   逐船 95 次查位，占整轮 refresh 的近两成 —— 而船位是「最新位置」快照，
+    #   每次跑覆盖同一条记录（(name_ais, ts) 去重），**漏跑不丢历史数据**，
+    #   时效要求远不如日频序列（后者漏一天永久少一天），没必要天天跟着整轮跑。
+    #   要看最新船位：
+    #     python fetch_vlcc_position_hifleet.py        # 只刷船位，约 90 秒
+    #     python refresh_all.py --fetch --with-vlcc    # 连同整轮一起跑
     # ⚠ aisstream 版（fetch_vlcc_position.py）**不接入**（2026-09-30 实测定论）：
     #   免费但覆盖塌陷 —— 波斯湾 3 分钟 0 条、红海/印度洋/马六甲北/南中国海/上海口 全 0 条/秒，
     #   全地球流的六成来自北海。用已学到的 MMSI 精确订阅仍是 0 条 → 当地没有接收站。
@@ -102,6 +104,28 @@ FETCH_SCRIPTS = [
     #   python fetch_private_funds.py                        （中基协备案全量，约 55 分钟，可续跑）
     #   python fetch_private_funds.py --nav                  （代销池净值，约 13 分钟，幂等）
 ]
+
+# 手动/按需脚本：**不进默认刷新**，用 --with-vlcc（或将来 --with-<name>）显式打开。
+#
+# 加入标准：单条耗时 ≥ 60 秒，且「漏跑不丢历史」（快照/覆盖写，而不是日频滚存）。
+# 不满足第二条的（比如 DRAM 现货只有滚动半年窗口）宁可留在 FETCH_SCRIPTS 里慢着跑，
+# 否则漏一天就永久缺一天数据。
+#
+# 放在这个 dict 里也意味着：--status 依然会显示它的数据状态，不需要它跑起来才能看。
+OPT_IN_SCRIPTS = {
+    # VLCC 船位：主源 = HiFleet（付费，覆盖全球含波斯湾/红海/马六甲/中国沿海）。
+    # 缺 HIFLEET_API_KEY → SKIP 不判失败（「没配置」≠「抓取坏了」，原因照样打印）。
+    # 耗时/计费：一轮约 90 秒、95 次逐船查位（首次还要 ~99 次搜索补 MMSI）。
+    #   实测查位 0 积分（余额 996→996），所以「贵」不是问题，**耗时**才是。
+    #   单次扣点官方未公开 → 改订阅档前先实测：
+    #   python fetch_vlcc_position_hifleet.py --limit 5 --dry-run  看余额前后差
+    #   分数不够会显式失败（--max-errors，不静默）。
+    "vlcc": (
+        "fetch_vlcc_position_hifleet.py",
+        "VLCC 船位（HiFleet REST，逐船按 MMSI 查最新位置，约 90s）",
+        [], {"requires_env": "HIFLEET_API_KEY"},
+    ),
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ANSI colors
@@ -472,7 +496,7 @@ STATUS_QUERIES = [
         "optional": True,
     },
     {
-        "title": "vlcc_positions  (VLCC 船位，滚存；source=hifleet/aisstream)",
+        "title": "vlcc_positions  (VLCC 船位；⚠ 不随 refresh 跑，手动 --with-vlcc)",
         # today_rows = 今天(北京)录入的行数。单看 last_write 分不清「脚本没跑」和
         # 「跑了但船位没变」—— 同一 (name_ais, ts) 重复命中只 UPDATE 不动 created_at，
         # 所以 last_write 会停在前一天，看着像没刷新。today_rows 才是「今天抓到多少」。
@@ -589,12 +613,14 @@ def parse_entry(entry):
     return script, desc, extra, opts
 
 
-def run_fetches():
+def run_fetches(include=()):
     print(hdr("\n══════════════  开始刷新数据  ══════════════\n"))
     python = sys.executable
     results = []
 
-    for entry in FETCH_SCRIPTS:
+    scripts = list(FETCH_SCRIPTS) + [OPT_IN_SCRIPTS[k] for k in include]
+
+    for entry in scripts:
         script, desc, extra, opts = parse_entry(entry)
 
         # 需要环境变量的脚本：缺了就 SKIP，不判失败（原因打印出来）
@@ -642,6 +668,10 @@ def run_fetches():
 
     print()
     print(f"  完成: {ok(str(total_ok))}  失败: {err(str(total_fail)) if total_fail else '0'}  跳过: {total_skip}  总耗时: {total_time:.1f}s")
+    if not include and OPT_IN_SCRIPTS:
+        names = ", ".join(f"{k}（{v[0]}）" for k, v in OPT_IN_SCRIPTS.items())
+        flags = " / ".join(f"--with-{k}" for k in OPT_IN_SCRIPTS)
+        print(warn(f"  按需脚本未跑: {names} —— 需要时加 {flags}"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -712,9 +742,14 @@ def main():
     parser = argparse.ArgumentParser(description="globaldata 数据刷新工具")
     parser.add_argument("--status", action="store_true", help="仅展示数据库状态")
     parser.add_argument("--fetch",  action="store_true", help="仅运行 fetch 脚本")
+    parser.add_argument("--with-vlcc", action="store_true",
+                        help="连 VLCC 船位一起刷（约 90s，默认不跑，见 OPT_IN_SCRIPTS）")
     parser.add_argument("--clear",       action="store_true", help="清空所有表数据（需二次确认）")
     parser.add_argument("--force_clear", action="store_true", help="强制清空所有表数据（无需确认）")
     args = parser.parse_args()
+
+    include = tuple(k for k in OPT_IN_SCRIPTS
+                    if getattr(args, "with_" + k, False))
 
     if args.force_clear:
         clear_all(force=True)
@@ -731,7 +766,7 @@ def main():
         print_status()
 
     if run_fetch:
-        run_fetches()
+        run_fetches(include)
 
     if show_status and not args.fetch:
         print(hdr("\n══════════════  刷新后数据库状态  ══════════════"))
