@@ -47,8 +47,10 @@ function onTabChange(name: string | number) {
 }
 
 // ── 运价分组 ─────────────────────────────────────────────────────────────────
-// 分组顺序刻意调整过：油运在前 —— 它是本页另一个 tab（油船）的直接对应物，
-// 运价 + 船位放一起才回答得了「油运现在什么情况」。集装箱与干散货是另一条线，排在后面。
+// 分组顺序：BDI 干散货 → CCFI 集装箱 → 油运（点值）→ 油运（期间均值）。
+// 2026-10-30 按需求调整：**油运整体下移到集装箱之后**（原先油运在最前）。
+// 干散货与集装箱的相对顺序不变，只把油运这两组挪到最后 —— 与顶部概览卡片的
+// 顺序（BDI → CCFI → BDTI → BCTI）保持一致，上下对得上。
 const CCFI_ORDER = [
   'ccfi_total', 'ccfi_europe', 'ccfi_med', 'ccfi_wc_america', 'ccfi_ec_america',
   'ccfi_japan', 'ccfi_korea', 'ccfi_se_asia', 'ccfi_anz',
@@ -81,11 +83,11 @@ const CTFI_AVG_ORDER = [
 const groups = computed(() => {
   const map = new Map(shipping.value.map(s => [s.key, s]))
   return [
+    { key: 'dry',     title: 'BDI 波罗的海干散货运价', icon: '⚓', keys: BDI_ORDER },
+    { key: 'ccfi',    title: 'CCFI 出口集装箱运价', icon: '🚢', keys: CCFI_ORDER },
     { key: 'oil',     title: '油运：原油 / 成品油运价与 VLCC TCE', icon: '🛢️', keys: OIL_ORDER },
     { key: 'oil-avg', title: '油运 · CTFI 期间均值（月均 / 周均，均值口径，勿与上面当日点值直接比大小）',
       icon: '📉', keys: CTFI_AVG_ORDER },
-    { key: 'dry',     title: 'BDI 波罗的海干散货运价', icon: '⚓', keys: BDI_ORDER },
-    { key: 'ccfi',    title: 'CCFI 出口集装箱运价', icon: '🚢', keys: CCFI_ORDER },
   ].map(g => ({
     ...g,
     items: g.keys.map(k => map.get(k)).filter(Boolean) as MarketIndex[],
@@ -95,9 +97,10 @@ const groups = computed(() => {
 const totalCount = computed(() => groups.value.reduce((n, g) => n + g.items.length, 0))
 
 // ── 概览 ─────────────────────────────────────────────────────────────────────
-// 四个「看一眼就够」的代表序列：油运双指数 + 干散货 + 集装箱。
-// 只取点值口径（ctfi_total 而非月均），别把均值混进来。
-const OVERVIEW_KEYS = ['bdti', 'bcti', 'bdi', 'ccfi_total']
+// 四个「看一眼就够」的代表序列：干散货 → 集装箱 → 油运双指数。
+// 顺序跟下面的分组一致（油运放最后）；只取点值口径（ctfi_total 而非月均），
+// 别把均值混进来。
+const OVERVIEW_KEYS = ['bdi', 'ccfi_total', 'bdti', 'bcti']
 const overview = computed(() => {
   const map = new Map(shipping.value.map(s => [s.key, s]))
   return OVERVIEW_KEYS.map(k => map.get(k)).filter(Boolean) as MarketIndex[]
@@ -130,7 +133,7 @@ function goDetail(row: MarketIndex) {
       <div>
         <h1>航运信息</h1>
         <p class="subtitle">
-          航运与油运运价（CCFI 集装箱 / BDI 干散货 / BDTI·BCTI·CTFI 油运）
+          航运与油运运价（BDI 干散货 / CCFI 集装箱 / BDTI·BCTI·CTFI 油运）
           <span class="dot">·</span> 中国船东 VLCC 船队与 AIS 船位
         </p>
       </div>
@@ -276,9 +279,12 @@ function goDetail(row: MarketIndex) {
 .pane.scroll { overflow-y: auto; display: block; padding-right: 4px; }
 
 /* ── 概览 ─────────────────────────────────────────────────────────────── */
+/* 4 列与下面的卡片网格一致（原来 auto-fit + minmax(180px) 是按可用宽度自己排，
+   和网格的列宽对不上，上下左边线是歪的）。概览固定 4 条序列，正好四列；
+   万一某条缺数据，第四格留空也不影响阅读。 */
 .overview {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px; margin-bottom: 22px;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px; margin-bottom: 22px;
 }
 .ov-card {
   background: linear-gradient(180deg, #fff, #fbfcff);
@@ -304,7 +310,21 @@ function goDetail(row: MarketIndex) {
 .group-title { margin: 0; font-size: 15px; font-weight: 600; color: #1a1a2e; }
 .group-count { margin-left: auto; font-size: 12px; color: #aaa; }
 
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 12px; }
+/* ── 卡片网格：固定 4 列 ───────────────────────────────────────────────────
+   原来 auto-fill + minmax(212px, 1fr)：1500 宽的窗口会排出 5 列，单卡只有 ~210px，
+   名称两行被挤、页脚 key 也糊成一团。改成显式 4 列（窄屏 3/2/1），
+   单卡 ~340px，名称、数值、日期都松得开。
+   ⚠ 窗口再宽也是 4 列，不再「越宽越多」——这是刻意的密度上限。 */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 1200px) { .card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 900px)  { .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px)  { .card-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1200px) { .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px)  { .overview { grid-template-columns: 1fr; } }
 .card {
   background: #fff; border: 1px solid #e8e8f0; border-radius: 12px;
   padding: 13px 15px 11px; cursor: pointer;
