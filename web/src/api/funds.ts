@@ -5,6 +5,7 @@ import type {
   FundDetailResp,
   FundNavResp,
   FundYearlyResp,
+  FundNavSummaryResp,
 } from '@/types/fund'
 
 const http = axios.create({
@@ -71,4 +72,20 @@ export function fetchFundNav(
 /** 历史业绩：各自然年涨跌幅，按年份降序 */
 export function fetchFundYearly(code: string): Promise<FundYearlyResp> {
   return http.get<FundYearlyResp>(`/funds/${code}/yearly`).then(r => r.data)
+}
+
+/** 走势图的区间摘要：区间涨跌幅（复权 / 分红不复投）+ 区间最高最低净值 */
+export function fetchFundNavSummary(
+  code: string,
+  options: { days?: number; from?: string; to?: string } = {},
+): Promise<FundNavSummaryResp> {
+  return http
+    .get<FundNavSummaryResp>(`/funds/${code}/nav-summary`, {
+      params: {
+        days: options.days ?? 365,
+        from: options.from || undefined,
+        to: options.to || undefined,
+      },
+    })
+    .then(r => r.data)
 }

@@ -11,9 +11,11 @@ import {
   LegendComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { fetchFundDetail, fetchFundNav, fetchFundYearly } from '@/api/funds'
+import { fetchFundDetail, fetchFundNav, fetchFundNavSummary, fetchFundYearly } from '@/api/funds'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
-import type { FundDetailResp, FundHolding, FundNavPoint, FundYearlyItem } from '@/types/fund'
+import type {
+  FundDetailResp, FundHolding, FundNavPoint, FundNavSummaryResp, FundYearlyItem,
+} from '@/types/fund'
 
 use([
   CanvasRenderer,
@@ -52,6 +54,41 @@ const navColLabel = computed(() => (isMoney.value ? '万份收益 (元)' : '单�
 const accColLabel = computed(() => (isMoney.value ? '七日年化 (%)' : '累计净值'))
 
 /**
+ * 收益率的**副口径**（累计净值 / 现金分红不再投）。
+ * 只在两口径确有差别时返回数值 —— 没分过红的基金两者恒等，再摆一行只是噪音。
+ * 首屏那行小字与 tooltip 共用它，保证「显示出来的」和「提示里说的」永远是同一个数。
+ */
+function accAlt(kind: 'ytd' | 'total'): number | null {
+  const d = detail.value
+  const main = kind === 'ytd' ? d?.ytdReturn : d?.totalReturn
+  const acc = kind === 'ytd' ? d?.ytdReturnAcc : d?.totalReturnAcc
+  if (acc == null || main == null) return null
+  return Math.abs(acc - main) < 0.01 ? null : acc
+}
+const ytdAccAlt = computed(() => accAlt('ytd'))
+const totalAccAlt = computed(() => accAlt('total'))
+
+/**
+ * 收益率口径提示：主数字是**复权**（分红再投），下面那行小字是**分红不复投**。
+ * 分红越多的基金两者差得越远 —— 163402 复权 2128% / 分红不复投只有 978%，
+ * 只说一个数会让用户以为算错了。
+ */
+function returnTip(kind: 'ytd' | 'total'): string {
+  const d = detail.value
+  const main = kind === 'ytd' ? d?.ytdReturn : d?.totalReturn
+  const acc = kind === 'ytd' ? d?.ytdReturnAcc : d?.totalReturnAcc
+  const head = kind === 'ytd'
+    ? '今年以来涨跌幅，按复权净值计算（分红再投），与雪球/天天基金一致'
+    : '成立以来累计收益，按复权净值计算（分红再投），与雪球/天天基金一致'
+  // 没分过红（累计净值恒等于单位净值）时两口径相同，别给一句「差额来自分红」的空话
+  if (acc == null || main == null || Math.abs(acc - main) < 0.01) {
+    return `${head}。该基金没有分过红，两种口径一致`
+  }
+  return `${head}；下面「分红不复投」按累计净值口径计算为 ${acc.toFixed(2)}%，`
+    + '差额来自分红没有参与复利'
+}
+
+/**
  * 「今年来」的起点 = 本自然年 1 月 1 日（与 MarketDetail.vue / Detail.vue 的 ytdFrom 同写法规约）。
  * 刻意**不用** latestNavDate 的年份：库里有已终止/停更的基金，快照停在若干年前，
  * 按数据年算会把 2024 年的曲线标成「今年来」——那是粉饰。按系统年算，
@@ -62,19 +99,51 @@ function ytdFrom() {
   return `${new Date().getFullYear()}-01-01`
 }
 
+/** 走势图区间摘要：区间涨跌（双口径）与区间最高最低 */
+const navSummary = ref<FundNavSummaryResp | null>(null)
+
 async function loadNav(code: string) {
   navLoading.value = true
+  const opt = navRange.value === 'ytd' ? { from: ytdFrom() } : { days: navRange.value as number }
   try {
-    const resp = navRange.value === 'ytd'
-      ? await fetchFundNav(code, { from: ytdFrom() })
-      : await fetchFundNav(code, { days: navRange.value })
+    // 摘要与序列并行取：摘要只依赖区间，跟序列的分页无关。
+    // 摘要失败不该拖垮图表（区间涨跌条少一行而已），单独 catch 掉。
+    const [resp, sum] = await Promise.all([
+      fetchFundNav(code, opt),
+      fetchFundNavSummary(code, opt).catch(() => null),
+    ])
     navPoints.value = resp.items
+    navSummary.value = sum
   } catch {
     navPoints.value = []
+    navSummary.value = null
   } finally {
     navLoading.value = false
   }
 }
+
+/**
+ * 区间涨跌的副口径（分红不复投）。与首屏 `accAlt()` 同一套判断：
+ * 两口径差 <0.01 就不显示 —— 短期（近 3 月）分红影响常常小到看不出，
+ * 摆一个和主数字一模一样的数只是噪音。
+ */
+const rangeAccAlt = computed(() => {
+  const s = navSummary.value
+  if (!s || s.adjReturn == null || s.accReturn == null) return null
+  return Math.abs(s.accReturn - s.adjReturn) < 0.01 ? null : s.accReturn
+})
+
+/** 区间选择器当前选项的中文名，用在涨跌条开头 */
+const navRangeLabel = computed(() => {
+  const r = navRange.value
+  if (r === 'ytd') return '今年来'
+  if (r === 0) return '全部历史'
+  if (r === 90) return '近 3 月'
+  if (r === 365) return '近 1 年'
+  if (r === 1095) return '近 3 年'
+  if (r === 1825) return '近 5 年'
+  return `近 ${r} 天`
+})
 
 /** 空图提示：选「今年来」但该基金今年没有净值时，把最新数据日说清楚（多为已终止/停更） */
 const emptyNavHint = computed(() => {
@@ -397,22 +466,32 @@ const navRangeText = computed(() => {
         </div>
 
         <div class="meta-stats">
-          <!-- 收益率排在最前：这是看一只基金最先要的两个数 -->
+          <!-- 收益率排在最前：这是看一只基金最先要的两个数。
+               分红多的基金两种口径差得很远（163402 复权 2128% / 分红不复投 978%），
+               所以副口径直接摆在主数字下面，不让人靠悬停才发现。 -->
           <div
             class="stat"
             v-if="detail.ytdReturn != null"
-            title="按累计净值计算（含分红再投），基数取上一年最后一个披露日的累计净值"
+            :title="returnTip('ytd')"
           >
-            <span class="stat-label">今年来</span>
+            <span class="stat-label">今年来<span class="stat-flag">复权</span></span>
             <span class="stat-value" :class="pctClass(detail.ytdReturn)">{{ fmtPct(detail.ytdReturn) }}</span>
+            <span class="stat-sub" v-if="ytdAccAlt != null">
+              分红不复投
+              <b :class="pctClass(ytdAccAlt)">{{ fmtPct(ytdAccAlt) }}</b>
+            </span>
           </div>
           <div
             class="stat"
             v-if="detail.totalReturn != null"
-            title="成立以来累计收益，按累计净值计算（含分红再投）"
+            :title="returnTip('total')"
           >
-            <span class="stat-label">累计收益</span>
+            <span class="stat-label">累计收益<span class="stat-flag">复权</span></span>
             <span class="stat-value" :class="pctClass(detail.totalReturn)">{{ fmtPct(detail.totalReturn) }}</span>
+            <span class="stat-sub" v-if="totalAccAlt != null">
+              分红不复投
+              <b :class="pctClass(totalAccAlt)">{{ fmtPct(totalAccAlt) }}</b>
+            </span>
           </div>
           <div class="stat" v-if="detail.latestNav != null">
             <span class="stat-label">{{ isMoney ? '万份收益' : '单位净值' }}</span>
@@ -487,6 +566,44 @@ const navRangeText = computed(() => {
             <el-option :value="1825" label="近 5 年" />
             <el-option :value="0" label="全部历史" />
           </el-select>
+        </div>
+
+        <!-- 区间涨跌：随上面选的区间变，所以放在图上方而不是首屏。
+             两个口径都摆出来 —— 分红多的基金同一个区间能差一倍（163402 全部历史
+             复权 +2128% / 分红不复投 +978%），只给一个数会让人以为另一个算错了。
+             货币基金不显示：它的两列是万份收益与七日年化，没有「区间涨跌」概念。 -->
+        <div
+          v-if="!navLoading && navSummary && navSummary.days > 0 && !isMoney"
+          class="range-strip"
+        >
+          <span
+            class="rs-scope"
+            :title="`区间 ${navSummary.from} 至 ${navSummary.to}（${navSummary.days} 个披露日）；涨跌幅以 ${navSummary.baseDate} 的净值为基数`"
+          >
+            {{ navRangeLabel }}<i>{{ navSummary.days }} 日</i>
+          </span>
+          <span class="rs-cell">
+            <span class="rs-k">区间涨跌<em class="stat-flag">复权</em></span>
+            <b class="rs-v" :class="pctClass(navSummary.adjReturn)">{{ fmtPct(navSummary.adjReturn) }}</b>
+          </span>
+          <span
+            v-if="rangeAccAlt != null"
+            class="rs-cell"
+            title="现金分红不再投（不参与复利）。无分红的区间与复权口径相同；分红越多差得越远"
+          >
+            <span class="rs-k">分红不复投</span>
+            <b class="rs-v" :class="pctClass(rangeAccAlt)">{{ fmtPct(rangeAccAlt) }}</b>
+          </span>
+          <span v-if="navSummary.navMax" class="rs-cell">
+            <span class="rs-k">区间最高</span>
+            <b class="rs-v">{{ fmtNav(navSummary.navMax.v) }}</b>
+            <i class="rs-d">{{ navSummary.navMax.d }}</i>
+          </span>
+          <span v-if="navSummary.navMin" class="rs-cell">
+            <span class="rs-k">区间最低</span>
+            <b class="rs-v">{{ fmtNav(navSummary.navMin.v) }}</b>
+            <i class="rs-d">{{ navSummary.navMin.d }}</i>
+          </span>
         </div>
 
         <!-- 口径提示：货币基金量纲与普通基金完全不同，且源侧有「节假日合并披露」特性 -->
@@ -598,8 +715,14 @@ const navRangeText = computed(() => {
         </el-tabs>
 
         <p class="data-note" v-if="!isMoney">
-          年度涨跌幅按<b>累计净值</b>计算（含分红再投），基数为上一年最后一个披露日的累计净值；
-          基金成立当年的基数取其首个累计净值，故首个年度为「成立以来」而非整年。
+          年度涨跌幅按<b>复权净值</b>计算（分红再投），与首屏「累计收益」同一口径，
+          也与雪球/天天基金的年度榜一致；基金成立当年即「有数据以来」，该年第一个净值只当基数。
+          <template
+            v-if="detail.totalReturnAcc != null && detail.totalReturn != null
+                  && Math.abs(detail.totalReturnAcc - detail.totalReturn) >= 0.01"
+          >
+            若改用分红不复投（累计净值口径），成立以来为 <b>{{ fmtPct(detail.totalReturnAcc) }}</b>。
+          </template>
         </p>
 
         <!-- 全部净值（分页） -->
@@ -833,6 +956,30 @@ const navRangeText = computed(() => {
   letter-spacing: 0.4px;
 }
 
+/* 标签后面的小徽标，标明这行是哪个口径（复权 = 分红再投） */
+.stat-flag {
+  margin-left: 4px;
+  padding: 0 3px;
+  border: 1px solid #e4e4ee;
+  border-radius: 3px;
+  font-size: 10px;
+  color: #9a9aa8;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* 副口径行：分红不复投的净值涨幅，与主数字上下对齐成一列便于对照 */
+.stat-sub {
+  font-size: 11px;
+  color: #8a8a96;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.stat-sub b { font-weight: 600; }
+.stat-sub .up   { color: #e8534a; }
+.stat-sub .down { color: #26a17b; }
+
 .stat-value {
   font-size: 16px;
   font-weight: 700;
@@ -907,6 +1054,60 @@ const navRangeText = computed(() => {
   font-size: 12px;
   font-weight: 400;
   color: #aaa;
+}
+
+/* 区间涨跌条：一行横向排布，窄屏自动折行 */
+.range-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 22px;
+  margin-bottom: 12px;
+  padding: 9px 14px;
+  background: #fafafc;
+  border: 1px solid #f0f0f4;
+  border-radius: 8px;
+}
+
+.rs-scope {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+/* 披露日数跟在区间名后面，弱化处理 */
+.rs-scope i {
+  margin-left: 5px;
+  font-style: normal;
+  font-weight: 400;
+  font-size: 11px;
+  color: #9a9aa8;
+}
+
+.rs-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.rs-k {
+  font-size: 12px;
+  color: #8a8a96;
+}
+
+.rs-v {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a1a2e;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 最高/最低的发生日期：只给 MM-DD，完整日期放 title */
+.rs-d {
+  font-style: normal;
+  font-size: 11px;
+  color: #9a9aa8;
+  font-variant-numeric: tabular-nums;
 }
 
 .chart-card {
