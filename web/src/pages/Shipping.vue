@@ -242,12 +242,11 @@ function goDetail(row: MarketIndex) {
 /* 与 OilShipping 原先的整屏布局同源：页面占满一屏，内部 flex 纵向分配，
    地图区吃剩余高度。高度用 vh 而不是 100%，因为 .app-main 是 flex:1 的滚动容器，
    对它 height:100% 解析不出确定值（详见 App.vue 的 skeleton 注释）。 */
-/* 宽度上限 + 居中：与「全球股市」页一致的版心思路（那边是 max-width:1100px）。
-   这里给到 1400px —— 6 列网格在 1400 内容宽下单卡约 215px，再窄 CTFI 那批
-   只差尾巴的序列名就得折行了。宽屏两侧留白，避免整页贴边铺满。 */
+/* 宽度上限 + 居中：与「大宗商品」(Home.vue) /「全球股市」(Markets.vue) 同一个版心
+   1100px —— 三页并排看是同一套栅格，卡片宽度也一致（约 255px）。 */
 .shipping-page {
   width: 100%;
-  max-width: 1400px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 16px 22px 18px;
   height: 100vh;
@@ -316,24 +315,18 @@ function goDetail(row: MarketIndex) {
 .group-title { margin: 0; font-size: 15px; font-weight: 600; color: #1a1a2e; }
 .group-count { margin-left: auto; font-size: 12px; color: #aaa; }
 
-/* ── 卡片网格：固定 6 列 ───────────────────────────────────────────────────
-   显式列数而不是 auto-fill，是为了让「密度上限」可控、且在不同宽度的屏幕上
-   看起来是同一个产品（auto-fill 在 1500 宽排 5 列、1920 宽排 6 列，飘忽）。
-   6 列是当前偏好的密度；窄屏逐级降到 5/4/3/2/1。 */
+/* ── 卡片网格：与「大宗商品」页同一套 ───────────────────────────────────────
+   auto-fill + minmax(210px, 1fr)，和 Home.vue 一致：在 1100 版心里正好排 4 列
+   （单卡约 255px），窗口再宽也还是 4 列（版心封顶），窄屏自动 3/2/1 列。
+   不再手写列数 —— 手写列数一旦和版心宽度对不上，就会出现「6 列但单卡 165px」。 */
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 12px;
 }
-@media (max-width: 1400px) { .card-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
-@media (max-width: 1120px) { .card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-@media (max-width: 880px)  { .card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 640px)  { .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 460px)  { .card-grid { grid-template-columns: 1fr; } }
-/* 概览 4 条固定 4 列：它和 6 列网格左右两端仍对齐（同为整宽 grid），
-   只是单卡更宽 —— 概览本来就该比明细卡片更醒目。 */
-@media (max-width: 1120px) { .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 640px)  { .overview { grid-template-columns: 1fr; } }
+/* 概览 4 条固定 4 列，与 4 列网格逐列对齐 */
+@media (max-width: 900px) { .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .overview { grid-template-columns: 1fr; } }
 .card {
   background: #fff; border: 1px solid #e8e8f0; border-radius: 12px;
   padding: 13px 15px 11px; cursor: pointer;
