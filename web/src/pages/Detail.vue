@@ -211,16 +211,38 @@ const minutesChartOption = computed(() => {
 
   // Baseline: yesterday's close from spot, or first bar's open
   const baseline = detail.value?.spot?.prevClose ?? md.minutes[0]?.open ?? null
+  // 有昨结算就用昨结算（真·涨跌口径）；退回首根开盘时必须换个说法，否则「涨跌额」是假的
+  const baselineLabel = detail.value?.spot?.prevClose != null ? '昨结算' : '首根开盘'
 
   return {
     tooltip: {
       trigger: 'axis',
-      formatter: (params: { axisValue: string; value: number | null }[]) => {
+      // 分时 tooltip：时间 / 价格 / 涨跌额 / 涨跌幅（与指数详情页 MarketDetail 同款 4 行）
+      // ⚠ 涨跌额必须按**光标所在那根 bar** 算，不能拿头部的最新价 —— 否则鼠标停在早盘，
+      //   显示的还是收盘的涨跌额，图上点和数字对不上。
+      formatter: (params: { axisValue: string; dataIndex: number }[]) => {
         const p = params[0]
         if (!p) return ''
-        return `${p.axisValue}<br/><b>${p.value != null
-          ? p.value.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
-          : '—'}</b> ${md.unit ?? ''}`
+        const bar   = md.minutes[p.dataIndex]
+        const close = bar?.close ?? null
+        const amt   = close != null && baseline != null ? close - baseline : null
+        const pct   = amt != null && baseline != null && baseline !== 0
+          ? (amt / baseline) * 100
+          : null
+        const color = amt == null ? '#888' : amt >= 0 ? '#e8534a' : '#26a17b'
+        const sign  = amt != null && amt >= 0 ? '+' : ''
+        const lines = [
+          `<span style="color:#888">${md.date ?? ''} ${p.axisValue}</span>`,
+          `价格：<b>${fmt(close, 4)}</b> ${md.unit ?? ''}`,
+        ]
+        if (amt != null) {
+          lines.push(
+            `<span style="color:${color}">涨跌额：${sign}${fmt(amt, 2)}</span>`
+            + `<span style="color:#999">（vs ${baselineLabel}）</span>`,
+          )
+          lines.push(`<span style="color:${color}">涨跌幅：${sign}${pct != null ? pct.toFixed(2) : '—'}%</span>`)
+        }
+        return lines.join('<br/>')
       },
     },
     grid: { top: 20, right: 24, bottom: 40, left: 80 },
@@ -270,7 +292,7 @@ const minutesChartOption = computed(() => {
             lineStyle: { color: '#aaa', type: 'dashed', width: 1 },
             data: [{ yAxis: baseline, name: '昨结算' }],
             label: {
-              formatter: `昨结算 ${baseline.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`,
+              formatter: `${baselineLabel} ${baseline.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`,
               fontSize: 10,
               color: '#aaa',
             },
@@ -285,6 +307,11 @@ const minutesChartOption = computed(() => {
 function fmt(v: number | null, decimals = 2) {
   if (v == null) return '—'
   return v.toLocaleString('zh-CN', { maximumFractionDigits: decimals })
+}
+
+/** 涨跌额：整数不补 .00（铜 1,200 / 黄金 4.6），小数最多两位；正负号由外面的 ▲▼ 表达 */
+function fmtAmt(v: number) {
+  return Math.abs(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 }
 
 /**
@@ -392,6 +419,26 @@ const headerPctLabel = computed(() => {
   return daysOptions.find(o => o.value === days.value)?.label ?? '区间'
 })
 
+/**
+ * 涨跌额 —— 必须和 headerPct **同一个基准**相减，否则「价 − 涨跌额 = 基准」用计算器一按就对不上：
+ *   · 分时 → spot.changeAmt（源侧给的值，和 spot.changePct 同源）；缺失时退回 快照价 − 昨结算
+ *   · 日线 → 区间末收盘 − baseline（即「区间涨跌额」，20 年就是 +592 元/吨这种量级）
+ * 拿不到基准（区间内没数据 / 新品种没历史）→ null，只显示百分比，不拿 0 冒充。
+ */
+const headerChangeAmt = computed<number | null>(() => {
+  if (headerPct.value == null) return null
+  if (showIntraday.value) {
+    const s = detail.value?.spot
+    if (s?.changeAmt != null) return s.changeAmt
+    const price = latestPrice()
+    return price != null && s?.prevClose != null ? price - s.prevClose : null
+  }
+  if (!detail.value || loadedRange.value !== String(days.value)) return null
+  const last = detail.value.history.find(p => p.price != null)?.price ?? null
+  const base = detail.value.baseline?.price ?? firstHistoryPrice()
+  return last != null && base != null ? last - base : null
+})
+
 /** hover 说明：这个百分比是从哪天什么价算到哪天什么价，别和「今日涨跌」混为一谈 */
 const headerPctTitle = computed(() => {
   if (showIntraday.value) return '今日涨跌幅（相对昨结算）'
@@ -492,7 +539,7 @@ function exchangeTagType(label: string | null) {
             <span class="unit">{{ detail.unit }}</span>
           </div>
 
-          <!-- 涨跌幅：随上方区间选择变化（分时 → 今日；日线 → 本周 / 30天 / 今年来…） -->
+          <!-- 涨跌额 + 涨跌幅：都随上方区间选择变化（分时 → 今日；日线 → 本周 / 30天 / 今年来…） -->
           <div
             v-if="headerPct != null"
             class="change"
@@ -500,7 +547,8 @@ function exchangeTagType(label: string | null) {
             :title="headerPctTitle"
           >
             {{ headerPct >= 0 ? '▲' : '▼' }}
-            {{ Math.abs(headerPct).toFixed(2) }}%
+            <span v-if="headerChangeAmt != null" class="change-amt">{{ fmtAmt(headerChangeAmt) }}</span>
+            ({{ headerPct >= 0 ? '+' : '-' }}{{ Math.abs(headerPct).toFixed(2) }}%)
             <span class="change-label">（{{ headerPctLabel }}）</span>
           </div>
 
@@ -675,6 +723,12 @@ h1 {
   font-size: 15px;
   font-weight: 600;
   margin-top: 4px;
+}
+
+/* 涨跌额和百分比同一行：等宽数字，避免切换区间时整行左右抖动 */
+.change-amt {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 .up   { color: #f56c6c; }
 .down { color: #67c23a; }
