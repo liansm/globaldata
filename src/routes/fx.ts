@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { db } from '../db'
 import { fxPairs, fxRates, fxSpot } from '../db/schema'
-import { eq, desc, gte, lte, and, sql } from 'drizzle-orm'
+import { eq, desc, gte, lt, lte, and, sql } from 'drizzle-orm'
 
 const toNum = (v: string | null | undefined) => (v == null ? null : parseFloat(v))
 
@@ -231,9 +231,29 @@ export async function fxRoutes(app: FastifyInstance) {
       close: toDisplay(toNum(h.close), unit),
     }))
 
+    // 区间涨跌幅的基期：fromDate **之前**最近一条收盘价（同 commodities / markets 的 baseline）。
+    // 没有它只能拿「区间内首日收盘」当基准，会漏掉首日当天的涨跌 ——
+    // 月初 3 号看「本月」等于只算 2 天；且头部与「区间涨跌」卡片必须同源，
+    // 否则用户拿计算器一按就对不上。
+    const [baseline] = await db
+      .select({ date: fxRates.rateDate, close: fxRates.close })
+      .from(fxRates)
+      .where(and(
+        eq(fxRates.pairKey, key),
+        eq(fxRates.rateType, rateType),
+        lt(fxRates.rateDate, fromDate),
+      ))
+      .orderBy(desc(fxRates.rateDate))
+      .limit(1)
+
     const closes = points.map(p => p.close).filter((v): v is number => v != null)
-    const rangeChangePct = (closes.length >= 2 && closes[closes.length - 1] !== 0)
-      ? Math.round((closes[0] - closes[closes.length - 1]) / closes[closes.length - 1] * 100 * 10000) / 10000
+    // 基期：优先用区间前一条收盘；「全部」区间没有更早的数据 → 退回区间内最早一条
+    //（此时等价于「首末对比」，与旧口径相同；比直接给 null 让「区间涨跌」卡片显示 — 好）
+    const baseClose = baseline
+      ? toDisplay(toNum(baseline.close), unit)
+      : (closes.length >= 2 ? closes[closes.length - 1] : null)
+    const rangeChangePct = (closes.length > 0 && baseClose != null && baseClose !== 0)
+      ? Math.round((closes[0] - baseClose) / baseClose * 100 * 10000) / 10000
       : null
 
     return {
@@ -255,6 +275,8 @@ export async function fxRoutes(app: FastifyInstance) {
         earliest:      points.length ? points[points.length - 1] : null,
         rangeChangePct,
       },
+      // 区间基期（区间起点前最后一个交易日收盘）；该口径在区间内才有数据时为 null
+      baseline: baseline ? { date: baseline.date, close: baseClose } : null,
       history: points,
     }
   })

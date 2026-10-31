@@ -77,5 +77,7 @@ export interface FxDetail {
     earliest:       FxPoint | null
     rangeChangePct: number | null
   }
+  /** 区间基期：`range.from` **之前**最后一个交易日收盘（含首日当天涨跌，与 Wind 同口径） */
+  baseline: { date: string; close: number | null } | null
   history: FxPoint[]
 }
