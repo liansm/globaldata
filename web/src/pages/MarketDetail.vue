@@ -13,7 +13,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchMarketDetail, fetchMarketMinutes } from '@/api/markets'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
-import { ytdFrom, wtdFrom } from '@/lib/dateRange'
+import { ytdFrom, mtdFrom, wtdFrom } from '@/lib/dateRange'
 import { STOCK_MARKETS, detailNav, navForMarket } from '@/lib/nav'
 import type { MarketDetail, MarketMinutes } from '@/types/market'
 
@@ -28,11 +28,12 @@ const key = computed(() => route.params.key as string)
 const loading = ref(false)
 const error   = ref('')
 const detail  = ref<MarketDetail | null>(null)
-const days    = ref<number | 'ytd' | 'wtd'>('ytd')
+const days    = ref<number | 'ytd' | 'mtd' | 'wtd'>('ytd')
 
-const daysOptions: { label: string; value: number | 'ytd' | 'wtd' }[] = [
+const daysOptions: { label: string; value: number | 'ytd' | 'mtd' | 'wtd' }[] = [
   { label: '今年来', value: 'ytd'  },
   { label: '本周',   value: 'wtd'  },
+  { label: '本月',   value: 'mtd'  },
   { label: '30天',   value: 30    },
   { label: '90天',   value: 90    },
   { label: '180天',  value: 180   },
@@ -71,9 +72,10 @@ async function loadDetail() {
   loading.value = true
   error.value   = ''
   try {
-    // 'wtd'/'ytd' 走 from（自然周期），数字走滚动天数
+    // 'wtd'/'mtd'/'ytd' 走 from（自然周期），数字走滚动天数
     const params = days.value === 'ytd' ? { from: ytdFrom() }
       : days.value === 'wtd' ? { from: wtdFrom() }
+      : days.value === 'mtd' ? { from: mtdFrom() }
       : { days: days.value }
     detail.value = await fetchMarketDetail(key.value, params)
     // 回填「本页属于哪个导航项」：/market/:key 的 route.name 分不出股市/航运/建材，

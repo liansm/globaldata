@@ -7,7 +7,7 @@ import { TooltipComponent, GridComponent, DataZoomComponent } from 'echarts/comp
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchDram, fetchGpu, fetchStorage } from '@/api/ai'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
-import { wtdFrom } from '@/lib/dateRange'
+import { mtdFrom, wtdFrom } from '@/lib/dateRange'
 import type { DramProduct, GpuProduct, StorageItem, StorageCategoryMeta } from '@/types/ai'
 
 use([CanvasRenderer, LineChart, TooltipComponent, GridComponent, DataZoomComponent])
@@ -234,15 +234,16 @@ const dramUnit = ref<'perGb' | 'perChip'>('perGb')
 
 // 区间：源站只有滚动半年，所以最多就是「全部」，其余是切片。
 // ⚠ 这里全是**前端切片**（拉半年数据后按日期过滤），不像详情页那样把区间传给接口。
-// 「本周」与其它几档不同族：它是**自然周**（本周一起，走 wtdFrom），不是「近 7 天」；
-// 用滚动天数会在周一~周三算出比「本周」更长的一段，把上周的报价也带进来。
+// 「本周」「本月」与其它几档不同族：它们是**自然周期**（本周一 / 本月 1 号起，走 wtdFrom/mtdFrom），
+// 不是「近 7 / 31 天」；用滚动天数会在周一~周三算出比「本周」更长的一段，把上周的报价也带进来。
 const RANGES = [
   { key: 'all', label: '全部（半年窗口）', days: 9999 },
   { key: '3m',  label: '近 3 个月', days: 92 },
   { key: '1m',  label: '近 1 个月', days: 31 },
   { key: 'wtd', label: '本周',     days: 0 },   // days 不参与，见下
+  { key: 'mtd', label: '本月',     days: 0 },   // 同上
 ] as const
-const dramRange = ref<'all' | '3m' | '1m' | 'wtd'>('all')
+const dramRange = ref<'all' | '3m' | '1m' | 'wtd' | 'mtd'>('all')
 
 const dramPoints = computed(() => {
   const p = selected.value
@@ -251,7 +252,9 @@ const dramPoints = computed(() => {
   if (cfg.key === 'all') return p.series
   const cutoff = cfg.key === 'wtd'
     ? wtdFrom()
-    : new Date(Date.now() - cfg.days * 86400_000).toISOString().slice(0, 10)
+    : cfg.key === 'mtd'
+      ? mtdFrom()
+      : new Date(Date.now() - cfg.days * 86400_000).toISOString().slice(0, 10)
   return p.series.filter(s => s.date >= cutoff)
 })
 
