@@ -166,6 +166,58 @@ function rangeLabel(): string {
   return daysOptions.find(o => o.value === days.value)?.label ?? '区间'
 }
 
+/** 分时视图的「最新价」= 末根分钟线收盘（和图上右端点、tooltip 同一序列） */
+function intradayLastClose(): number | null {
+  const m = minuteData.value?.minutes
+  if (!m?.length) return null
+  for (let i = m.length - 1; i >= 0; i--) {
+    if (m[i].close != null) return m[i].close
+  }
+  return null
+}
+
+/** 头部大价格：分时取末根分钟线，日线取最新收盘 —— 必须和下面的涨跌额同源 */
+const headerPrice = computed<number | null>(() =>
+  showIntraday.value ? (intradayLastClose() ?? latestClose()) : latestClose(),
+)
+
+/**
+ * 头部涨跌额 + 涨跌幅 —— 两个数字**必须同一基准**相减，否则「价 − 涨跌额 = 基准」对不上：
+ *   · 分时 → 末根分钟线 − 昨收（minuteData.prevClose，图上那条虚线就是它）
+ *   · 日线 → 区间末收盘 − baseline（区间涨跌幅的老基准，含首日涨跌）
+ * 拿不到基准 → null，不显示，别拿 0% 冒充。
+ */
+const headerChange = computed<{ amt: number | null; pct: number; label: string; title: string } | null>(() => {
+  if (showIntraday.value) {
+    const last = intradayLastClose()
+    const prev = minuteData.value?.prevClose ?? null
+    if (last == null || prev == null || prev === 0) return null
+    const amt = last - prev
+    return {
+      amt,
+      pct: (amt / prev) * 100,
+      label: '今日',
+      title: `今日涨跌（相对昨收 ${fmt(prev, 2)}）：${fmt(last, 2)}`,
+    }
+  }
+  const pct = rangeChange()
+  if (pct == null) return null
+  const h = detail.value?.history
+  const last = h?.[0]?.close ?? null
+  const base = detail.value?.baseline?.close ?? h?.[h.length - 1]?.close ?? null
+  return {
+    amt: last != null && base != null ? last - base : null,
+    pct,
+    label: rangeLabel(),
+    title: rangeTitle(),
+  }
+})
+
+/** 涨跌额格式：整数不补 .00（上证 52.42 / 道指 240），最多两位小数 */
+function fmtAmt(v: number) {
+  return Math.abs(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
+
 /** hover 说明：这个百分比是从哪天什么价算到哪天什么价，方便拿计算器核对 */
 function rangeTitle(): string {
   const h = detail.value?.history
@@ -476,18 +528,20 @@ const intradayOption = computed(() => {
 
         <div class="price-block">
           <div class="latest-price">
-            {{ fmt(latestClose()) }}
+            {{ fmt(headerPrice) }}
             <span class="unit">{{ detail.unit ?? (isFlow ? '亿元' : '点') }}</span>
           </div>
+          <!-- 涨跌额 + 涨跌幅：分时 → 今日（相对昨收）；日线 → 所选区间 -->
           <div
-            v-if="!showIntraday && rangeChange() != null"
+            v-if="headerChange"
             class="change"
-            :class="rangeChange()! >= 0 ? 'up' : 'down'"
-            :title="rangeTitle()"
+            :class="headerChange.pct >= 0 ? 'up' : 'down'"
+            :title="headerChange.title"
           >
-            {{ rangeChange()! >= 0 ? '▲' : '▼' }}
-            {{ Math.abs(rangeChange()!).toFixed(2) }}%
-            <span class="change-label">（{{ rangeLabel() }}）</span>
+            {{ headerChange.pct >= 0 ? '▲' : '▼' }}
+            <span v-if="headerChange.amt != null" class="change-amt">{{ fmtAmt(headerChange.amt) }}</span>
+            ({{ headerChange.pct >= 0 ? '+' : '-' }}{{ Math.abs(headerChange.pct).toFixed(2) }}%)
+            <span class="change-label">（{{ headerChange.label }}）</span>
           </div>
         </div>
       </div>
@@ -618,6 +672,12 @@ h1 {
   font-size: 15px;
   font-weight: 600;
   margin-top: 4px;
+}
+
+/* 涨跌额与百分比同一行：等宽数字，切区间时不左右抖动 */
+.change-amt {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
 .up   { color: #f56c6c; }
