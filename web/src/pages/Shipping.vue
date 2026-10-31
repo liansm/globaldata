@@ -56,45 +56,71 @@ const CCFI_ORDER = [
   'ccfi_japan', 'ccfi_korea', 'ccfi_se_asia', 'ccfi_anz',
   'ccfi_south_africa', 'ccfi_south_america', 'ccfi_we_africa', 'ccfi_persian_gulf',
 ]
-// 干散货（BDTI/BCTI 是油运指数，不在这一组 —— 见 OIL_ORDER）
+// 干散货（BDTI/BCTI 是油运指数，不在这一组 —— 见 OIL_LANES）
 const BDI_ORDER = ['bdi', 'bci', 'bsi']
-// 油运：VLCC 原油 / 成品油运价 + TCE（等价期租租金，船东盈利的直接代理变量）
-// 顺序：BDTI/BCTI 国际油运指数 → CTFI 中国进口原油综合 → CT1 中东湾 → CT2 西非 → CT4 美湾
-// ctfi_month_close = 月报口径的「CTFI 月末值」，是**点值**（与 ctfi_total 同口径），
-// 只是日期用月末标签（源报告未写具体日，宁缺勿错）→ 归在本组，能把 ctfi_total 补到 2021-09
-const OIL_ORDER = [
-  'bdti', 'bcti',
-  'ctfi_total', 'ctfi_month_close',
-  'ctfi_ct1', 'ctfi_ct1_ws', 'ctfi_ct1_usd_ton', 'ctfi_ct1_tce_std', 'ctfi_ct1_tce_eco',
-  'ctfi_ct2', 'ctfi_ct2_ws', 'ctfi_ct2_usd_ton', 'ctfi_ct2_tce_std', 'ctfi_ct2_tce_eco',
-  'ctfi_ct4', 'ctfi_ct4_usd_ton', 'ctfi_ct4_tce_std', 'ctfi_ct4_tce_eco',
+/**
+ * 油运按**航线分行**：同一条航线的各口径（点指数 / WS / 美元/吨 / TCE 标准·经济航速）
+ * 必须排在同一行，行首标出航线名。
+ *
+ * 原来是 18 张卡平铺进 4 列网格 —— CT1 的 5 个口径会跨行、和 CT2 的口径混在同一排，
+ * 而卡片名只差尾巴（「…中国宁波 WS」/「…中国宁波 美元/吨」/「…美元/天(标准航速)」），
+ * 一眼看不出哪张属于哪条航线。按航线分行后，「这条航线多少钱/吨、多少钱/天」是横着读的。
+ *
+ * ctfi_month_close = 月报口径的「CTFI 月末值」，是**点值**（与 ctfi_total 同口径），
+ * 只是日期用月末标签（源报告未写具体日，宁缺勿错）→ 归在总览行，能把 ctfi_total 补到 2021-09
+ */
+const OIL_LANES = [
+  { key: 'index', label: '指数总览（国际油运 + CTFI 综合）',
+    keys: ['bdti', 'bcti', 'ctfi_total', 'ctfi_month_close'] },
+  { key: 'ct1', label: 'CT1 中东湾 — 中国宁波',
+    keys: ['ctfi_ct1', 'ctfi_ct1_ws', 'ctfi_ct1_usd_ton', 'ctfi_ct1_tce_std', 'ctfi_ct1_tce_eco'] },
+  { key: 'ct2', label: 'CT2 西非 — 中国宁波',
+    keys: ['ctfi_ct2', 'ctfi_ct2_ws', 'ctfi_ct2_usd_ton', 'ctfi_ct2_tce_std', 'ctfi_ct2_tce_eco'] },
+  // CT4 源侧没有 WS 报价，别按 CT1/CT2 的五行硬凑 —— 少一行是数据如此，不是漏抓
+  { key: 'ct4', label: 'CT4 美湾 STS — 中国宁波',
+    keys: ['ctfi_ct4', 'ctfi_ct4_usd_ton', 'ctfi_ct4_tce_std', 'ctfi_ct4_tce_eco'] },
 ]
 // ⚠ 期间均值（月均 / 周均）**口径不同于上面点值**，必须单独成组：
 // 均值把区间波动抹平，和当日点值并排比大小会失真。标题里写明口径是硬要求。
-const CTFI_AVG_ORDER = [
-  'ctfi_month_avg',
-  'ctfi_ct1_ws_month_avg', 'ctfi_ct1_ws_week_avg',
-  'ctfi_ct1_tce_std_month_avg', 'ctfi_ct1_tce_std_week_avg',
-  'ctfi_ct2_ws_month_avg', 'ctfi_ct2_ws_week_avg',
-  'ctfi_ct2_tce_std_month_avg', 'ctfi_ct2_tce_std_week_avg',
-  'ctfi_ct4_usd_month_avg', 'ctfi_ct4_tce_std_month_avg',
+// 同样按航线分行 —— 月均和期均并排看才知道「这周比这个月高还是低」。
+const CTFI_AVG_LANES = [
+  { key: 'index', label: '综合指数',
+    keys: ['ctfi_month_avg'] },
+  { key: 'ct1', label: 'CT1 中东湾 — 中国宁波',
+    keys: ['ctfi_ct1_ws_month_avg', 'ctfi_ct1_ws_week_avg',
+           'ctfi_ct1_tce_std_month_avg', 'ctfi_ct1_tce_std_week_avg'] },
+  { key: 'ct2', label: 'CT2 西非 — 中国宁波',
+    keys: ['ctfi_ct2_ws_month_avg', 'ctfi_ct2_ws_week_avg',
+           'ctfi_ct2_tce_std_month_avg', 'ctfi_ct2_tce_std_week_avg'] },
+  { key: 'ct4', label: 'CT4 美湾 STS — 中国宁波',
+    keys: ['ctfi_ct4_usd_month_avg', 'ctfi_ct4_tce_std_month_avg'] },
 ]
 
 const groups = computed(() => {
   const map = new Map(shipping.value.map(s => [s.key, s]))
+  // lane.label 为空 = 该组不分行（BDI / CCFI），模板里就不渲染行首标题，视觉与原来一致
+  const lanes = (arr: { key: string; label?: string; keys: string[] }[]) =>
+    arr.map(l => ({
+      key:   l.key,
+      label: l.label ?? '',
+      items: l.keys.map(k => map.get(k)).filter(Boolean) as MarketIndex[],
+    })).filter(l => l.items.length > 0)
+
   return [
-    { key: 'dry',     title: 'BDI 波罗的海干散货运价', icon: '⚓', keys: BDI_ORDER },
-    { key: 'ccfi',    title: 'CCFI 出口集装箱运价', icon: '🚢', keys: CCFI_ORDER },
-    { key: 'oil',     title: '油运：原油 / 成品油运价与 VLCC TCE', icon: '🛢️', keys: OIL_ORDER },
+    { key: 'dry',     title: 'BDI 波罗的海干散货运价', icon: '⚓',
+      lanes: lanes([{ key: 'all', keys: BDI_ORDER }]) },
+    { key: 'ccfi',    title: 'CCFI 出口集装箱运价', icon: '🚢',
+      lanes: lanes([{ key: 'all', keys: CCFI_ORDER }]) },
+    { key: 'oil',     title: '油运：原油 / 成品油运价与 VLCC TCE', icon: '🛢️',
+      lanes: lanes(OIL_LANES) },
     { key: 'oil-avg', title: '油运 · CTFI 期间均值（月均 / 周均，均值口径，勿与上面当日点值直接比大小）',
-      icon: '📉', keys: CTFI_AVG_ORDER },
-  ].map(g => ({
-    ...g,
-    items: g.keys.map(k => map.get(k)).filter(Boolean) as MarketIndex[],
-  })).filter(g => g.items.length > 0)
+      icon: '📉', lanes: lanes(CTFI_AVG_LANES) },
+  ]
+    .map(g => ({ ...g, count: g.lanes.reduce((n, l) => n + l.items.length, 0) }))
+    .filter(g => g.count > 0)
 })
 
-const totalCount = computed(() => groups.value.reduce((n, g) => n + g.items.length, 0))
+const totalCount = computed(() => groups.value.reduce((n, g) => n + g.count, 0))
 
 // ── 概览 ─────────────────────────────────────────────────────────────────────
 // 四个「看一眼就够」的代表序列：干散货 → 集装箱 → 油运双指数。
@@ -184,28 +210,35 @@ function goDetail(row: MarketIndex) {
                 <div class="group-head">
                   <span class="group-icon">{{ g.icon }}</span>
                   <h2 class="group-title">{{ g.title }}</h2>
-                  <span class="group-count">{{ g.items.length }} 条</span>
+                  <span class="group-count">{{ g.count }} 条</span>
                 </div>
 
-                <div class="card-grid">
-                  <div
-                    v-for="item in g.items" :key="item.key"
-                    class="card" @click="goDetail(item)"
-                  >
-                    <div class="card-top">
-                      <span class="card-name" :title="item.name">{{ item.name }}</span>
-                    </div>
-                    <div class="card-price">
-                      {{ fmt(item.latestClose) }}
-                      <span class="card-unit">{{ item.unit ?? '点' }}</span>
-                    </div>
-                    <div class="card-pct" :class="pctClass(item.changePct)">
-                      {{ fmtPct(item.changePct) }}
-                    </div>
-                    <div class="card-footer">
-                      <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-                      <span class="card-key" :title="item.key">{{ item.key }}</span>
-                      <span class="card-arrow">→</span>
+                <!-- 油运按航线分行（BDI / CCFI 不分行，label 为空则不渲染行首） -->
+                <div v-for="lane in g.lanes" :key="lane.key" class="lane">
+                  <div v-if="lane.label" class="lane-head">
+                    <span class="lane-title">{{ lane.label }}</span>
+                    <span class="lane-count">{{ lane.items.length }} 条</span>
+                  </div>
+                  <div class="card-grid" :class="{ 'card-grid--lane': lane.label }">
+                    <div
+                      v-for="item in lane.items" :key="item.key"
+                      class="card" @click="goDetail(item)"
+                    >
+                      <div class="card-top">
+                        <span class="card-name" :title="item.name">{{ item.name }}</span>
+                      </div>
+                      <div class="card-price">
+                        {{ fmt(item.latestClose) }}
+                        <span class="card-unit">{{ item.unit ?? '点' }}</span>
+                      </div>
+                      <div class="card-pct" :class="pctClass(item.changePct)">
+                        {{ fmtPct(item.changePct) }}
+                      </div>
+                      <div class="card-footer">
+                        <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
+                        <span class="card-key" :title="item.key">{{ item.key }}</span>
+                        <span class="card-arrow">→</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -323,6 +356,19 @@ function goDetail(row: MarketIndex) {
 .group-title { margin: 0; font-size: 15px; font-weight: 600; color: #1a1a2e; }
 .group-count { margin-left: auto; font-size: 12px; color: #aaa; }
 
+/* 油运按航线分行：行与行之间留白，行首用左侧色条+小标题把航线名拎出来，
+   这样「CT1 中东湾—中国宁波」的五张卡（点指数 / WS / 美元吨 / TCE 标准·经济）
+   是横着读的，不会和 CT2 的口径在同一排混住。
+   BDI / CCFI 只有一个无标题行，样式不生效，视觉与改动前一致。 */
+.lane + .lane { margin-top: 16px; }
+.lane-head {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: 0 0 8px; padding-left: 9px;
+  border-left: 3px solid #cfe2ff;
+}
+.lane-title { font-size: 13px; font-weight: 600; color: #4a5568; }
+.lane-count { font-size: 11px; color: #b6bdc9; }
+
 /* ── 卡片网格：与「大宗商品」页同一套 ───────────────────────────────────────
    auto-fill + minmax(210px, 1fr)，和 Home.vue 一致：在 1100 版心里正好排 4 列
    （单卡约 255px），窗口再宽也还是 4 列（版心封顶），窄屏自动 3/2/1 列。
@@ -332,6 +378,13 @@ function goDetail(row: MarketIndex) {
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 12px;
 }
+/* 油运的「航线行」固定 5 列 —— CT1 / CT2 各有 5 个口径，是整个页面最宽的一行。
+   用 auto-fill(210px) 时 1100 版心只排得下 4 张，第 5 张会掉到下一行，
+   一条航线被劈成两截，就失去「一行读完这条航线」的意义了。
+   只有 4 张的行（总览 / CT4 源侧无 WS）右侧留白，但列宽与其他行完全对齐。 */
+.card-grid--lane { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 980px) { .card-grid--lane { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .card-grid--lane { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* 概览 4 条固定 4 列，与 4 列网格逐列对齐 */
 @media (max-width: 900px) { .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .overview { grid-template-columns: 1fr; } }
