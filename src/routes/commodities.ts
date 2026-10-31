@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { db } from '../db'
 import { commodities, prices, commoditySpot, commodityMinutes } from '../db/schema'
-import { eq, desc, gte, lte, and, sql } from 'drizzle-orm'
+import { eq, desc, gte, lte, lt, and, sql } from 'drizzle-orm'
 
 // Helper: NUMERIC columns come back as strings from pg — convert to number
 const toNum = (v: string | null) => (v == null ? null : parseFloat(v))
@@ -156,6 +156,17 @@ export async function commoditiesRoutes(app: FastifyInstance) {
       ))
       .orderBy(desc(prices.priceDate))
 
+    // 区间涨跌幅的基期：fromDate **之前**最近一条收盘价。
+    // 没有它，前端只能拿「区间内首日收盘」当基准，会漏掉首日当天的涨跌 ——
+    // 周六看「本周」时等于只算了 4 个交易日，看着像少一天。含首日才符合
+    // 「区间涨跌幅」的常规口径（期初前收 → 期末）。
+    const [baseline] = await db
+      .select({ date: prices.priceDate, price: prices.price })
+      .from(prices)
+      .where(and(eq(prices.commodityKey, key), lt(prices.priceDate, fromDate)))
+      .orderBy(desc(prices.priceDate))
+      .limit(1)
+
     return {
       key:       meta.key,
       symbol:    meta.symbol,
@@ -180,6 +191,8 @@ export async function commoditiesRoutes(app: FastifyInstance) {
         date:  h.date,
         price: toNum(h.price),
       })),
+      // 区间基期（区间起点前最后一个交易日收盘价）；序列在区间内才有数据时为 null
+      baseline: baseline ? { date: baseline.date, price: toNum(baseline.price) } : null,
     }
   })
 

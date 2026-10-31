@@ -34,6 +34,8 @@ const loading   = ref(false)
 const error     = ref('')
 const detail    = ref<CommodityDetail | null>(null)
 const days      = ref<DaysOption>('ytd')
+/** detail 当前对应的是哪个区间。切换区间时旧数据不能配新区间的涨跌幅标签。 */
+const loadedRange = ref<string | null>(null)
 
 // Intraday
 const showIntraday   = ref(false)
@@ -56,12 +58,15 @@ const daysOptions: { label: string; value: DaysOption }[] = [
 async function loadDetail() {
   loading.value = true
   error.value = ''
+  loadedRange.value = null      // 旧区间的涨跌幅立刻作废，避免「30天」的数字配「本周」的标签
   try {
     // 'wtd'/'ytd' 走 from（自然周期），数字走滚动天数
     const params = days.value === 'ytd' ? { from: ytdFrom() }
       : days.value === 'wtd' ? { from: wtdFrom() }
       : { days: days.value as number }
+    const token = String(days.value)
     detail.value = await fetchCommodityDetail(key.value, params)
+    loadedRange.value = token
   } catch {
     error.value = '加载失败，请稍后重试'
   } finally {
@@ -314,6 +319,92 @@ function spotChangePct() {
   return spotUsable() ? (detail.value?.spot?.changePct ?? null) : null
 }
 
+/**
+ * 头部大价格 —— **必须和 headerPct 同一序列**，否则会自相矛盾：
+ * 铜 2026-10-30 快照 107,250、日线 108,050（同一交易日两个源），
+ * 价格写 107,250 而「今年来」按 108,050 算，用户拿计算器一按就对不上。
+ *
+ *   · 分时视图 → spot 价（和 spot.changePct 配一套）
+ *   · 日线视图 → history 最新收盘（和 headerPct / 图表右端点配一套）
+ */
+function headerPrice(): number | null {
+  if (showIntraday.value) return latestPrice()
+  const h = detail.value?.history
+  const p = h?.find(x => x.price != null)?.price
+  return p ?? latestPrice()
+}
+
+/**
+ * 基准价（前一日）—— 与 headerPrice 同源，供「商品信息」里的昨结/昨收与涨跌额使用。
+ *   · 分时 → spot.prevClose（昨结算，快照口径）
+ *   · 日线 → history 第二个非空价（前一交易日收盘）
+ */
+const prevRef = computed<{ price: number; label: string } | null>(() => {
+  if (showIntraday.value) {
+    const p = detail.value?.spot?.prevClose
+    return p != null ? { price: p, label: '昨结算' } : null
+  }
+  const h = detail.value?.history?.filter(x => x.price != null) ?? []
+  return h[1]?.price != null ? { price: h[1].price, label: '昨收' } : null
+})
+
+/** 涨跌额 = 头部价格 − 基准价（同源相减，保证「价 − 涨跌 = 基准」能对得上） */
+const dayChange = computed(() => {
+  const cur = headerPrice()
+  const p = prevRef.value?.price
+  return cur != null && p != null ? cur - p : null
+})
+
+/** history 是倒序（新→旧），取最早一个非空价 —— 仅在接口没给 baseline 时兜底 */
+function firstHistoryPrice(): number | null {
+  const h = detail.value?.history
+  if (!h) return null
+  for (let i = h.length - 1; i >= 0; i--) {
+    if (h[i].price != null) return h[i].price
+  }
+  return null
+}
+
+/**
+ * 右上角涨跌幅 = **当前所选区间**的涨跌幅，不再固定显示「今日」。
+ *
+ * 口径：区间末收盘 ÷ 区间起点**前一天**收盘 − 1（含首日当天涨跌，与 Wind「区间涨跌幅」同口径）。
+ *   · 分时视图 → 今日涨跌幅（spot.changePct，相对昨结算）
+ *   · 日线     → 后端 baseline（from 之前最后一个交易日收盘）与区间内最新收盘
+ *
+ * ⚠ 刻意**不掺 spot 价**：commodity_spot 与 prices 同日不同源，实测黄金 833 vs 854.76、
+ *   甲醇 15275 vs 3480（量纲都不一致）。混用会把「30天」算成 +339%。区间涨跌幅只认
+ *   日线序列 —— 百分比和图上两个端点严格对得上，可逐点核对。盘中实时看分时。
+ * 区间内一条数据都没有（整周休市）→ null，不显示，别拿 0% 冒充。
+ */
+const headerPct = computed(() => {
+  if (showIntraday.value) return spotChangePct()
+  if (!detail.value || loadedRange.value !== String(days.value)) return null
+  const last = detail.value.history.find(p => p.price != null)?.price ?? null
+  const base = detail.value.baseline?.price ?? firstHistoryPrice()
+  if (last == null || base == null || base === 0) return null
+  return ((last - base) / base) * 100
+})
+
+/** 涨跌幅口径标签：分时=今日，日线=所选区间名（本周 / 30天 / 今年来…） */
+const headerPctLabel = computed(() => {
+  if (showIntraday.value) return '今日'
+  return daysOptions.find(o => o.value === days.value)?.label ?? '区间'
+})
+
+/** hover 说明：这个百分比是从哪天什么价算到哪天什么价，别和「今日涨跌」混为一谈 */
+const headerPctTitle = computed(() => {
+  if (showIntraday.value) return '今日涨跌幅（相对昨结算）'
+  const d = detail.value
+  if (d == null) return ''
+  const lastPoint = d.history.find(p => p.price != null)
+  const base = d.baseline?.price ?? firstHistoryPrice()
+  if (lastPoint?.price == null || base == null) return ''
+  const baseDate = d.baseline?.date ?? d.history[d.history.length - 1]?.date ?? ''
+  return `${headerPctLabel.value}涨跌幅（收盘价）：`
+    + `${baseDate} ${fmt(base, 4)} → ${lastPoint.date} ${fmt(lastPoint.price, 4)}`
+})
+
 function changePctClass(v: number | null) {
   if (v == null) return ''
   return v >= 0 ? 'up' : 'down'
@@ -397,27 +488,27 @@ function exchangeTagType(label: string | null) {
         <!-- 最新价格 + 涨跌幅 -->
         <div class="price-block">
           <div class="latest-price">
-            {{ fmt(latestPrice(), 4) }}
+            {{ fmt(headerPrice(), 4) }}
             <span class="unit">{{ detail.unit }}</span>
           </div>
 
-          <!-- 实时涨跌幅（来自 spot） -->
+          <!-- 涨跌幅：随上方区间选择变化（分时 → 今日；日线 → 本周 / 30天 / 今年来…） -->
           <div
-            v-if="spotChangePct() != null"
+            v-if="headerPct != null"
             class="change"
-            :class="changePctClass(spotChangePct())"
+            :class="changePctClass(headerPct)"
+            :title="headerPctTitle"
           >
-            {{ spotChangePct()! >= 0 ? '▲' : '▼' }}
-            {{ Math.abs(spotChangePct()!).toFixed(2) }}%
-            <span class="change-label">（今日）</span>
+            {{ headerPct >= 0 ? '▲' : '▼' }}
+            {{ Math.abs(headerPct).toFixed(2) }}%
+            <span class="change-label">（{{ headerPctLabel }}）</span>
           </div>
 
-          <!-- 快照标记：盘中 →「HH:MM · 实时」；收市静态价 →「收盘」 -->
-          <div v-if="spotUsable()" class="spot-time">
-            <template v-if="detail.spot?.snapshotKind === 'close'">
-              <span class="spot-badge is-close">收盘</span>
-            </template>
-            <template v-else>
+          <!-- 价格来源标记：跟着上面的价格序列走。
+               分时 → 快照（盘中「实时 HH:MM」/ 收市「收盘」）；日线 → 「收盘」（日线序列的最后一点）。
+               ⚠ 日线视图即便快照是盘中价也标「收盘」—— 此时大价格取的是日线收盘，不是快照。 -->
+          <div class="spot-time">
+            <template v-if="showIntraday && spotUsable() && detail.spot?.snapshotKind !== 'close'">
               <span class="spot-badge">实时</span>
               {{ fmtSpotTime(
                   detail.spot?.updatedAt && typeof detail.spot.updatedAt === 'string'
@@ -425,6 +516,7 @@ function exchangeTagType(label: string | null) {
                     : null
                  ) }}
             </template>
+            <span v-else class="spot-badge is-close">收盘</span>
           </div>
         </div>
       </div>
@@ -504,11 +596,13 @@ function exchangeTagType(label: string | null) {
         </el-descriptions-item>
         <!-- 实时快照信息 -->
         <template v-if="detail.spot">
-          <el-descriptions-item label="昨结算">
-            {{ fmt(detail.spot.prevClose, 4) }} {{ detail.unit }}
+          <!-- 这两行也必须和 headerPrice 同源：日线视图取日线前一日收盘，
+               否则会出现「价格 108,050 ／ 昨结算 108,190 ／ 涨跌 -940」三行彼此对不上 -->
+          <el-descriptions-item :label="prevRef?.label ?? '昨结算'">
+            {{ fmt(prevRef?.price ?? detail.spot.prevClose, 4) }} {{ detail.unit }}
           </el-descriptions-item>
-          <el-descriptions-item label="今日涨跌">
-            {{ fmt(detail.spot.changeAmt, 4) }}
+          <el-descriptions-item label="涨跌额">
+            {{ fmt(dayChange ?? detail.spot.changeAmt, 4) }}
           </el-descriptions-item>
           <el-descriptions-item
             :label="detail.spot.snapshotKind === 'close' ? '快照抓取时间' : '实时更新时间'"

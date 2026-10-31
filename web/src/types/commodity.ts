@@ -58,6 +58,9 @@ export interface CommodityDetail {
   updatedAt: string | null
   spot: SpotSnapshot | null
   history: PricePoint[]
+  // 区间涨跌幅的基期：区间起点**前**最后一个交易日的收盘价。
+  // 后端按本次请求的 from 计算；序列在区间内才有数据（无更早历史）时为 null。
+  baseline: PricePoint | null
 }
 
 export interface CommodityMinutes {
