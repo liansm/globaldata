@@ -16,10 +16,10 @@ const route = useRoute()
 const navItems = [
   { label: '全球股市', icon: '📈', to: '/markets',  names: ['markets'] },
   { label: '大宗商品', icon: '📦', to: '/',        names: ['home', 'detail'] },
+  // 航运信息紧随「大宗商品」：运价指数（原大宗商品页底部那几组）+ 油船信息（原「油运信息」页）
+  { label: '航运信息', icon: '🚢', to: '/shipping', names: ['shipping'] },
   // AI 硬件：存储颗粒现货（DDR5/DDR4 真实报价，主口径 美元/GB）+ GPU 云租价（美元/卡·时）
   { label: 'AI硬件',   icon: '🧠', to: '/ai-hardware', names: ['ai-hardware'] },
-  // 航运信息挂在「大宗商品」下面：运价指数（原大宗商品页底部那几组）+ 油船信息（原「油运信息」页）
-  { label: '航运信息', icon: '🚢', to: '/shipping', names: ['shipping'] },
   // ⚠ 加密货币（2026-10-26 暂时下线）：导航项已摘除，`/crypto` 路由、`Crypto.vue` /
   //   `CryptoDetail.vue`、`/api/crypto/*`、`fetch_crypto.py` **全部保留**，
   //   想恢复只需把下面这行加回来（并把它重新加进 refresh_all.py 的 FETCH_SCRIPTS）：
