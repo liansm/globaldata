@@ -36,6 +36,9 @@ export interface MarketDetail {
   unit:      string | null
   updatedAt: string | null
   history:   IndexPoint[]
+  // 区间涨跌幅的基期：区间起点**前**最后一个交易日收盘（后端按本次请求的 from 算）；
+  // 序列在区间内才有数据（无更早历史）时为 null。
+  baseline:  { date: string; close: number | null } | null
 }
 
 export interface MinutePoint {

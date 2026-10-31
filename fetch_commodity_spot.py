@@ -48,27 +48,36 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata
 # ---------------------------------------------------------------------------
 # commodity_key → akshare futures_symbol_mark "mark" value (ASCII, stable)
 # ---------------------------------------------------------------------------
+# ⚠ 2026-10-31 查实：这张表原来**大面积串种**，因为 mark 是手写猜的，而官方
+#   `futures_symbol_mark()` 里同名不存在的 mark 恰好会撞上别家品种，且错得自洽
+#   —— prev_close 同错，涨跌幅看着毫无异常，只有拿它和日线序列比量级才看得出来：
+#       mh_qh 官方=棉花（甲醇显示 15,275 元/吨 = 棉花价，真甲醇 3,480）
+#       dy_qh=豆油（乙二醇 9,073）  bst_qh=白糖（苯乙烯 5,245）
+#       lq_qh=沥青（橡胶 5,304）    cj_qh=纯碱（尿素 972）
+#       xin/xj/nie_qh、yumi/douya/jidan/shengzhu/mianhua/tang_qh 在官方表里根本不存在
+#   → 现在每个 mark 都按 `ak.futures_symbol_mark()` 的实际输出核对过；
+#     另外 fetch_domestic() 里加了「与日线量级对照」的闸门，串种会当场被拦下。
 DOMESTIC_MARK_MAP = {
-    "copper":            "tong_qh",   # 铜  SHFE
-    "aluminum":          "lv_qh",     # 铝  SHFE
-    "lithium_carbonate": "lc_qh",     # 碳酸锂  GFEX
-    "polysilicon":       "ps_qh",     # 多晶硅  GFEX
-    "methanol":          "mh_qh",     # 甲醇  CZCE
-    "urea":              "cj_qh",     # 尿素  CZCE
-    "meg":               "dy_qh",     # 乙二醇  DCE
-    "styrene":           "bst_qh",    # 苯乙烯  CZCE / DCE
-    "polypropylene":     "jbx_qh",    # 聚丙烯 (PP)  DCE
-    "natural_rubber":    "lq_qh",     # 橡胶  SHFE
-    "zinc":              "xin_qh",   # 锌  SHFE
-    "lead":              "qian_qh",  # 铅  SHFE
-    "tin":               "xi_qh",   # 锡  SHFE
-    "nickel":            "nie_qh",   # 镍  SHFE
-    "corn":              "yumi_qh",      # 玉米  DCE
-    "soybean_oil":       "douya_qh",     # 豆油  DCE
-    "eggs":              "jidan_qh",     # 鸡蛋  DCE
-    "live_hog":          "shengzhu_qh",  # 生猪  DCE
-    "cotton":            "mianhua_qh",   # 棉花  CZCE
-    "sugar":             "tang_qh",      # 白糖  CZCE
+    "copper":            "tong_qh",   # 沪铜  SHFE
+    "aluminum":          "lv_qh",     # 沪铝  SHFE
+    "lithium_carbonate": "lc_qh",     # 碳酸锂 GFEX
+    "polysilicon":       "ps_qh",     # 多晶硅 GFEX
+    "methanol":          "zc_qh",     # 郑醇（甲醇）CZCE —— 官方表里叫「郑醇」
+    "urea":              "ns_qh",     # 尿素  CZCE
+    "meg":               "yec_qh",    # 乙二醇 DCE
+    "styrene":           "byx_qh",    # 苯乙烯 DCE
+    "polypropylene":     "jbx_qh",    # PP  DCE
+    "natural_rubber":    "xj_qh",     # 橡胶  SHFE
+    "zinc":              "xing_qh",   # 沪锌  SHFE
+    "lead":              "qian_qh",   # 沪铅  SHFE
+    "tin":               "xi_qh",     # 沪锡  SHFE
+    "nickel":            "ni_qh",     # 沪镍  SHFE
+    "corn":              "hym_qh",    # 玉米  DCE
+    "soybean_oil":       "dy_qh",     # 豆油  DCE
+    "eggs":              "jd_qh",     # 鸡蛋  DCE
+    "live_hog":          "lh_qh",     # 生猪  DCE
+    "cotton":            "mh_qh",     # 棉花  CZCE
+    "sugar":             "bst_qh",    # 白糖  CZCE
 }
 
 
@@ -222,15 +231,28 @@ def fetch_domestic(conn, mark_to_symbol: dict) -> dict:
             print(f"  [WARN] {key} (symbol={symbol!r}): no price. cols={list(df.columns)}")
             continue
 
+        # ── 量级闸门：和该品种**自己的日线**比一下 ──────────────────────────
+        # 串种的 mark 会拿到别家品种的价、且 prev_close 一起错，「涨跌幅」看不出毛病
+        # （甲醇 15,275 / +0.13% 看着完全正常，实际是棉花）。期货主力与自家日线收盘
+        # 相差通常 <5%，这里给 ±25% 的余量；超了就说明映射或单位不对，**不入库**。
+        daily = fetch_prev_close_from_db(conn, key)
+        if daily and daily > 0:
+            ratio = price / daily
+            if not (0.75 <= ratio <= 1.25):
+                print(f"  [REJECT] {key:20s} symbol={symbol!r:10s} price={price} "
+                      f"vs 日线 {daily} → 比值 {ratio:.2f}，疑似映射/单位错误，跳过")
+                continue
+
         kind, spot_date, why = classify_snapshot(conn, key)
         results[key] = dict(
             price=price, change_pct=change_pct, change_amt=change_amt,
             prev_close=prev_close, volume=volume, turnover=None,
             spot_date=spot_date, snapshot_kind=kind,
         )
+        ratio_txt = f"  (price/daily={price / daily:.2f})" if daily else ""
         print(f"  [OK] {key:20s}  symbol={symbol!r:10s}  "
               f"price={price}  chg={change_pct}%  昨结算={prev_close}  "
-              f"[{kind} @ {spot_date}]{' ' + why if why else ''}")
+              f"[{kind} @ {spot_date}]{' ' + why if why else ''}{ratio_txt}")
 
     return results
 

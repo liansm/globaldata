@@ -154,7 +154,7 @@ python refresh_all.py --status
 | `fetch_ccfi.py` | 每周五发布；一次给上期+本期两期，**漏一周仍能补回一周**，漏两周就断 |
 | `fetch_ctfi.py` | 日频，页面只给当期（历史是登录墙） |
 | `fetch_market_minutes.py` | 只写当日 1 分钟 K 线（休市日跑出 0 行是正常的） |
-| `fetch_commodity_minutes.py` | 只写当日分时（避免历史被换月合约的隔夜 tick 覆盖） |
+| `fetch_commodity_minutes.py` | 只写当日分时（避免历史被换月合约的隔夜 tick 覆盖）；`--backfill` 可把源侧给的最近 ≈3 个交易日一起写回（换错品种后重建用） |
 | `fetch_fund_nav.py`（默认模式） | 只写当日净值快照；全历史要 `--history`（约 2 小时） |
 | `fetch_ipo_calendar.py` | 新股日历本身自带过去+未来，不算严格滚存，但港股「招股截止/暗盘」有时效性 |
 | `fetch_coal_flash.py` | 港口/进口/车板价快讯只发当天，历史靠翻 ctctc 站点分页回补（`--pages N`，列表约 17 页到底 ≈ 11 个月） |

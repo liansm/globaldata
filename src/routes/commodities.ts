@@ -216,20 +216,19 @@ export async function commoditiesRoutes(app: FastifyInstance) {
     }
 
     // Resolve target date
+    // ⚠ 用 SQL 取日期，别在 JS 里对 `TIMESTAMP` 做 getFullYear()：pg 把无时区的
+    //   timestamp 当 UTC 解析，本地（UTC+8）一加就跨天 —— 甲醇夜盘末根 10-30 23:00
+    //   会被算成 10-31，接口去查一个没有数据的日子，分时图直接空白。
     let targetDate = dateParam
     if (!targetDate) {
       const [latest] = await db
-        .select({ dt: commodityMinutes.dt })
+        .select({ date: sql<string>`to_char(MAX(${commodityMinutes.dt}), 'YYYY-MM-DD')` })
         .from(commodityMinutes)
         .where(eq(commodityMinutes.commodityKey, key))
-        .orderBy(desc(commodityMinutes.dt))
-        .limit(1)
-      if (!latest) {
+      if (!latest?.date) {
         return { key, commodity: meta.commodity, date: null, minutes: [] }
       }
-      const d = latest.dt
-      const pad = (n: number) => String(n).padStart(2, '0')
-      targetDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      targetDate = latest.date
     }
 
     const rows = await db

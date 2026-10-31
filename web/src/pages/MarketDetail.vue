@@ -142,13 +142,40 @@ function latestClose() {
   const h = detail.value?.history
   return h?.length ? h[0].close : null
 }
-function rangeChange() {
+
+/**
+ * 头部涨跌幅 = 当前所选区间的涨跌幅（与大宗商品详情页同口径）。
+ *
+ * 基准用后端 `baseline`（from **之前**最后一个交易日收盘），含首日当天的涨跌；
+ * 老接口没有 baseline 时退回「区间内首日收盘」—— 会漏掉首日，仅作兜底。
+ * 分时视图不显示区间涨跌幅（日线数据与分时不同口径，混着给会自相矛盾）。
+ */
+function rangeChange(): number | null {
   const h = detail.value?.history
-  if (!h || h.length < 2) return null
+  if (!h || !h.length) return null
   const latest = h[0].close
-  const prev   = h[h.length - 1].close
+  const prev = detail.value?.baseline?.close
+    ?? h[h.length - 1]?.close
+    ?? null
   if (latest == null || prev == null || prev === 0) return null
   return ((latest - prev) / prev) * 100
+}
+
+/** 涨跌幅的区间名（本周 / 30天 / 今年来…），跟着上方标签走 */
+function rangeLabel(): string {
+  return daysOptions.find(o => o.value === days.value)?.label ?? '区间'
+}
+
+/** hover 说明：这个百分比是从哪天什么价算到哪天什么价，方便拿计算器核对 */
+function rangeTitle(): string {
+  const h = detail.value?.history
+  if (!h || !h.length) return ''
+  const latest = h[0]
+  const base = detail.value?.baseline
+  const prev = base?.close ?? h[h.length - 1]?.close ?? null
+  if (prev == null || latest.close == null) return ''
+  const baseDate = base?.date ?? h[h.length - 1]?.date ?? ''
+  return `${rangeLabel()}涨跌幅（收盘价）：${baseDate} ${fmt(prev, 2)} → ${latest.date} ${fmt(latest.close, 2)}`
 }
 
 // ── Daily chart option ─────────────────────────────────────────────────────
@@ -456,10 +483,11 @@ const intradayOption = computed(() => {
             v-if="!showIntraday && rangeChange() != null"
             class="change"
             :class="rangeChange()! >= 0 ? 'up' : 'down'"
+            :title="rangeTitle()"
           >
             {{ rangeChange()! >= 0 ? '▲' : '▼' }}
             {{ Math.abs(rangeChange()!).toFixed(2) }}%
-            <span class="change-label">（区间）</span>
+            <span class="change-label">（{{ rangeLabel() }}）</span>
           </div>
         </div>
       </div>

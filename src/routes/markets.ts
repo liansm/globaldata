@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { db } from '../db'
 import { marketIndices, indexPrices, indexMinutes, indexSpot } from '../db/schema'
-import { eq, desc, gte, lte, and, sql } from 'drizzle-orm'
+import { eq, desc, gte, lte, lt, and, sql } from 'drizzle-orm'
 
 const toNum = (v: string | null) => (v == null ? null : parseFloat(v))
 
@@ -230,6 +230,19 @@ export async function marketsRoutes(app: FastifyInstance) {
       ))
       .orderBy(desc(indexPrices.priceDate))
 
+    // 区间涨跌幅的基期：fromDate **之前**最近一条收盘。
+    // 与 /api/commodities/:key 的 baseline 同口径：没有它只能拿区间内首日收盘当基准，
+    // 「本周」会漏掉周一当天的涨跌。
+    const [baseline] = await db
+      .select({ date: indexPrices.priceDate, close: indexPrices.close })
+      .from(indexPrices)
+      .where(and(
+        eq(indexPrices.indexKey, key),
+        lt(indexPrices.priceDate, fromDate),
+      ))
+      .orderBy(desc(indexPrices.priceDate))
+      .limit(1)
+
     return {
       key:       meta.key,
       symbol:    meta.symbol,
@@ -243,6 +256,8 @@ export async function marketsRoutes(app: FastifyInstance) {
         volume:   toNum(h.volume),
         turnover: toNum(h.turnover),
       })),
+      // 区间基期（区间起点前最后一个交易日收盘）；序列在区间内才有数据时为 null
+      baseline: baseline ? { date: baseline.date, close: toNum(baseline.close) } : null,
     }
   })
 
@@ -269,21 +284,19 @@ export async function marketsRoutes(app: FastifyInstance) {
     }
 
     // Resolve target date
+    // ⚠ 用 SQL 取日期，别在 JS 里对 `TIMESTAMP` 做 getFullYear()：pg 把无时区的
+    //   timestamp 当 UTC 解析，本地（UTC+8）一加就跨天。A股收盘 15:00 后暂时不会踩到，
+    //   但和 /api/commodities/:key/minutes 保持同一写法（那边夜盘 23:00 会直接算错一天）。
     let targetDate = date
     if (!targetDate) {
       const [latest] = await db
-        .select({ dt: indexMinutes.dt })
+        .select({ date: sql<string>`to_char(MAX(${indexMinutes.dt}), 'YYYY-MM-DD')` })
         .from(indexMinutes)
         .where(eq(indexMinutes.indexKey, key))
-        .orderBy(desc(indexMinutes.dt))
-        .limit(1)
-      if (!latest) {
+      if (!latest?.date) {
         return { key, name: meta.name, market: meta.market, date: null, minutes: [] }
       }
-      // dt is stored as China local time — format as YYYY-MM-DD directly
-      const d = latest.dt
-      const pad = (n: number) => String(n).padStart(2, '0')
-      targetDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      targetDate = latest.date
     }
 
     // Prefer index_spot.prev_close (updated by fetch_index_spot.py from real-time feed)

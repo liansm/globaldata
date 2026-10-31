@@ -36,27 +36,31 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata
 # commodity_key → (chinese_name, sina_mark_value_or_None)
 # mark value is used for products whose Chinese name causes KeyError in
 # futures_zh_realtime (encoding mismatch on Windows).  None = direct name works.
+# ⚠ 2026-10-31 查实：mark 原来大多是**手写猜的**，官方表里不存在、或撞上别家品种 ——
+#   甲醇 mh_qh 实际是**棉花**（分时图画的是棉花分钟线），锌 xj_qh 是橡胶，
+#   尿素/乙二醇/苯乙烯/橡胶 走 None 直接按中文名查（编码不符时静默失败）。
+#   → 全部按 `ak.futures_symbol_mark()` 实际输出改正；查不到就 WARN 跳过，绝不猜。
 DOMESTIC_MAP = {
-    "copper":            ("铜",    "tong_qh"),
-    "aluminum":          ("铝",    "lv_qh"),
+    "copper":            ("沪铜",   "tong_qh"),
+    "aluminum":          ("沪铝",   "lv_qh"),
     "lithium_carbonate": ("碳酸锂", "lc_qh"),
     "polysilicon":       ("多晶硅", "ps_qh"),
-    "methanol":          ("甲醇",   "mh_qh"),
-    "urea":              ("尿素",   None),
-    "meg":               ("乙二醇", None),
-    "styrene":           ("苯乙烯", None),
-    "polypropylene":     ("聚丙烯", "jbx_qh"),
-    "natural_rubber":    ("橡胶",   None),
-    "zinc":              ("锌",    "xj_qh"),
-    "lead":              ("铅",    "qian_qh"),
-    "tin":               ("锡",    "xi_qh"),
-    "nickel":            ("镍",    "ni_qh"),
-    "corn":              ("玉米",  "yumi_qh"),
-    "soybean_oil":       ("豆油",  "douya_qh"),
-    "eggs":              ("鸡蛋",  "jidan_qh"),
-    "live_hog":          ("生猪",  "shengzhu_qh"),
-    "cotton":            ("棉花",  "mianhua_qh"),
-    "sugar":             ("白糖",  "tang_qh"),
+    "methanol":          ("郑醇",   "zc_qh"),   # 郑商所甲醇，官方名「郑醇」
+    "urea":              ("尿素",   "ns_qh"),
+    "meg":               ("乙二醇", "yec_qh"),
+    "styrene":           ("苯乙烯", "byx_qh"),
+    "polypropylene":     ("PP",    "jbx_qh"),
+    "natural_rubber":    ("橡胶",   "xj_qh"),
+    "zinc":              ("沪锌",   "xing_qh"),
+    "lead":              ("沪铅",   "qian_qh"),
+    "tin":               ("沪锡",   "xi_qh"),
+    "nickel":            ("沪镍",   "ni_qh"),
+    "corn":              ("玉米",   "hym_qh"),
+    "soybean_oil":       ("豆油",   "dy_qh"),
+    "eggs":              ("鸡蛋",   "jd_qh"),
+    "live_hog":          ("生猪",   "lh_qh"),
+    "cotton":            ("棉花",   "mh_qh"),
+    "sugar":             ("白糖",   "bst_qh"),
 }
 
 # ---------------------------------------------------------------------------
@@ -91,6 +95,18 @@ def _safe_float(val) -> float | None:
         return None if pd.isna(f) else f
     except (TypeError, ValueError):
         return None
+
+
+def _last_daily_close(conn, commodity_key: str) -> float | None:
+    """该品种 prices 表里最新一条收盘价 —— 用于「分时价 vs 日线」量级闸门。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT price FROM prices WHERE commodity_key = %s "
+            "ORDER BY price_date DESC LIMIT 1",
+            (commodity_key,),
+        )
+        row = cur.fetchone()
+    return float(row[0]) if row and row[0] is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -141,11 +157,15 @@ def get_main_contract_code(product_name: str, mark: str | None) -> str | None:
 # Step 2: fetch minute bars for a contract
 # ---------------------------------------------------------------------------
 
-def fetch_minutes(contract_code: str) -> pd.DataFrame | None:
+def fetch_minutes(contract_code: str, all_days: bool = False) -> pd.DataFrame | None:
     """
     Fetch 1-minute OHLCV bars via futures_zh_minute_sina.
     Returns a cleaned DataFrame with columns [dt, open, high, low, close, volume, turnover]
     or None on failure.
+
+    ``all_days``: 默认只留「今天」的 bars（日常增量）。``--backfill`` 时保留源侧返回的
+    全部日期 —— 新浪这个接口只给最近约 1000 根（≈3 个交易日），所以「补历史」最多补 3 天；
+    更早的分钟线目前没有来源（未找到可回补的免费接口）。
     """
     try:
         df = ak.futures_zh_minute_sina(symbol=contract_code)
@@ -198,8 +218,14 @@ def fetch_minutes(contract_code: str) -> pd.DataFrame | None:
         except Exception:
             continue
 
-        # Only keep today's bars
-        if dt.strftime("%Y-%m-%d") != today_str:
+        # 未来时间的 bar 一律丢掉：新浪夜盘偶尔吐一条标成「下一交易日 00:00」的占位行
+        # （实测 2026-10-31 出现 dt=2026-11-02 00:00），它会把「最近日期」顶到未来，
+        # 详情页分时只取最近日期 → 图就剩 1 根。
+        if dt > datetime.now():
+            continue
+
+        # Only keep today's bars（--backfill 时不过滤：源侧最多给 3 个交易日）
+        if not all_days and dt.strftime("%Y-%m-%d") != today_str:
             continue
 
         # Filter out invalid/non-trading times (e.g. midnight 00:00:00 artifacts)
@@ -277,7 +303,10 @@ def db_upsert_minutes(conn, commodity_key: str, bars: pd.DataFrame):
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    backfill = "--backfill" in sys.argv
     print("Connecting to database...")
+    if backfill:
+        print("  [MODE] --backfill：保留源侧返回的全部日期（新浪只给最近 ≈3 个交易日）")
     try:
         conn = psycopg2.connect(DATABASE_URL)
         with conn.cursor() as cur:
@@ -303,12 +332,26 @@ def main() -> int:
         print(f"    main contract: {contract}")
 
         # 2. Fetch minute bars
-        bars = fetch_minutes(contract)
+        bars = fetch_minutes(contract, all_days=backfill)
         if bars is None or bars.empty:
             print(f"    [SKIP] No minute bars for {contract}")
             failures.append(key)
             continue
-        print(f"    fetched {len(bars)} bars for today")
+        print(f"    fetched {len(bars)} bars"
+              + ("（源侧全部日期）" if backfill else " for today"))
+
+        # 2.5 量级闸门：契约/品种映射错了（甲醇曾画成棉花的分钟线）这里能当场拦下。
+        #     期货主力与自家日线收盘通常差 <5%，给 ±25% 余量。
+        daily = _last_daily_close(conn, key)
+        last_close = _safe_float(bars.iloc[-1].get("close"))
+        if daily and daily > 0 and last_close and last_close > 0:
+            ratio = last_close / daily
+            if not (0.75 <= ratio <= 1.25):
+                print(f"    [REJECT] last_close={last_close} vs 日线 {daily} "
+                      f"→ 比值 {ratio:.2f}，疑似品种/合约映射错误，跳过")
+                failures.append(key)
+                continue
+            print(f"    [OK] last_close={last_close} vs 日线 {daily}（比值 {ratio:.2f}）")
 
         # 3. Upsert
         try:
