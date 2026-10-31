@@ -169,6 +169,10 @@ const chartOption = computed(() => {
   const areaEnd   = isFlow.value ? 'rgba(245,108,108,0)'   : 'rgba(64,158,255,0)'
   const hasVolume = !isFlow.value && volumes.some(v => v !== null)
 
+  // 长区间（1年 ~250 个点）靠 ECharts 的 auto interval 会按「未旋转字宽」估间隔，
+  // 但 label 是 rotate:30 的，实际占位更宽 → 标签会挤成一片并压到滑块上。
+  const labelStep = Math.max(1, Math.ceil(dates.length / 10))
+
   // A股/港股/欧洲/亚太的 volume 按「股」入库(100 股 = 1 手)，只有美股的 volume
   // 是明确的成交股数、没有「手」这个口径 → 单独按股展示。
   const isUSMarket = detail.value.market === '美股'
@@ -196,22 +200,35 @@ const chartOption = computed(() => {
           return `${p.axisValue}<br/><b>${val}</b> ${unitLabel}`
         },
       },
-      grid: { top: 20, right: 24, bottom: 60, left: 80 },
+      // bottom 要给「rotate 30° 的日期标签 + 滑块」留够位置，否则标签会压到滑块上
+      grid: { top: 20, right: 24, bottom: 78, left: 80 },
       xAxis: {
         type: 'category', data: dates,
-        axisLabel: { rotate: 30, fontSize: 11, color: '#888' },
+        axisLabel: {
+          rotate: 30, fontSize: 11, color: '#888',
+          interval: labelStep - 1, hideOverlap: true,
+        },
         axisLine: { lineStyle: { color: '#ddd' } },
       },
       yAxis: {
         type: 'value',
         min: Math.max(0, minVal - padding), max: maxVal + padding,
         axisLabel: { fontSize: 11, color: '#888',
+          // max 通常不是刻度值，ECharts 会在轴端补一个 label（1,473 与 1,400 叠两行）
+          showMaxLabel: false, showMinLabel: false,
           formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) },
         splitLine: { lineStyle: { color: '#f0f0f0' } },
       },
       dataZoom: [
         { type: 'inside', start: 0, end: 100 },
-        { type: 'slider', start: 0, end: 100, height: 24, bottom: 4 },
+        {
+          type: 'slider', start: 0, end: 100, height: 16, bottom: 8,
+          showDataShadow: false,
+          borderColor: 'transparent', backgroundColor: '#f5f7fb',
+          fillerColor: 'rgba(64,158,255,.12)',
+          handleStyle: { color: '#409eff' },
+          textStyle: { fontSize: 10, color: '#a8b0be' },
+        },
       ],
       series: [{
         name: detail.value.name, type: 'line', data: closes,
@@ -240,20 +257,24 @@ const chartOption = computed(() => {
       },
     },
     grid: [
-      { top: 20,  right: 24, bottom: 130, left: 80 },  // 价格区
-      { top: 270, right: 24, bottom: 34,  left: 80 },  // 成交量区
+      { top: 20,  right: 24, bottom: 152, left: 80 },  // 价格区
+      { top: 248, right: 24, bottom: 78,  left: 80 },  // 成交量区
     ],
     xAxis: [
       { gridIndex: 0, type: 'category', data: dates,
         axisLabel: { show: false }, axisLine: { lineStyle: { color: '#ddd' } } },
       { gridIndex: 1, type: 'category', data: dates,
-        axisLabel: { rotate: 30, fontSize: 11, color: '#888' },
+        axisLabel: {
+          rotate: 30, fontSize: 11, color: '#888',
+          interval: labelStep - 1, hideOverlap: true,
+        },
         axisLine: { lineStyle: { color: '#ddd' } } },
     ],
     yAxis: [
       { gridIndex: 0, type: 'value',
         min: Math.max(0, minVal - padding), max: maxVal + padding,
         axisLabel: { fontSize: 11, color: '#888',
+          showMaxLabel: false, showMinLabel: false,
           formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) },
         splitLine: { lineStyle: { color: '#f0f0f0' } } },
       { gridIndex: 1, type: 'value',
@@ -261,7 +282,14 @@ const chartOption = computed(() => {
     ],
     dataZoom: [
       { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
-      { type: 'slider', xAxisIndex: [0, 1], start: 0, end: 100, height: 24, bottom: 4 },
+      {
+        type: 'slider', xAxisIndex: [0, 1], start: 0, end: 100, height: 16, bottom: 8,
+        showDataShadow: false,
+        borderColor: 'transparent', backgroundColor: '#f5f7fb',
+        fillerColor: 'rgba(64,158,255,.12)',
+        handleStyle: { color: '#409eff' },
+        textStyle: { fontSize: 10, color: '#a8b0be' },
+      },
     ],
     series: [
       {

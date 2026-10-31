@@ -113,6 +113,10 @@ const chartOption = computed(() => {
   const maxVal = validPrices.length ? Math.max(...validPrices) : 0
   const padding = (maxVal - minVal) * 0.1
 
+  // 1 年区间有 ~258 个点，靠 ECharts 的 auto interval 会按「未旋转的字宽」估间隔，
+  // 但 label 是 rotate:30 的，实际占位更宽 → 标签会挤成一片。按点数显式限流。
+  const labelStep = Math.max(1, Math.ceil(dates.length / 10))
+
   return {
     tooltip: {
       trigger: 'axis',
@@ -124,20 +128,32 @@ const chartOption = computed(() => {
           : '—'}</b> ${detail.value?.unit ?? ''}`
       },
     },
-    grid: { top: 20, right: 24, bottom: 60, left: 70 },
+    // bottom 要给「rotate 30° 的日期标签 + 滑块」留够位置，否则标签会压到滑块上
+    grid: { top: 20, right: 24, bottom: 78, left: 70 },
     xAxis: {
       type: 'category',
       data: dates,
-      axisLabel: { rotate: 30, fontSize: 11, color: '#888' },
+      axisLabel: {
+        rotate: 30,
+        fontSize: 11,
+        color: '#888',
+        interval: labelStep - 1,
+        hideOverlap: true,
+      },
       axisLine: { lineStyle: { color: '#ddd' } },
     },
     yAxis: {
       type: 'value',
       min: Math.max(0, minVal - padding),
       max: maxVal + padding,
+      splitNumber: 5,
       axisLabel: {
         fontSize: 11,
         color: '#888',
+        // 手动设了 min/max（给极值留白），而 max 往往不是刻度值，
+        // ECharts 会在轴端补一个 label（白银 123.52 与 120 叠成两行）。关掉轴端标签。
+        showMaxLabel: false,
+        showMinLabel: false,
         formatter: (v: number) =>
           v.toLocaleString('zh-CN', { maximumFractionDigits: 2 }),
       },
@@ -145,7 +161,16 @@ const chartOption = computed(() => {
     },
     dataZoom: [
       { type: 'inside', start: 0, end: 100 },
-      { type: 'slider', start: 0, end: 100, height: 24, bottom: 4 },
+      {
+        type: 'slider', start: 0, end: 100, height: 16, bottom: 8,
+        // 258 个点的 dataShadow 会挤成一条脏色带，且和 x 轴标签叠在一起
+        showDataShadow: false,
+        borderColor: 'transparent',
+        backgroundColor: '#f5f7fb',
+        fillerColor: 'rgba(64,158,255,.12)',
+        handleStyle: { color: '#409eff' },
+        textStyle: { fontSize: 10, color: '#a8b0be' },
+      },
     ],
     series: [{
       name: detail.value.commodity,
