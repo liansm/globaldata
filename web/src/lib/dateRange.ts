@@ -17,6 +17,18 @@ export function ytdFrom(): string {
 }
 
 /**
+ * 今天的日期 'YYYY-MM-DD'（Asia/Shanghai）。
+ * 口径与后端 `(NOW() AT TIME ZONE 'Asia/Shanghai')::date` 一致 —— 用来判断
+ * 「这条快照是不是今天的」，所以不能随手用 new Date().toISOString()（那是 UTC）。
+ */
+export function todayCn(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date())
+}
+
+/**
  * 本周：本周一，'YYYY-MM-DD'（本地时区）。
  * ⚠ getDay() 里**周日返回 0**，直接减 (dow-1) 会把周日算成本周日-…→ 变成下周一，
  *   所以先把 0 映射成 7。

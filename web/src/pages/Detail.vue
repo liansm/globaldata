@@ -12,7 +12,7 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchCommodityDetail, fetchCommodityMinutes } from '@/api/commodities'
-import { ytdFrom, wtdFrom } from '@/lib/dateRange'
+import { todayCn, ytdFrom, wtdFrom } from '@/lib/dateRange'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
 import type { CommodityDetail, CommodityMinutes, DaysOption } from '@/types/commodity'
 
@@ -282,16 +282,36 @@ function fmt(v: number | null, decimals = 2) {
   return v.toLocaleString('zh-CN', { maximumFractionDigits: decimals })
 }
 
+/**
+ * 这条 spot 快照能不能当「最新价」用。
+ *
+ * 与后端 /api/commodities 同口径（那边是 spotSnapshotKind 判定）：
+ *   · kind='close'（收市静态价）：spotDate 不早于日线最新日期 → 就是最近交易日的收盘
+ *   · kind='intraday'（盘中/夜盘）：spotDate 必须是今天，否则是过期的盘中残留
+ *
+ * 早期这里只判 `spot.price != null`，2026-10-31（周六）就会把周五夜盘的价
+ * 配上「实时」徽标显示出来 —— 期货当时根本没开市。
+ */
+function spotUsable() {
+  const s = detail.value?.spot
+  if (!s || s.price == null || !s.spotDate) return false
+  if (s.snapshotKind === 'close') {
+    const latest = detail.value?.history?.[0]?.date ?? null
+    return latest == null || s.spotDate >= latest
+  }
+  return s.spotDate === todayCn()
+}
+
 function latestPrice() {
-  // Prefer spot price
-  if (detail.value?.spot?.price != null) return detail.value.spot.price
+  // Prefer spot price（仅当快照确实属于「最近」，否则回落日线）
+  if (spotUsable() && detail.value?.spot?.price != null) return detail.value.spot.price
   const h = detail.value?.history
   if (!h || !h.length) return null
   return h[0].price
 }
 
 function spotChangePct() {
-  return detail.value?.spot?.changePct ?? null
+  return spotUsable() ? (detail.value?.spot?.changePct ?? null) : null
 }
 
 function changePctClass(v: number | null) {
@@ -299,8 +319,30 @@ function changePctClass(v: number | null) {
   return v >= 0 ? 'up' : 'down'
 }
 
+/**
+ * 快照时间 "HH:MM"（Asia/Shanghai）。
+ * ⚠ 详情接口返回的 updatedAt 是 ISO 串（UTC），直接 slice(11,16) 拿到的是 UTC 小时
+ *   —— 实测量出来是 05:20 而实际是 13:20，差 8 小时。必须按上海时区格式化。
+ */
 function fmtSpotTime(dt: string | null) {
-  return dt ? dt.slice(11, 16) : null
+  if (!dt) return null
+  const d = new Date(dt)
+  if (Number.isNaN(d.getTime())) return String(dt).slice(11, 16)
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(d)
+}
+
+/** 完整快照时间 "YYYY-MM-DD HH:MM"（Asia/Shanghai），同上，不能用 slice */
+function fmtSpotDateTime(dt: string | Date | null | undefined) {
+  if (!dt) return '—'
+  const d = new Date(dt)
+  if (Number.isNaN(d.getTime())) return String(dt).slice(0, 16)
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(d).replace(',', '')
 }
 
 // Extract exchange label from commodity name parentheses, or infer from key
@@ -370,14 +412,19 @@ function exchangeTagType(label: string | null) {
             <span class="change-label">（今日）</span>
           </div>
 
-          <!-- 实时更新时间 badge -->
-          <div v-if="detail.spot?.updatedAt" class="spot-time">
-            <span class="spot-badge">实时</span>
-            {{ fmtSpotTime(
-                typeof detail.spot.updatedAt === 'string'
-                  ? detail.spot.updatedAt
-                  : null
-               ) }}
+          <!-- 快照标记：盘中 →「HH:MM · 实时」；收市静态价 →「收盘」 -->
+          <div v-if="spotUsable()" class="spot-time">
+            <template v-if="detail.spot?.snapshotKind === 'close'">
+              <span class="spot-badge is-close">收盘</span>
+            </template>
+            <template v-else>
+              <span class="spot-badge">实时</span>
+              {{ fmtSpotTime(
+                  detail.spot?.updatedAt && typeof detail.spot.updatedAt === 'string'
+                    ? detail.spot.updatedAt
+                    : null
+                 ) }}
+            </template>
           </div>
         </div>
       </div>
@@ -463,10 +510,10 @@ function exchangeTagType(label: string | null) {
           <el-descriptions-item label="今日涨跌">
             {{ fmt(detail.spot.changeAmt, 4) }}
           </el-descriptions-item>
-          <el-descriptions-item label="实时更新时间">
-            {{ detail.spot.updatedAt
-               ? String(detail.spot.updatedAt).slice(0, 16)
-               : '—' }}
+          <el-descriptions-item
+            :label="detail.spot.snapshotKind === 'close' ? '快照抓取时间' : '实时更新时间'"
+          >
+            {{ fmtSpotDateTime(detail.spot.updatedAt) }}
           </el-descriptions-item>
         </template>
       </el-descriptions>
@@ -561,6 +608,12 @@ h1 {
   font-weight: 600;
   margin-right: 4px;
   vertical-align: middle;
+}
+
+/* 收市静态价：用中性灰和「实时」的蓝色区分开 */
+.spot-badge.is-close {
+  background: #f4f4f5;
+  color: #909399;
 }
 
 .chart-toolbar {

@@ -95,6 +95,13 @@ export async function marketsRoutes(app: FastifyInstance) {
           FROM index_spot
           WHERE index_key = ${marketIndices.key}
         )`.as('spot_updated_at'),
+        // 'intraday' = 盘中实时（fetch_index_spot.py 在交易时段写入）
+        // 'close'    = 收盘快照（收盘后写入，价格就是该交易日收盘，且**带成交额**）
+        // 两种都能当现价用，区别只在「能不能信」和前端 badge 文案。
+        spotKind: sql<string>`(
+          SELECT COALESCE(snapshot_kind, 'intraday') FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_kind'),
         // ── spot 是否还能当「实时」用 ─────────────────────────────────────
         // index_spot 的行**会残留**：fetch_index_spot.py 的 _is_today_snapshot()
         // 在「最新价 == 某历史收盘价」时故意跳过写库（防盘前把昨日收盘记成今天），
@@ -128,15 +135,32 @@ export async function marketsRoutes(app: FastifyInstance) {
       const spotChangePct  = toNum(r.spotChangePct)
       const spotTurnover   = toNum(r.spotTurnover)
 
-      // Use real-time spot data when available for A股 and 港股。
-      // ⚠ 见上面 spotIsToday / dailyCoversSpotDate 的注释。三个条件：
-      //   ① spot 必须来自「今天」（否则是上一个交易日的盘中残留）
-      //   ② 要么现在就在交易时段内；要么当天日线还没收盘入库
-      //      （收盘后几分钟里日线可能还没跑到，这时 spot 是最后一个快照，比「昨天的收盘」准）
-      const spotUsable = r.spotIsToday === true
+      // ── spot 能不能当现价用 ────────────────────────────────────────────────
+      // 见上面 spotIsToday / dailyCoversSpotDate / spotKind 的注释。分两种快照：
+      //
+      // ① intraday（盘中写入）：必须来自「今天」，且不能是「日线已收盘入库」之后
+      //    —— 那种情况下日线的收盘价才是准的。
+      // ② close（收盘后写入）：`spot_date` 就是它所属的交易日（脚本会把它校正成
+      //    真实交易日，周末抓到的会是周五而不是周六）。只要不早于日线最新日期，
+      //    它就是「最近交易日的收盘」，直接用 —— **这样能保住成交额**
+      //    （index_prices.turnover 恒为 NULL，新浪 stock_zh_index_daily 不给）。
+      //
+      // 早期版本只有 ① 一半的判断（spotPrice != null），于是把周六那天残留的
+      // 「10-30 09:44 盘中价」当现价显示成「实时 3615.40」（真收盘 3599.02）。
+      // 后来改成「收盘后一律不写 spot」，价格对了但成交额退化成成交量。
+      // 现在两者兼顾：写 close 快照 + 按 kind 区分展示。
+      const kind = r.spotKind
+      const closeIsCurrent =
+        kind === 'close' && r.spotDate != null
+        && (r.latestDate == null || r.spotDate >= r.latestDate)
+      const intradayIsCurrent =
+        kind !== 'close' && r.spotIsToday === true
         && (inTradingWindow(r.market) || r.dailyCoversSpotDate !== true)
+
       const useSpot =
-        (r.market === 'A股' || r.market === '港股') && spotPrice != null && spotUsable
+        (r.market === 'A股' || r.market === '港股')
+        && spotPrice != null
+        && (closeIsCurrent || intradayIsCurrent)
 
       const displayClose = useSpot ? spotPrice : latestClose
 
@@ -155,8 +179,12 @@ export async function marketsRoutes(app: FastifyInstance) {
         // 成交额缺失时前端回退显示成交量（新浪美股 amount 恒为 0 → turnover 为 NULL）
         latestVolume:   toNum(r.latestVolume),
         changePct,
-        // Non-null when spot data is active — used by frontend to show "实时" badge + time
-        latestSpotUpdatedAt: useSpot ? (r.spotUpdatedAt ?? null) : null,
+        // 'intraday' → 前端显示「HH:MM · 实时」；'close' → 显示「收盘」
+        // null = 当前展示的是日线，不该挂任何快照标记
+        spotSnapshotKind: useSpot ? (kind === 'close' ? 'close' : 'intraday') : null,
+        // 只有盘中快照才有「几点几分」的意义；收盘快照的 updated_at 是抓取时刻，
+        // 拿它当"收盘时间"会误导（周末 11:34 抓的也是周五收盘），所以不给。
+        latestSpotUpdatedAt: useSpot && kind !== 'close' ? (r.spotUpdatedAt ?? null) : null,
       }
     })
   })

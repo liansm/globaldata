@@ -211,10 +211,16 @@ function changePctClass(v: number | null | undefined) {
 
             <div class="card-footer">
               <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-              <template v-if="item.latestSpotUpdatedAt">
+              <template v-if="item.spotSnapshotKind">
                 <span class="card-intraday-sep">·</span>
-                <span class="card-intraday-time">{{ fmtSpotTime(item.latestSpotUpdatedAt) }}</span>
-                <span class="card-intraday-badge">实时</span>
+                <template v-if="item.spotSnapshotKind === 'intraday'">
+                  <span v-if="item.latestSpotUpdatedAt" class="card-intraday-time">
+                    {{ fmtSpotTime(item.latestSpotUpdatedAt) }}
+                  </span>
+                  <span class="card-intraday-badge">实时</span>
+                </template>
+                <!-- 收盘快照：价格就是当日收盘，只是收盘后不再跳动，别写成「实时」 -->
+                <span v-else class="card-intraday-badge is-close">收盘</span>
               </template>
             </div>
           </div>
@@ -388,6 +394,12 @@ h1 {
   color: #409eff;
   font-weight: 500;
   vertical-align: middle;
+}
+
+/* 收盘快照：价格静止，用中性灰和「实时」的蓝色区分开 */
+.card-intraday-badge.is-close {
+  background: #f4f4f5;
+  color: #909399;
 }
 
 /* ── Skeleton ─────────────────────────────────────────────────────────── */

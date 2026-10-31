@@ -52,8 +52,20 @@ export async function commoditiesRoutes(app: FastifyInstance) {
           FROM commodity_spot
           WHERE commodity_key = ${commodities.key}
         )`.as('spot_updated_at'),
+        // 'intraday' = 盘中/夜盘实时（fetch_commodity_spot.py 在交易时段写入）
+        // 'close'    = 收市静态价（日期已校正成最近交易日，周末不会是周六）
+        spotKind: sql<string>`(
+          SELECT COALESCE(snapshot_kind, 'intraday') FROM commodity_spot
+          WHERE commodity_key = ${commodities.key}
+        )`.as('spot_kind'),
+        spotIsToday: sql<boolean>`(
+          SELECT spot_date = (NOW() AT TIME ZONE 'Asia/Shanghai')::date
+          FROM commodity_spot
+          WHERE commodity_key = ${commodities.key}
+        )`.as('spot_is_today'),
         // Whether this commodity has any intraday minute bars for today
-        hasMinutes: sql<string>`(
+        // （`COUNT(*) > 0` 返回 boolean，之前误标 sql<string> 导致 tsc 报既有错误）
+        hasMinutes: sql<boolean>`(
           SELECT COUNT(*) > 0 FROM commodity_minutes
           WHERE commodity_key = ${commodities.key}
             AND DATE(dt) = (
@@ -71,16 +83,32 @@ export async function commoditiesRoutes(app: FastifyInstance) {
       const spotPrice    = toNum(r.spotPrice)
       const spotChangePct = toNum(r.spotChangePct)
 
-      // Use real-time spot when available (spot date >= daily date or spot exists)
-      const useSpot = spotPrice != null
+      // ── spot 能不能当现价用 ────────────────────────────────────────────────
+      // 见上面 spotKind / spotIsToday 的注释。两种情况都可用，但含义不同：
+      //
+      // ① intraday：必须来自「今天」。之前这里是 `useSpot = spotPrice != null`，
+      //    完全不看新旧，于是 2026-10-31（周六）卡片显示「今天 11:34 · 实时」，
+      //    而价格其实是周五夜盘收盘 —— 期货根本没开市。
+      // ② close：`spot_date` 已被脚本校正成最近交易日，只要不早于日线最新日期，
+      //    它就是「最近交易日的收盘」，直接用。
+      const kind = r.spotKind
+      const closeIsCurrent =
+        kind === 'close' && r.spotDate != null
+        && (r.latestDate == null || r.spotDate >= r.latestDate)
+      const intradayIsCurrent = kind !== 'close' && r.spotIsToday === true
+
+      const useSpot = spotPrice != null && (closeIsCurrent || intradayIsCurrent)
 
       return {
         ...r,
         latestDate:    useSpot ? (r.spotDate ?? r.latestDate) : r.latestDate,
         latestPrice:   useSpot ? spotPrice : latestPrice,
         spotChangePct: useSpot ? spotChangePct : null,
-        spotUpdatedAt: useSpot ? (r.spotUpdatedAt ?? null) : null,
-        hasMinutes:    r.hasMinutes === 'true' || r.hasMinutes === true,
+        // 'intraday' → 前端显示「HH:MM · 实时」；'close' → 只显示「收盘」
+        spotSnapshotKind: useSpot ? (kind === 'close' ? 'close' : 'intraday') : null,
+        // 收盘快照的 updated_at 是抓取时刻（周末跑就是周末的时刻），不能当"收盘时间"用
+        spotUpdatedAt: useSpot && kind !== 'close' ? (r.spotUpdatedAt ?? null) : null,
+        hasMinutes:    r.hasMinutes === true,
         // Remove raw spot fields from response
         spotPrice:    undefined,
         spotDate:     undefined,
@@ -146,6 +174,7 @@ export async function commoditiesRoutes(app: FastifyInstance) {
         turnover:   toNum(spotRow.turnover),
         spotDate:   spotRow.spotDate,
         updatedAt:  spotRow.updatedAt,
+        snapshotKind: spotRow.snapshotKind ?? 'intraday',
       } : null,
       history: history.map(h => ({
         date:  h.date,

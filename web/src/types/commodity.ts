@@ -11,9 +11,12 @@ export interface Commodity {
   updatedAt: string | null
   latestDate: string | null
   latestPrice: number | null
-  // Real-time spot fields (non-null when commodity_spot has a record)
+  // Spot snapshot fields (non-null when a usable commodity_spot row exists)
   spotChangePct: number | null   // e.g. 1.23 for +1.23%
-  spotUpdatedAt: string | null   // "YYYY-MM-DD HH:MM" (Asia/Shanghai)
+  spotUpdatedAt: string | null   // "YYYY-MM-DD HH:MM" (Asia/Shanghai)；仅盘中快照有值
+  //   'intraday' → 盘中/夜盘实时价，显示「HH:MM · 实时」
+  //   'close'    → 收市静态价（日期已校正成最近交易日），显示「收盘」
+  spotSnapshotKind: 'intraday' | 'close' | null
   hasMinutes:    boolean         // true when intraday minute bars exist for today
 }
 
@@ -26,6 +29,7 @@ export interface SpotSnapshot {
   turnover:  number | null
   spotDate:  string | null
   updatedAt: string | null
+  snapshotKind: 'intraday' | 'close' | null
 }
 
 export interface PricePoint {

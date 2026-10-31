@@ -140,6 +140,10 @@ export const indexSpot = pgTable('index_spot', {
   turnover:  numeric('turnover',   { precision: 24, scale: 4 }),  // 元
   prevClose: numeric('prev_close', { precision: 16, scale: 4 }),
   spotDate:  date('spot_date'),
+  // 'intraday' = 盘中实时价（只有 spot_date 是今天才可信）
+  // 'close'    = 收盘快照（收盘后写入，价格就是该交易日收盘，**带成交额**）
+  // 见 fetch_index_spot.py::classify_snapshot
+  snapshotKind: varchar('snapshot_kind', { length: 8 }).default('intraday'),
   updatedAt: timestamp('updated_at', { withTimezone: true })
                .default(sql`NOW()`).notNull(),
 })
@@ -157,6 +161,9 @@ export const commoditySpot = pgTable('commodity_spot', {
   volume:       numeric('volume',     { precision: 24, scale: 4 }),
   turnover:     numeric('turnover',   { precision: 24, scale: 4 }),
   spotDate:     date('spot_date'),
+  // 'intraday' = 盘中/夜盘实时价；'close' = 收市后的静态快照（价格是最近交易日的收盘结算）
+  // 见 fetch_commodity_spot.py::classify_snapshot
+  snapshotKind: varchar('snapshot_kind', { length: 8 }).default('intraday'),
   updatedAt:    timestamp('updated_at', { withTimezone: true })
                   .default(sql`NOW()`).notNull(),
 })

@@ -24,11 +24,15 @@ Key design
 * futures_foreign_commodity_realtime() is broken in the current akshare
   version (Length mismatch). International commodities are skipped here;
   they already have daily close data from fetch_commodities.py.
+
+* Each row carries ``snapshot_kind``: 'intraday'（盘中/夜盘实时）or
+  'close'（收市静态价，日期取最近交易日）。**周末不再把周五夜盘价标成
+  「今天实时」** —— 见 classify_snapshot()。
 """
 
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 import akshare as ak
@@ -79,6 +83,74 @@ def _safe_float(val) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# Snapshot kind: intraday vs close
+# ---------------------------------------------------------------------------
+# 国内期货交易时段（Asia/Shanghai）：
+#   日盘 09:00–15:05（留收盘余量）；夜盘 21:00–次日 02:30
+# 夜盘属于**下一个**交易日，所以凌晨抓到的快照其日期是「前一交易日」。
+DAY_OPEN, DAY_CLOSE = 9 * 60, 15 * 60 + 5        # 540, 905
+NIGHT_OPEN          = 21 * 60                     # 1260
+NIGHT_CLOSE         = 2 * 60 + 30                 # 150
+
+
+def _last_trading_date(conn, commodity_key: str, today: date):
+    """该品种最近一个已收盘的交易日（prices 表最新日期，不晚于 today）。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(price_date) FROM prices "
+            "WHERE commodity_key = %s AND price_date <= %s",
+            (commodity_key, today),
+        )
+        row = cur.fetchone()
+    return row[0] if row and row[0] else today
+
+
+def classify_snapshot(conn, commodity_key: str, now: datetime | None = None):
+    """判断这条商品快照是「盘中/夜盘实时」还是「收市静态价」；返回 (kind, spot_date, why)。
+
+    ⚠ 为什么需要这个（2026-10-31 定案，B 方案）
+    原来这里直接 `spot_date = date.today()`，从不判断新旧。2026-10-31（周六）
+    实测 commodity_spot 8/14 行是 `spot_date=2026-10-31`、`updated_at=11:34`，
+    价格却是**周五夜盘收盘**（铜 107250 / 金 833）→ 卡片显示「今天 11:34 实时」，
+    而期货根本没开市。股市那边早已有 `_is_today_snapshot()` 防护，商品这边漏了。
+
+    现在按交易时段判定，并且不让周末的 `spot_date` 落到周六：
+
+      * 日盘 / 夜盘里 → ``intraday``，日期 = 今天（凌晨夜盘用前一交易日）
+      * 工作日已收盘 → ``close``，日期 = 今天
+      * 盘前 / 周末 / 节假日 → ``close``，日期 = 最近交易日（prices 表最新日期）
+
+    这样周末卡片显示「2026-10-30 · 收盘」，价格是真实的最近收盘价，而不是
+    「2026-10-31 11:34 · 实时」。接口层（/api/commodities）再用 kind 决定
+    是拿它当现价还是回落日线。
+
+    不判节假日：节假日会走「非交易日」分支，日期取 prices 最新（= 节前最后交易日），
+    结果依然正确 —— 这正是靠 prices 定日期而不是靠日历的好处。
+    """
+    now = now or datetime.now()
+    today = now.date()
+    weekday = now.weekday()          # Mon=0 … Sun=6
+    m = now.hour * 60 + now.minute
+
+    # 日盘：周一~周五
+    if weekday <= 4 and DAY_OPEN <= m <= DAY_CLOSE:
+        return "intraday", today, ""
+    # 夜盘前半夜：周一~周五 21:00 起
+    if weekday <= 4 and m >= NIGHT_OPEN:
+        return "intraday", today, ""
+    # 夜盘后半夜：周二~周六 00:00–02:30（属前一交易日）
+    if 1 <= weekday <= 5 and m <= NIGHT_CLOSE:
+        return "intraday", _last_trading_date(conn, commodity_key, today), "夜盘（属前一交易日）"
+
+    # 以下都是静态价（没有实时行情）
+    if weekday <= 4 and m > DAY_CLOSE:
+        return "close", today, "已收盘"
+    if weekday <= 4 and m < DAY_OPEN:
+        return "close", _last_trading_date(conn, commodity_key, today), "盘前"
+    return "close", _last_trading_date(conn, commodity_key, today), "非交易日"
+
+
+# ---------------------------------------------------------------------------
 # Build mark → exact symbol string (encoding-safe)
 # ---------------------------------------------------------------------------
 
@@ -100,9 +172,8 @@ def build_mark_to_symbol() -> dict:
 # Fetch domestic futures real-time data
 # ---------------------------------------------------------------------------
 
-def fetch_domestic(mark_to_symbol: dict) -> dict:
+def fetch_domestic(conn, mark_to_symbol: dict) -> dict:
     results = {}
-    today = date.today().isoformat()
 
     for key, mark in DOMESTIC_MARK_MAP.items():
         symbol = mark_to_symbol.get(mark)
@@ -151,13 +222,15 @@ def fetch_domestic(mark_to_symbol: dict) -> dict:
             print(f"  [WARN] {key} (symbol={symbol!r}): no price. cols={list(df.columns)}")
             continue
 
+        kind, spot_date, why = classify_snapshot(conn, key)
         results[key] = dict(
             price=price, change_pct=change_pct, change_amt=change_amt,
             prev_close=prev_close, volume=volume, turnover=None,
-            spot_date=today,
+            spot_date=spot_date, snapshot_kind=kind,
         )
         print(f"  [OK] {key:20s}  symbol={symbol!r:10s}  "
-              f"price={price}  chg={change_pct}%  昨结算={prev_close}")
+              f"price={price}  chg={change_pct}%  昨结算={prev_close}  "
+              f"[{kind} @ {spot_date}]{' ' + why if why else ''}")
 
     return results
 
@@ -197,7 +270,6 @@ def fetch_sge(conn) -> dict:
     prev_close is read from the local prices table (most recent daily close).
     """
     results = {}
-    today = date.today().isoformat()
 
     for key, (sge_symbol, divisor) in SGE_MAP.items():
         try:
@@ -226,13 +298,15 @@ def fetch_sge(conn) -> dict:
             change_amt = round(price - prev_close, 6)
             change_pct = round(change_amt / prev_close * 100, 4)
 
+        kind, spot_date, why = classify_snapshot(conn, key)
         results[key] = dict(
             price=price, change_pct=change_pct, change_amt=change_amt,
             prev_close=prev_close, volume=None, turnover=None,
-            spot_date=today,
+            spot_date=spot_date, snapshot_kind=kind,
         )
         print(f"  [OK] {key:8s}  symbol={sge_symbol}  "
-              f"price={price}  昨收={prev_close}  chg={change_pct}%")
+              f"price={price}  昨收={prev_close}  chg={change_pct}%  "
+              f"[{kind} @ {spot_date}]{' ' + why if why else ''}")
 
     return results
 
@@ -251,13 +325,17 @@ CREATE TABLE IF NOT EXISTS commodity_spot (
     volume        NUMERIC(24,4),
     turnover      NUMERIC(24,4),
     spot_date     DATE,
+    snapshot_kind VARCHAR(8) DEFAULT 'intraday',
     updated_at    TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
+-- 老表补列（幂等）
+ALTER TABLE commodity_spot ADD COLUMN IF NOT EXISTS snapshot_kind VARCHAR(8) DEFAULT 'intraday';
 """
 
 UPSERT_SQL = """
 INSERT INTO commodity_spot
-    (commodity_key, price, change_pct, change_amt, prev_close, volume, turnover, spot_date, updated_at)
+    (commodity_key, price, change_pct, change_amt, prev_close, volume, turnover,
+     spot_date, snapshot_kind, updated_at)
 VALUES %s
 ON CONFLICT (commodity_key) DO UPDATE SET
     price      = EXCLUDED.price,
@@ -267,6 +345,7 @@ ON CONFLICT (commodity_key) DO UPDATE SET
     volume     = EXCLUDED.volume,
     turnover   = EXCLUDED.turnover,
     spot_date  = EXCLUDED.spot_date,
+    snapshot_kind = EXCLUDED.snapshot_kind,
     updated_at = NOW()
 """
 
@@ -274,7 +353,7 @@ ON CONFLICT (commodity_key) DO UPDATE SET
 def db_upsert(conn, spots: dict):
     rows = [
         (k, d["price"], d["change_pct"], d["change_amt"], d["prev_close"],
-         d["volume"], d["turnover"], d["spot_date"])
+         d["volume"], d["turnover"], d["spot_date"], d["snapshot_kind"])
         for k, d in spots.items()
     ]
     if not rows:
@@ -283,7 +362,7 @@ def db_upsert(conn, spots: dict):
     with conn.cursor() as cur:
         cur.execute(SCHEMA_SQL)
         execute_values(cur, UPSERT_SQL, rows,
-                       template="(%s,%s,%s,%s,%s,%s,%s,%s,NOW())")
+                       template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())")
     conn.commit()
     print(f"\n[DB] Upserted {len(rows)} commodity spot rows.")
 
@@ -306,7 +385,7 @@ def main() -> int:
     print(f"  [OK] {len(mark_to_symbol)} symbols loaded.\n")
 
     print("── Domestic futures (futures_zh_realtime) ──────────────────────────────")
-    spots = fetch_domestic(mark_to_symbol)
+    spots = fetch_domestic(conn, mark_to_symbol)
 
     print("\n── SGE spot (spot_quotations_sge) — 国内黄金/白银 ──────────────────────")
     spots.update(fetch_sge(conn))
