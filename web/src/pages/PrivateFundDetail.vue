@@ -36,6 +36,19 @@ const navLoading = ref(false)
  */
 const isSppwSource = computed(() => navPoints.value.some(p => p.source === 'sppw'))
 
+/**
+ * 净值出处标签 —— 必须跟 source 走，不能笼统写「有代销池净值」。
+ * em_gaoduan / licai 都是**累计净值**口径，sppw 是**复权净值**口径，三者不可混说。
+ */
+const navSourceLabel = computed(() => {
+  switch (detail.value?.navSource) {
+    case 'sppw':   return '有排排网净值(复权)'
+    case 'licai':  return '有格上净值(累计)'
+    case 'em_gaoduan': return '有代销池净值'
+    default: return '有公开净值'
+  }
+})
+
 /** 区间：天数（0 = 全部）或 'ytd'（今年来）。默认「今年来」，与 MarketDetail / Detail 一致 */
 type NavRange = number | 'ytd'
 const navRange = ref<NavRange>('ytd')
@@ -74,7 +87,7 @@ async function loadNav(code: string) {
 const emptyNavHint = computed(() => {
   if (!navPoints.value.length) {
     if (!detail.value?.hasNav) {
-      return '该产品不在天天基金代销池、也不在私募排排网可见名录内，无公开净值（备案名录仍可查）'
+      return '该产品不在天天基金代销池、私募排排网可见名录、格上理财可见名录内，无公开净值（备案名录仍可查）'
     }
     if (navRange.value === 'ytd') {
       const y = ytdFrom().slice(0, 4)
@@ -281,7 +294,7 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
               {{ detail?.workingState }}
             </el-tag>
             <el-tag v-if="detail?.hasNav" size="small" type="primary" effect="plain">
-              {{ detail?.navSource === 'sppw' ? '有排排网净值(复权)' : '有代销池净值' }}
+              {{ navSourceLabel }}
             </el-tag>
             <el-tag v-else size="small" type="info" effect="plain">无公开净值</el-tag>
           </div>
@@ -401,18 +414,28 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
         <ul>
           <li v-if="isSppwSource">
             本产品净值来自<strong>私募排排网可见名录</strong>，是<strong>复权净值（分红再投）</strong>口径；
-            该名录全市场仅约 5,565 只，即公开渠道能拿到净值的<strong>全部天花板</strong>
+            该名录<strong>登录态全量重扫</strong>后为 5,498 只，即公开渠道能拿到净值的<strong>全部天花板</strong>
             （占备案名录 2% 量级）—— <strong>不代表全市场私募业绩</strong>。
+          </li>
+          <li v-else-if="detail?.navSource === 'licai'">
+            本产品净值来自<strong>格上理财可见名录</strong>，是<strong>累计净值</strong>口径（单位净值另列）；
+            该名录全市场仅约 927 只 —— <strong>不代表全市场私募业绩</strong>。
           </li>
           <li v-else>
             本产品净值来自<strong>天天基金「高端理财」代销池</strong>，本列为<strong>累计净值</strong>口径（单位净值另列）；
-            该池全市场仅约 1,208 只，池内主体是券商资管 / 集合资管计划 —— <strong>不代表全市场私募业绩</strong>。
+            该池全市场仅约 1,226 只，池内主体是券商资管 / 集合资管计划 —— <strong>不代表全市场私募业绩</strong>。
           </li>
-          <li>收益率以<strong>含分红口径净值</strong>为基准（排排网源=复权净值，代销池源=累计净值）；日涨跌由相邻两点自算。</li>
+          <li>收益率以<strong>含分红口径净值</strong>为基准（排排网源=复权净值，代销池/格上源=累计净值）；日涨跌由相邻两点自算。</li>
+          <li v-if="isSppwSource">
+            排排网名录里有 2,027 只产品<strong>不带备案号</strong>（形如「XX一号A类份额」）。
+            这些已按<strong>母基金名唯一 + 首点不早于备案成立日</strong>两道闸门映射回备案主体，
+            <strong>序列取自该份额本身</strong> —— 费率结构与备案主体可能略有差异，
+            故同名产品的收益率与其他渠道口径不完全等值。
+          </li>
           <li>其余产品只有中基协<strong>备案级</strong>信息（名称 / 管理人 / 托管人 / 运行状态 / 备案时间）。</li>
           <li>
             按监管要求，私募基金<strong>不得公开披露净值与持仓</strong>，因此不存在「全市场私募净值库」。
-            ⚠ 两个源口径不同（复权净值 vs 累计净值），在「有分红」标的上终身收益最多差数倍，
+            ⚠ 三个源口径不同（复权净值 vs 累计净值），在「有分红」标的上终身收益最多差数倍，
             故<strong>同一产品只取单一来源、不跨源混拼序列</strong>。
           </li>
         </ul>

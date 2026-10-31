@@ -45,6 +45,9 @@ Incremental updates
 * 规模:   每只基金 30 天内更新过则跳过（--refresh-scale 强制刷新）
 * 持仓:   对 scope 内每只基金，按年计算「已过披露期的季末」集合 due
           （季末 + 40 天），若 DB 缺任一 due 季度才发起请求
+          ⚠ DISCLOSE_LAG=40 天是「等披露齐」的保守值，而季报法定截止其实是季末后
+          15 个工作日（约 25 天）→ 想在 40 天内拿到新季报必须显式
+          `--report-date YYYY-MM-DD`，否则增量会静默跳过（库里看不到、也不报错）。
 * 全量首跑约 2.8 万只 × 2 请求 ≈ 数小时（受全局限速约束），之后日常增量很快
 
 Compliance note
@@ -67,6 +70,8 @@ Usage
     python fetch_funds.py --fill-company --dry-run            # 先看补全计划
     python fetch_funds.py --fill-scale                        # 只补空的规模
     python fetch_funds.py --fill-scale --limit 50             # 小批试跑
+    python fetch_funds.py --report-date 2026-09-30 --holdings-only
+                                                              # 强制抓刚披露的季报（不等 40 天）
     python fetch_funds.py --dry-run                           # 只打印，不写库
 """
 
@@ -162,10 +167,16 @@ def quarter_ends(year: int) -> list:
             date(year, 9, 30), date(year, 12, 31)]
 
 
-def due_quarters(year: int, today: date) -> list:
-    """某年已过披露期（季末 + DISCLOSE_LAG 天）的季末日期，升序。"""
+def due_quarters(year: int, today: date, force_dates: set = None) -> list:
+    """某年已过披露期（季末 + DISCLOSE_LAG 天）的季末日期，升序。
+
+    force_dates: 强制计入的报告期集合（'YYYY-MM-DD'），用于**提前**抓刚披露的
+    季报 —— 见 --report-date。DISCLOSE_LAG=40 是为「等披露完」设的保守值，
+    实际季报法定截止是季末后 15 个工作日（约 25 天），想早拿就得显式指定。
+    """
     cutoff = today - timedelta(days=DISCLOSE_LAG)
-    return [q for q in quarter_ends(year) if q <= cutoff]
+    return [q for q in quarter_ends(year)
+            if q <= cutoff or (force_dates and str(q) in force_dates)]
 
 
 def to_float(val):
@@ -635,7 +646,8 @@ def run_scale_concurrent(codes: list, conn, progress: Progress,
 
 def run_holdings_concurrent(codes: list, conn, progress: Progress,
                               workers: int, years: list, bonds: bool,
-                              today: date, stat: dict) -> None:
+                              today: date, stat: dict,
+                              force_dates: set = None) -> None:
     """并发抓持仓。扁平化任务为 (code, year, typ)，主线程累积写入。"""
     if not codes:
         print("    持仓无需刷新（DB 已齐全）")
@@ -656,12 +668,13 @@ def run_holdings_concurrent(codes: list, conn, progress: Progress,
     skipped_codes = 0
     for code in codes:
         have = have_by_code.get(code, set())
-        # 全部 due 季度都齐了就整只跳过
-        due_set = set()
-        for y in years:
-            for q in due_quarters(y, today):
-                for typ in type_list:
-                    due_set.add((str(q), typ_short[typ]))
+        # 强制报告期只对「已有该类持仓历史」的基金生效 —— 纯债基的 jjcc 本来
+        # 就永远返回空，若也对它们强制 Q3，每次都会被判「没拿到」而反复重抓。
+        fd = set()
+        if force_dates:
+            for typ in type_list:
+                if any(ht == typ_short[typ] for _, ht in have):
+                    fd |= force_dates
         # 当前基金缺的 (year, typ) 任务
         need = []
         for y in years:
@@ -669,7 +682,7 @@ def run_holdings_concurrent(codes: list, conn, progress: Progress,
                 # 抓一次该年就能拿到该年所有 due 季度，所以只要 (code, year, typ) 有
                 # 任一 due 季度缺，就抓这一年
                 if any((str(q), typ_short[typ]) not in have
-                       for q in due_quarters(y, today)):
+                       for q in due_quarters(y, today, fd)):
                     need.append((y, typ))
         # 进度文件记录本会话已完成该年该类的也跳过
         need = [(y, t) for y, t in need if not progress.has(f"hy:{code}:{y}:{t}")]
@@ -986,6 +999,14 @@ def main() -> int:
     ap.add_argument("--request-interval", type=float, default=SLEEP,
                     help=f"全局最小请求间隔秒数（默认 {SLEEP}）。调小会触发东财 HTTP 514 限流")
     ap.add_argument("--limit",        type=int, default=None, help="限制规模/持仓抓取的基金数量（试点用）")
+    ap.add_argument("--report-date",  default=None,
+                    help="强制抓取指定报告期（逗号分隔，如 2026-09-30），越过 DISCLOSE_LAG=40 "
+                         "天的披露滞后。只对「已有该类持仓历史」的基金生效（纯债基的 jjcc 不强制）")
+    ap.add_argument("--holdings-only", action="store_true",
+                    help="跳过规模段，只抓持仓。规模 TTL 到期时会把 2.8 万只全部重抓，"
+                         "只想补季报时用这个")
+    ap.add_argument("--scale-only", action="store_true",
+                    help="跳过持仓段，只刷规模。只想更新 funds.scale（对齐东财最新规模）时用这个")
     ap.add_argument("--years-back",   type=int, default=0,     help="持仓回补年数（0=仅当年）")
     ap.add_argument("--bonds",        action="store_true", help="同时抓债券持仓（默认仅股票）")
     ap.add_argument("--refresh-scale", action="store_true", help="忽略 30 天节流，强制刷新规模")
@@ -1004,6 +1025,15 @@ def main() -> int:
                     help="只补全 funds.scale 为空的基金（雪球为主 + 东财 F10 备源），"
                          "不抓名录/持仓")
     args = ap.parse_args()
+
+    force_dates = set()
+    if args.report_date:
+        force_dates = {d.strip() for d in args.report_date.split(",") if d.strip()}
+        bad = [d for d in force_dates if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)]
+        if bad:
+            print(f"  [FATAL] --report-date 格式应为 YYYY-MM-DD: {bad}")
+            return 1
+        print(f"  [INFO] 强制报告期 {sorted(force_dates)}（越过 {DISCLOSE_LAG} 天披露滞后）")
 
     # 全局请求间隔（东财频控防线，见 RateLimiter 与文件头说明）
     REQUEST_LIMITER.min_interval = max(0.0, args.request_interval)
@@ -1132,6 +1162,14 @@ def main() -> int:
         # ── 加载进度（断点续跑） ─────────────────────────────────────────
         # scope_key 包含影响结果的关键参数；改参数 → 进度自动重置
         scope_key = f"y={args.years_back}|b={int(bool(args.bonds))}"
+        if force_dates:
+            # 强制报告期是「边披露边抓」：当天没披露的基金不能因为进度文件而
+            # 永久跳过，所以 scope 里带上日期 —— 隔天自动换 scope 重试缺的。
+            scope_key += f"|rd={','.join(sorted(force_dates))}|d={today}"
+        if args.codes_file:
+            # 不同批次（不同 gaps 文件）不能共用进度，否则第二批会被第一批的
+            # 标记整只跳过 —— 看起来「跑完了」，实际一行没抓。
+            scope_key += f"|cf={os.path.basename(args.codes_file)}"
         progress = Progress()
         if args.reset_progress:
             progress.reset()
@@ -1147,24 +1185,32 @@ def main() -> int:
         scope_codes = [r["基金代码"] for _, r in scope.iterrows()]
         cutoff_ts = time.time() - SCALE_TTL_DAYS * 86400
 
-        if args.full or args.refresh_scale:
-            todo_scale = scope_codes
+        if args.holdings_only:
+            print("  [INFO] --holdings-only：跳过规模段")
+            stat["规模跳过"] = len(scope_codes)
         else:
-            cur.execute("""
-                SELECT fund_code, scale_updated_at FROM funds
-                WHERE fund_code = ANY(%s) AND scale_updated_at IS NOT NULL
-            """, (scope_codes,))
-            done_in_db = {fc: ts for fc, ts in cur.fetchall()
-                          if ts and ts.timestamp() > cutoff_ts}
-            todo_scale = [c for c in scope_codes
-                          if c not in done_in_db and not progress.has(f"s:{c}")]
-        stat["规模跳过"] = len(scope_codes) - len(todo_scale)
+            if args.full or args.refresh_scale:
+                todo_scale = scope_codes
+            else:
+                cur.execute("""
+                    SELECT fund_code, scale_updated_at FROM funds
+                    WHERE fund_code = ANY(%s) AND scale_updated_at IS NOT NULL
+                """, (scope_codes,))
+                done_in_db = {fc: ts for fc, ts in cur.fetchall()
+                              if ts and ts.timestamp() > cutoff_ts}
+                todo_scale = [c for c in scope_codes
+                              if c not in done_in_db and not progress.has(f"s:{c}")]
+            stat["规模跳过"] = len(scope_codes) - len(todo_scale)
 
-        run_scale_concurrent(todo_scale, conn, progress, args.workers, stat)
+            run_scale_concurrent(todo_scale, conn, progress, args.workers, stat)
 
         # ── 4. 持仓：直接传完整 scope，run_holdings_concurrent 内部按 DB+进度判断 ──
-        run_holdings_concurrent(scope_codes, conn, progress, args.workers,
-                                 years, args.bonds, today, stat)
+        if args.scale_only:
+            print("  [INFO] --scale-only：跳过持仓段")
+        else:
+            run_holdings_concurrent(scope_codes, conn, progress, args.workers,
+                                     years, args.bonds, today, stat,
+                                     force_dates=force_dates or None)
 
         cur.execute("SELECT MAX(report_date) FROM fund_holdings")
         latest = cur.fetchone()[0]

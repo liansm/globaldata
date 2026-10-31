@@ -295,91 +295,87 @@ function goCompany(key: string) {
 const NAV_COLOR = '#e8534a'   // 涨色（中式约定）
 const ACC_COLOR = '#378ADD'
 
-const navChartOption = computed(() => {
+/** 是否有累计净值（/七日年化）数据：决定右图是否显示 */
+const hasAcc = computed(() => navPoints.value.some(p => p.accNav != null))
+
+/**
+ * 单列净值折线图配置：单位净值 / 累计净值各画一张，左右并排，互不干扰。
+ * 之前试过一张图双 Y 轴，但分红多的基金（如 163402 单位 2.94 / 累计 10.78）
+ * 单位净值会被压成平线，量级差到了看不出波动的程度 → 拆成两张图更直观。
+ *
+ * @param title  轴名 / 系列名 / 图标题（单位净值、累计净值、万份收益、七日年化）
+ * @param data   该列数值
+ * @param color  曲线与轴标签同色，保证「看哪条线读哪侧」
+ * @param unit   数值单位后缀（货币：万份收益→' 元'，七日年化→' %'）
+ */
+function buildNavChart(title: string, data: (number | null)[], color: string, unit: string): any {
   const pts = navPoints.value
-  if (!pts.length) return {}
-
-  const money = isMoney.value
-  const navName = navLabel.value
-  const accName = accLabel.value
-
-  const navs = pts.map(p => p.nav)
-  const accs = pts.map(p => p.accNav)
-  const hasAcc = accs.some(v => v != null)
-
-  const fmt = (v: number) =>
-    v.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
-
-  const series: any[] = [
-    {
-      name: navName,
-      type: 'line',
-      data: navs,
-      showSymbol: false,
-      connectNulls: true,
-      lineStyle: { width: 1.6, color: NAV_COLOR },
-      itemStyle: { color: NAV_COLOR },
-    },
-  ]
-  if (hasAcc) {
-    series.push({
-      name: accName,
-      type: 'line',
-      data: accs,
-      showSymbol: false,
-      connectNulls: true,
-      // 货币基金的七日年化与万份收益量纲差 3 个数量级，必须走右轴
-      yAxisIndex: money ? 1 : 0,
-      lineStyle: { width: 1.4, color: ACC_COLOR },
-      itemStyle: { color: ACC_COLOR },
-    })
-  }
-
-  const axis = {
-    type: 'value',
-    scale: true,          // 净值在 1 附近，绝不能从 0 起
-    axisLabel: {
-      fontSize: 11,
-      color: '#888',
-      formatter: (v: number) => fmt(v),
-    },
-    splitLine: { lineStyle: { color: '#f0f0f0' } },
-  }
+  const dates = pts.map(p => p.date)
+  const fmt = (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
 
   return {
-    legend: {
-      top: 0,
-      right: 8,
-      itemWidth: 14,
-      itemHeight: 8,
-      textStyle: { fontSize: 12, color: '#666' },
-    },
+    legend: { top: 0, right: 8, itemWidth: 14, itemHeight: 8, textStyle: { fontSize: 12, color: '#666' } },
     tooltip: {
       trigger: 'axis',
       formatter: (params: any[]) => {
         const p = pts[params?.[0]?.dataIndex]
         if (!p) return ''
+        const v = params?.[0]?.value
         const lines = [p.date]
-        if (p.nav != null) lines.push(`${navName}：<b>${fmt(p.nav)}</b>${money ? ' 元' : ''}`)
-        if (p.accNav != null) lines.push(`${accName}：<b>${fmt(p.accNav)}</b>${money ? ' %' : ''}`)
+        if (v != null) lines.push(`${title}：<b>${fmt(v)}</b>${unit}`)
         if (p.dailyReturn != null) lines.push(`日涨跌：${p.dailyReturn}%`)
         return lines.join('<br/>')
       },
     },
-    grid: { top: 36, right: money && hasAcc ? 62 : 26, bottom: 62, left: 64 },
+    grid: { top: 36, right: 26, bottom: 62, left: 64 },
     xAxis: {
       type: 'category',
-      data: pts.map(p => p.date),
+      data: dates,
       axisLabel: { rotate: 30, fontSize: 11, color: '#888' },
       axisLine: { lineStyle: { color: '#ddd' } },
     },
-    yAxis: money ? [axis, { ...axis, splitLine: { show: false } }] : [axis],
+    yAxis: {
+      type: 'value',
+      scale: true,                 // 净值在 1 附近，绝不能从 0 起
+      name: title,
+      nameLocation: 'middle',      // 轴名放轴中段竖排，避开右上角图例
+      nameGap: 44,
+      nameRotate: 90,
+      nameTextStyle: { fontSize: 11, fontWeight: 500, color },
+      axisLabel: { fontSize: 11, color, formatter: (v: number) => fmt(v) },
+      splitLine: { lineStyle: { color: '#f0f0f0' } },
+    },
     dataZoom: [
       { type: 'inside', start: 0, end: 100 },
       { type: 'slider', start: 0, end: 100, height: 22, bottom: 4 },
     ],
-    series,
+    series: [{
+      name: title,
+      type: 'line',
+      data,
+      showSymbol: false,
+      connectNulls: true,
+      lineStyle: { width: 1.6, color },
+      itemStyle: { color },
+    }],
   }
+}
+
+const navChartOption = computed(() => {
+  const pts = navPoints.value
+  if (!pts.length) return {}
+  const unit = isMoney.value ? ' 元' : ''
+  return buildNavChart(navLabel.value, pts.map(p => p.nav), NAV_COLOR, unit)
+})
+
+/** 右图：累计净值 / 七日年化。无数据（罕见）则不显示 */
+const accChartOption = computed(() => {
+  const pts = navPoints.value
+  if (!pts.length) return {}
+  const accs = pts.map(p => p.accNav)
+  if (!accs.some(v => v != null)) return {}
+  const unit = isMoney.value ? ' %' : ''
+  return buildNavChart(accLabel.value, accs, ACC_COLOR, unit)
 })
 
 // ── Formatters ──────────────────────────────────────────────────────────────
@@ -608,7 +604,7 @@ const navRangeText = computed(() => {
 
         <!-- 口径提示：货币基金量纲与普通基金完全不同，且源侧有「节假日合并披露」特性 -->
         <p v-if="isMoney && navPoints.length" class="nav-caveat">
-          货币基金口径：左轴为<b>万份收益</b>（元/万份），右轴为<b>七日年化</b>（%）。
+          货币基金口径：<b>左图</b>为<b>万份收益</b>（元/万份），<b>右图</b>为<b>七日年化</b>（%）。
           源侧把节假日期间的收益合并到节后首个披露日，个别日期会明显偏高，
           属口径特性而非数据异常；部分场内/停售份额源侧不单独披露收益，此类点已剔除。
         </p>
@@ -622,8 +618,15 @@ const navRangeText = computed(() => {
           :description="emptyNavHint"
         />
 
-        <div v-else class="chart-card">
-          <AnnotatedLineChart :option="navChartOption" autoresize style="width:100%;height:380px" />
+        <div v-else class="chart-card nav-charts">
+          <div class="nav-chart-pane">
+            <h4 class="nav-chart-title" :style="{ color: NAV_COLOR }">{{ navLabel }}</h4>
+            <AnnotatedLineChart :option="navChartOption" autoresize style="width:100%;height:360px" />
+          </div>
+          <div v-if="hasAcc" class="nav-chart-pane">
+            <h4 class="nav-chart-title" :style="{ color: ACC_COLOR }">{{ accLabel }}</h4>
+            <AnnotatedLineChart :option="accChartOption" autoresize style="width:100%;height:360px" />
+          </div>
         </div>
       </section>
 
@@ -1115,6 +1118,22 @@ const navRangeText = computed(() => {
   border: 1px solid #eef0f3;
   border-radius: 10px;
   padding: 12px 8px 4px;
+}
+
+/* 净值走势：单位净值 / 累计净值左右两张图，各占一半 */
+.nav-charts {
+  display: flex;
+  gap: 14px;
+}
+.nav-chart-pane {
+  flex: 1 1 50%;
+  min-width: 0;            /* 防止 flex 子项把图表撑破导致 ECharts 不渲染 */
+}
+.nav-chart-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
 }
 
 .nav-caveat {

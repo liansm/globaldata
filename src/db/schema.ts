@@ -271,11 +271,17 @@ export const fetchLog = pgTable('fetch_log', {
 //
 // private_managers — 管理人（中基协公示，~1.84 万家）
 // private_funds    — 备案产品（中基协公示，~25 万只）+ 代销池净值快照
-// private_fund_nav — 净值日线。**两个来源、两种口径**（2026-09-20 起）：
+// private_fund_nav — 净值日线。**三个来源、两种口径**（sppw 2026-09-20 起 / licai 2026-10-30 起）：
 //     source=em_gaoduan 天天基金高端理财代销池：unit_nav=单位净值、acc_nav=累计净值（现金分红累加）
+//     source=licai      格上理财 simu/product/netvalue：unit_nav=单位净值、acc_nav=累计净值
+//                       （源侧另给 rehabilitation_nv 复权净值，本表无列，不落库）
 //     source=sppw       私募排排网 fundNavTrend： acc_nav=**复权净值（分红再投）**、unit_nav 留空
-//   ⚠ 两源在「有分红」标的上终身收益最多差 2.5 倍，**禁止跨源拼同一条序列**。
-//     写库时对与代销池重叠的 fund_no 一律跳过（见 .workbuddy/load_simu_nav.py）。
+//                        ⚠ 其中约 1,714 只的序列取自**同名 A/C 类份额**（源侧无备案号，
+//                        按「母基金名唯一 + 首点不早于备案成立日」映射回备案主体，
+//                        见 .workbuddy/map_shareclass.py），费率结构与备案主体略有差异
+//   ⚠ 复权口径与累计口径在「有分红」标的上终身收益最多差 2.5 倍，**禁止跨源拼同一条序列**。
+//     写库时对任何已有 net 值的 fund_no 一律整只跳过（见 .workbuddy/load_simu_nav.py、
+//     fetch_private_nav_licai.py），不变式 = 同一 fund_no 只有一个 source。
 // --------------------------------------------------------------------------
 export const privateManagers = pgTable('private_managers', {
   registerNo:       varchar('register_no',       { length: 40 }).primaryKey(),  // 登记编号
@@ -323,7 +329,7 @@ export const privateFundNav = pgTable('private_fund_nav', {
   fundNo:      varchar('fund_no',  { length: 40 }).notNull(),
   navDate:     date('nav_date').notNull(),
   unitNav:     numeric('unit_nav',     { precision: 14, scale: 4 }),
-  accNav:      numeric('acc_nav',      { precision: 14, scale: 4 }),  // 含分红口径：累计净值(em) / 复权净值(sppw)
+  accNav:      numeric('acc_nav',      { precision: 14, scale: 4 }),  // 含分红口径：累计净值(em/licai) / 复权净值(sppw)
   dailyReturn: numeric('daily_return', { precision: 10, scale: 4 }),  // 日涨跌 %
   source:      varchar('source',       { length: 16 }).notNull().default('em_gaoduan'),
 }, (t) => [
