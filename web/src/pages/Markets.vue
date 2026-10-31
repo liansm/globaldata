@@ -20,15 +20,18 @@ onMounted(async () => {
   }
 })
 
+// 板块前缀一律用**两字母区域码**，不用国旗 emoji：Windows 不渲染国旗，
+// 🇭🇰 会退成「HK」、🇨🇳 退成「CN」，而 🌏 这类符号是真图标 → 一栏里字母和图标混着，很脏。
+// 统一成字母码后各平台一致。AS = Asia（亚太），两个字母对齐，别写 APAC。
 const SECTIONS = [
   {
     title: 'A股',
-    icon:  '🇨🇳',
+    code:  'CN',
     keys:  ['idx_sh', 'idx_sz', 'idx_hs300', 'idx_cyb', 'idx_kc50', 'idx_bz50'],
   },
   {
     title: '港股',
-    icon:  '🇭🇰',
+    code:  'HK',
     keys:  ['idx_hsi', 'idx_hscei', 'idx_hstech'],
   },
   // 「沪深港通资金流向」区块 2026-10-31 下线（不展示）：
@@ -39,17 +42,17 @@ const SECTIONS = [
   // 卡片渲染分支（isFlow / fmtFlow / flowClass）也留着，就是给恢复用的。
   {
     title: '美股',
-    icon:  '🇺🇸',
+    code:  'US',
     keys:  ['idx_dji', 'idx_nasdaq', 'idx_sp500'],
   },
   {
     title: '亚太',
-    icon:  '🌏',
+    code:  'AS',
     keys:  ['idx_nikkei', 'idx_kospi', 'idx_sensex', 'idx_sti', 'idx_vni'],
   },
   {
     title: '欧洲',
-    icon:  '🇪🇺',
+    code:  'EU',
     keys:  ['idx_ftse', 'idx_dax', 'idx_cac40'],
   },
 ]
@@ -161,7 +164,7 @@ function changePctClass(v: number | null | undefined) {
     <template v-else>
       <section v-for="sec in sections" :key="sec.title" class="section">
         <div class="section-header">
-          <span class="section-icon">{{ sec.icon }}</span>
+          <span class="section-code">{{ sec.code }}</span>
           <h2 class="section-title">{{ sec.title }}</h2>
           <span class="section-count">{{ sec.items.length }} 个</span>
         </div>
@@ -267,7 +270,22 @@ h1 {
   margin-bottom: 14px;
 }
 
-.section-icon { font-size: 18px; line-height: 1; }
+/* 区域码：两字母等宽显示，宽度固定，长名字板块也能对齐 */
+.section-code {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: #6f6f7d;
+  background: #f1f1f5;
+  border-radius: 4px;
+}
 
 .section-title {
   margin: 0;
