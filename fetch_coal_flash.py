@@ -241,19 +241,51 @@ def ensure_commodities(conn) -> int:
     return n
 
 
+# 从 sxcoal 迁过来的老 key：commodities 行的 source_api 还是「sxcoal.com 汾渭CCI」
+# ⚠ 2026-10-31：ensure_commodities 是 ON CONFLICT DO NOTHING、db_upsert 只写 prices
+#   → 这三行的元数据**从 2026-10-09 起就再没动过**，详情页「数据更新」显示三周前，
+#     而数据其实天天在进（用户据此误判成「数据卡住了、后面全是重复值」）。
+LEGACY_SOURCE_KEYS = {"coal_port_5500", "coal_port_5000", "coal_port_4500"}
+
+
+def touch_commodities(conn, keys: set[str]) -> int:
+    """
+    刷新**本轮真正写入了 prices** 的品种的 commodities.updated_at，并把老标签纠正过来。
+
+    只动 source_api / updated_at 两列：unit / kcal / grade_type 是人工定的口径，
+    脚本不许覆盖（别改成 DO UPDATE 全字段）。
+    """
+    if not keys:
+        return 0
+    keys = list(keys)
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE commodities
+               SET updated_at = now(),
+                   source_api = CASE WHEN "key" = ANY(%s) THEN %s
+                                     ELSE source_api END
+             WHERE "key" = ANY(%s)
+        """, (list(LEGACY_SOURCE_KEYS & set(keys)), NEW_SOURCE_API, keys))
+        n = cur.rowcount
+    conn.commit()
+    return n
+
+
 def print_status(conn):
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT c."key", c.commodity, MAX(p.price_date) AS latest, COUNT(p.id) AS rows
+            SELECT c."key", c.commodity, MAX(p.price_date) AS latest, COUNT(p.id) AS rows,
+                   c.source_api,
+                   to_char(c.updated_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI') AS touched
             FROM commodities c
             LEFT JOIN prices p ON p.commodity_key = c."key"
             WHERE c."key" LIKE 'coal\\_%%' OR c."key" LIKE 'cctd\\_%%'
-            GROUP BY 1, 2
+            GROUP BY 1, 2, c.source_api, c.updated_at
             ORDER BY 1
         """)
-        print(f"\n{'key':<22}{'最新日期':<14}{'行数':>7}  名称")
-        for k, name, latest, n in cur.fetchall():
-            print(f"{k:<22}{str(latest):<14}{n:>7}  {name}")
+        print(f"\n{'key':<22}{'最新日期':<14}{'行数':>7}  {'元数据更新':<18}名称")
+        for k, name, latest, n, src, touched in cur.fetchall():
+            print(f"{k:<22}{str(latest):<14}{n:>7}  {str(touched):<18}{name}")
         print()
 
 
@@ -417,7 +449,8 @@ def main() -> int:
         if added:
             print(f"\n[OK] 新登记 {added} 个 commodity 元数据")
         n = db_upsert(conn, rows)
-        print(f"\n[OK] upsert {n} 行")
+        touched = touch_commodities(conn, {k for k, _, _ in rows})
+        print(f"\n[OK] upsert {n} 行，刷新 {touched} 个品种的 updated_at")
         print_status(conn)
         return 0
     finally:
