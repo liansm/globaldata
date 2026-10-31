@@ -23,7 +23,7 @@ import { LineChart } from 'echarts/charts'
 import { TooltipComponent, GridComponent, DataZoomComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchCryptoDetail } from '@/api/crypto'
-import { wtdFrom } from '@/lib/dateRange'
+import { mtdFrom, wtdFrom } from '@/lib/dateRange'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
 import type { CryptoDetail } from '@/types/crypto'
 
@@ -38,11 +38,14 @@ const error   = ref('')
 const detail  = ref<CryptoDetail | null>(null)
 
 // 源站只做日更，最长深度就是「全部」；接口 days 上限 365，够覆盖 2026-04 起的全部
-// 'wtd' = 本周一至今（自然周）。加密货币 24/7 撮合，周六看本周是 6 个交易点，不是 5 个。
-type RangeKey = 'wtd' | 30 | 90 | 180 | 365
+// 'wtd' = 本周一至今（自然周），'mtd' = 本月 1 号至今（自然月）。
+// 两者都和「近 N 月」那种滚动窗口不同族：加密货币 24/7 撮合，周六看本周是 6 个交易点、不是 5 个；
+// 而月初 3 号选「本月」只有 3 天，选「近 1 月」仍是整月。
+type RangeKey = 'wtd' | 'mtd' | 30 | 90 | 180 | 365
 const range = ref<RangeKey>(90)
 const RANGE_OPTIONS: { label: string; value: RangeKey }[] = [
   { label: '本周',    value: 'wtd' },
+  { label: '本月',    value: 'mtd' },
   { label: '近 1 月', value: 30 },
   { label: '近 3 月', value: 90 },
   { label: '近 6 月', value: 180 },
@@ -56,8 +59,8 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const params = range.value === 'wtd'
-      ? { from: wtdFrom() }
+    const params = range.value === 'wtd' ? { from: wtdFrom() }
+      : range.value === 'mtd' ? { from: mtdFrom() }
       : { days: range.value as number }
     detail.value = await fetchCryptoDetail(key.value, params)
   } catch (e: any) {

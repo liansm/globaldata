@@ -12,7 +12,7 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchCommodityDetail, fetchCommodityMinutes } from '@/api/commodities'
-import { todayCn, ytdFrom, wtdFrom } from '@/lib/dateRange'
+import { todayCn, ytdFrom, mtdFrom, wtdFrom } from '@/lib/dateRange'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
 import type { CommodityDetail, CommodityMinutes, DaysOption } from '@/types/commodity'
 
@@ -45,6 +45,7 @@ const minutesLoading = ref(false)
 const daysOptions: { label: string; value: DaysOption }[] = [
   { label: '今年来', value: 'ytd' },
   { label: '本周',   value: 'wtd' },
+  { label: '本月',   value: 'mtd' },
   { label: '30天',   value: 30   },
   { label: '90天',   value: 90   },
   { label: '180天',  value: 180  },
@@ -60,9 +61,10 @@ async function loadDetail() {
   error.value = ''
   loadedRange.value = null      // 旧区间的涨跌幅立刻作废，避免「30天」的数字配「本周」的标签
   try {
-    // 'wtd'/'ytd' 走 from（自然周期），数字走滚动天数
+    // 'wtd'/'mtd'/'ytd' 走 from（自然周期：本周一 / 本月 1 号 / 年初），数字走滚动天数
     const params = days.value === 'ytd' ? { from: ytdFrom() }
       : days.value === 'wtd' ? { from: wtdFrom() }
+      : days.value === 'mtd' ? { from: mtdFrom() }
       : { days: days.value as number }
     const token = String(days.value)
     detail.value = await fetchCommodityDetail(key.value, params)
