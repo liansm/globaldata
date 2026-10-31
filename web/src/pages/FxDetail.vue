@@ -29,6 +29,13 @@ type RangeKey = 'ytd' | 'mtd' | 'wtd' | 'all' | number
 const range    = ref<RangeKey>('ytd')
 const rateType = ref<FxRateType>('mid')
 
+/**
+ * 已加载完成的「区间|口径」签名 —— 切换瞬间 detail 还是上一组数据，
+ * 不挡住就会出现「新标签配旧数字」（点「本月」的刹那显示的是上个区间的涨跌幅）。
+ */
+const loadedSig = ref('')
+const rangeSig  = computed(() => `${range.value}|${rateType.value}`)
+
 const RANGE_OPTIONS: { label: string; value: RangeKey }[] = [
   { label: '今年来', value: 'ytd' },
   { label: '本周',   value: 'wtd' },
@@ -94,6 +101,7 @@ async function load() {
 
     const d = await fetchFxDetail(key.value, params)
     detail.value = d
+    loadedSig.value = rangeSig.value
 
     // 目标口径没有数据（如韩元没有即期）→ 回退到有数据的口径，别渲染成空页
     if ((d.availableTypes?.[rateType.value]?.points ?? 0) === 0) {
@@ -117,20 +125,73 @@ watch(key, () => { range.value = 'ytd'; rateType.value = 'mid'; load() })
 watch(rateType, load)
 watch(range, load)
 
-// ── 最新值与涨跌（前端从 history 推算，与列表页同口径：最新 vs 前一条）──────
+// ── 最新值 / 区间涨跌 ────────────────────────────────────────────────────
+// 头部大价格、涨跌额、涨跌幅、图表右端点**必须同一序列同一基准**，
+// 否则「价 − 涨跌额 = 基准」用计算器一按就对不上。三者都走日线 history + 后端 baseline。
 const latest = computed(() => detail.value?.history?.[0] ?? null)
-const prev   = computed(() => detail.value?.history?.[1] ?? null)
 
-const dayChange = computed(() => {
-  const c = latest.value?.close, p = prev.value?.close
-  if (c == null || p == null || p === 0) return { amt: null as number | null, pct: null as number | null }
-  return { amt: c - p, pct: (c - p) / p * 100 }
+/** 区间末收盘（跳过 close 为空的行） */
+const lastClose = computed(() =>
+  detail.value?.history.find(p => p.close != null)?.close ?? null,
+)
+
+/**
+ * 基期（区间起点**前一天**收盘）。
+ * 区间数据没加载完时给 null，防止「新标签配旧数字」。
+ * 接口没给 baseline 时（「全部」区间之前没有任何数据）退回区间内最早一条，
+ * 与后端 rangeChangePct 的兜底同源，否则卡片有数、头部是 —，两处对不上。
+ */
+const basePoint = computed<{ date: string; close: number } | null>(() => {
+  const d = detail.value
+  if (!d || loadedSig.value !== rangeSig.value) return null
+  const b = d.baseline
+  if (b?.close != null) return { date: b.date, close: b.close }
+  const h = d.history
+  for (let i = h.length - 1; i >= 0; i--) {
+    const c = h[i].close
+    if (c != null) return { date: h[i].date, close: c }
+  }
+  return null
 })
+const baseClose = computed(() => basePoint.value?.close ?? null)
 
 const unitLabel = computed(() => {
   const d = detail.value
   if (!d) return ''
   return d.quoteUnit === 100 ? `100 ${d.baseCode}` : `1 ${d.baseCode}`
+})
+
+/**
+ * 右上角涨跌幅 = **当前所选区间**的涨跌幅（不再固定「较前一日」）。
+ * 口径：区间末收盘 ÷ 区间起点**前一天**收盘 − 1，含首日当天涨跌，与 Wind「区间涨跌幅」同口径，
+ * 也与下方「区间涨跌」卡片同源（卡片读的是后端 stats.rangeChangePct，后端同样用 baseline 算）。
+ * 区间内没数据 / 拿不到基期 → null，不拿 0% 冒充。
+ */
+const headerPct = computed(() => {
+  const last = lastClose.value, base = baseClose.value
+  if (last == null || base == null || base === 0) return null
+  return (last - base) / base * 100
+})
+
+/** 涨跌额 —— 与 headerPct 同一基准相减（即「区间涨跌额」，不是前一日差） */
+const headerChangeAmt = computed(() => {
+  const last = lastClose.value, base = baseClose.value
+  return last != null && base != null ? last - base : null
+})
+
+/** 口径标签跟着区间走：今年来 / 本周 / 本月 / 1月 … */
+const headerPctLabel = computed(
+  () => RANGE_OPTIONS.find(o => o.value === range.value)?.label ?? '区间',
+)
+
+/** hover 说明：这个百分比是从哪天什么价算到哪天什么价 */
+const headerPctTitle = computed(() => {
+  const d = detail.value
+  const base = basePoint.value
+  if (!d || lastClose.value == null || base == null) return ''
+  const last = d.history.find(p => p.close != null)
+  return `${headerPctLabel.value}涨跌幅（收盘价）：`
+    + `${base.date} ${fmtRate(base.close)} → ${last?.date ?? ''} ${fmtRate(lastClose.value)}`
 })
 
 /** 当前区间的最高/最低收盘（图表标注同源，避免两处数字不一致） */
@@ -144,7 +205,7 @@ const minClose = computed(() => (closes.value.length ? Math.min(...closes.value)
 
 // 图表 y 轴 / 标注的小数位（跟随量级）
 const digits = computed(() => {
-  const v = latest.value?.close
+  const v = lastClose.value
   if (v == null) return 4
   return Math.abs(v) >= 1 ? 4 : 6
 })
@@ -251,14 +312,14 @@ const chartOption = computed(() => {
 
         <div class="price-block">
           <div class="latest-price">
-            {{ fmtRate(latest?.close ?? null) }}
+            {{ fmtRate(lastClose) }}
             <span class="unit">CNY</span>
           </div>
-          <div class="change" :class="signClass(dayChange.pct)">
-            {{ dayChange.amt != null && dayChange.amt > 0 ? '▲' : dayChange.amt != null && dayChange.amt < 0 ? '▼' : '—' }}
-            {{ dayChange.amt != null ? Math.abs(dayChange.amt).toFixed(digits) : '—' }}
-            （{{ fmtPct(dayChange.pct) }}）
-            <span class="change-label">较前一日</span>
+          <div class="change" :class="signClass(headerPct)" :title="headerPctTitle">
+            {{ headerChangeAmt != null && headerChangeAmt > 0 ? '▲' : headerChangeAmt != null && headerChangeAmt < 0 ? '▼' : '—' }}
+            {{ headerChangeAmt != null ? Math.abs(headerChangeAmt).toFixed(digits) : '—' }}
+            （{{ fmtPct(headerPct) }}）
+            <span class="change-label">（{{ headerPctLabel }}）</span>
           </div>
           <div class="price-date">数据日期 {{ latest?.date ?? '—' }}</div>
         </div>
