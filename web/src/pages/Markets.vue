@@ -22,7 +22,8 @@ onMounted(async () => {
 
 // 板块前缀一律用**两字母区域码**，不用国旗 emoji：Windows 不渲染国旗，
 // 🇭🇰 会退成「HK」、🇨🇳 退成「CN」，而 🌏 这类符号是真图标 → 一栏里字母和图标混着，很脏。
-// 统一成字母码后各平台一致。AS = Asia（亚太），两个字母对齐，别写 APAC。
+// 统一成字母码后各平台一致。AP = Asia-Pacific（亚太）—— 别用 AS（ISO 里是美属萨摩亚）、
+// 也别写 APAC（四个字符会把这一组前缀撑宽，右边界对不齐）。
 const SECTIONS = [
   {
     title: 'A股',
@@ -47,7 +48,7 @@ const SECTIONS = [
   },
   {
     title: '亚太',
-    code:  'AS',
+    code:  'AP',
     keys:  ['idx_nikkei', 'idx_kospi', 'idx_sensex', 'idx_sti', 'idx_vni'],
   },
   {
