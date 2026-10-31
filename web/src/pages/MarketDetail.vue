@@ -13,6 +13,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchMarketDetail, fetchMarketMinutes } from '@/api/markets'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
+import { ytdFrom, wtdFrom } from '@/lib/dateRange'
 import { STOCK_MARKETS, detailNav, navForMarket } from '@/lib/nav'
 import type { MarketDetail, MarketMinutes } from '@/types/market'
 
@@ -27,10 +28,11 @@ const key = computed(() => route.params.key as string)
 const loading = ref(false)
 const error   = ref('')
 const detail  = ref<MarketDetail | null>(null)
-const days    = ref<number | 'ytd'>('ytd')
+const days    = ref<number | 'ytd' | 'wtd'>('ytd')
 
-const daysOptions: { label: string; value: number | 'ytd' }[] = [
+const daysOptions: { label: string; value: number | 'ytd' | 'wtd' }[] = [
   { label: '今年来', value: 'ytd'  },
+  { label: '本周',   value: 'wtd'  },
   { label: '30天',   value: 30    },
   { label: '90天',   value: 90    },
   { label: '180天',  value: 180   },
@@ -65,16 +67,13 @@ const showIntraday   = ref(true)   // default to intraday; switched off for non-
 const minuteLoading  = ref(false)
 const minuteData     = ref<MarketMinutes | null>(null)
 
-function ytdFrom() {
-  return `${new Date().getFullYear()}-01-01`
-}
-
 async function loadDetail() {
   loading.value = true
   error.value   = ''
   try {
-    const params = days.value === 'ytd'
-      ? { from: ytdFrom() }
+    // 'wtd'/'ytd' 走 from（自然周期），数字走滚动天数
+    const params = days.value === 'ytd' ? { from: ytdFrom() }
+      : days.value === 'wtd' ? { from: wtdFrom() }
       : { days: days.value }
     detail.value = await fetchMarketDetail(key.value, params)
     // 回填「本页属于哪个导航项」：/market/:key 的 route.name 分不出股市/航运/建材，
@@ -110,7 +109,7 @@ function switchToIntraday() {
   if (!minuteData.value) loadMinutes()
 }
 
-function switchToDaily(val: number | 'ytd') {
+function switchToDaily(val: number | 'ytd' | 'wtd') {
   showIntraday.value = false
   days.value = val
 }
@@ -479,9 +478,9 @@ const intradayOption = computed(() => {
         </el-button>
 
         <el-radio-group
-          :model-value="showIntraday ? null : days"
+          :model-value="showIntraday ? undefined : days"
           size="small"
-          @update:model-value="val => switchToDaily(val as number | 'ytd')"
+          @update:model-value="val => switchToDaily(val as number | 'ytd' | 'wtd')"
         >
           <el-radio-button v-for="opt in daysOptions" :key="String(opt.value)" :value="opt.value">
             {{ opt.label }}
@@ -504,8 +503,13 @@ const intradayOption = computed(() => {
       </div>
 
       <!-- 日线走势图 -->
+      <!-- ⚠ 空态必给：选「本周」遇整周休市时 history 为 0 行，白底空轴图看着像坏了 -->
       <div v-else class="chart-wrap" v-loading="loading">
-        <AnnotatedLineChart :option="chartOption" autoresize style="width:100%;height:380px" />
+        <AnnotatedLineChart
+          v-if="detail.history.length"
+          :option="chartOption" autoresize style="width:100%;height:380px"
+        />
+        <div v-else-if="!loading" class="no-data">该区间没有数据 —— 多为整周休市（国庆 / 春节）。换「今年来」或更长的区间看看。</div>
       </div>
 
       <el-descriptions :title="isFlow ? '资金流向信息' : '指数信息'" :column="3" border size="small" class="desc-card">

@@ -12,6 +12,7 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchCommodityDetail, fetchCommodityMinutes } from '@/api/commodities'
+import { ytdFrom, wtdFrom } from '@/lib/dateRange'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
 import type { CommodityDetail, CommodityMinutes, DaysOption } from '@/types/commodity'
 
@@ -41,6 +42,7 @@ const minutesLoading = ref(false)
 
 const daysOptions: { label: string; value: DaysOption }[] = [
   { label: '今年来', value: 'ytd' },
+  { label: '本周',   value: 'wtd' },
   { label: '30天',   value: 30   },
   { label: '90天',   value: 90   },
   { label: '180天',  value: 180  },
@@ -51,16 +53,13 @@ const daysOptions: { label: string; value: DaysOption }[] = [
   { label: '20年',   value: 7300 },
 ]
 
-function ytdFrom() {
-  return `${new Date().getFullYear()}-01-01`
-}
-
 async function loadDetail() {
   loading.value = true
   error.value = ''
   try {
-    const params = days.value === 'ytd'
-      ? { from: ytdFrom() }
+    // 'wtd'/'ytd' 走 from（自然周期），数字走滚动天数
+    const params = days.value === 'ytd' ? { from: ytdFrom() }
+      : days.value === 'wtd' ? { from: wtdFrom() }
       : { days: days.value as number }
     detail.value = await fetchCommodityDetail(key.value, params)
   } catch {
@@ -396,7 +395,7 @@ function exchangeTagType(label: string | null) {
         </el-button>
 
         <el-radio-group
-          :model-value="(showIntraday || minutesLoading) ? null : days"
+          :model-value="(showIntraday || minutesLoading) ? undefined : days"
           size="small"
           @update:model-value="val => switchToDaily(val as DaysOption)"
         >
@@ -423,8 +422,17 @@ function exchangeTagType(label: string | null) {
       </div>
 
       <!-- 历史走势图 -->
+      <!-- ⚠ 必须给空态：选「本周」遇国庆/春节整周休市时 history 为 0 行，
+           不提示的话只是一张白底空轴图，看着像页面坏了（区间本身没错）。 -->
       <div v-else class="chart-wrap" v-loading="loading">
-        <AnnotatedLineChart :option="chartOption" autoresize style="width:100%;height:380px" />
+        <AnnotatedLineChart
+          v-if="detail.history.length"
+          :option="chartOption" autoresize style="width:100%;height:380px"
+        />
+        <div v-else-if="!loading" class="chart-empty">
+          该区间没有数据 —— 多为整周休市（国庆 / 春节）或该品种尚未入库。<br />
+          换「今年来」或更长的区间看看。
+        </div>
       </div>
 
       <!-- 详细信息卡片 -->
@@ -581,6 +589,18 @@ h1 {
   padding: 12px;
   margin-bottom: 24px;
   min-height: 360px;
+}
+
+/* 区间内无数据（整周休市等）：居中一段说明，而不是留一张白底空轴图 */
+.chart-empty {
+  height: 356px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 1.9;
+  color: #999;
+  font-size: 13px;
 }
 
 .desc-card {
