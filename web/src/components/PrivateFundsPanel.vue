@@ -194,12 +194,17 @@ const regCoverageTip = computed(() => {
           私募<strong>不得公开宣传推介与披露业绩</strong>（《私募投资基金募集行为管理办法》），
           所以公开渠道只有 <strong>备案名录</strong> 能大规模获取；
           <strong>规模 / 持仓 / 净值没有全量数据</strong>。
-          本页净值来自两个公开源，合计覆盖 <strong>{{ coverageText }}</strong>：
-          <strong>天天基金「高端理财」代销池</strong>（单位 / 累计净值，池内多为券商资管产品）
-          与 <strong>私募排排网可见名录</strong>（<strong>复权净值（分红再投）</strong>口径，
-          该名录仅约 5,565 只 = 公开可见净值的全部天花板，占备案名录 2% 量级）——
+          本页净值来自三个公开源，合计覆盖 <strong>{{ coverageText }}</strong>：
+          <strong>天天基金「高端理财」代销池</strong>（单位 / 累计净值，池内多为券商资管产品）、
+          <strong>私募排排网可见名录</strong>（<strong>复权净值（分红再投）</strong>口径，
+          <strong>登录态全量重扫</strong>后 5,498 只）
+          与 <strong>格上理财可见名录</strong>（单位 / 累计净值，仅约 927 只）——
+          三个可见名录加起来就是公开渠道能拿到净值的<strong>全部天花板</strong>，
           <strong>不代表全市场私募业绩</strong>。
-          ⚠ 两源口径不同（累计净值 vs 复权净值），在「有分红」标的上终身收益最多差数倍，
+          ⚠ 排排网那 5,498 只里有 2,027 只<strong>没有备案号</strong>（是 A/C 类份额分级），
+          其中 1,714 只已按「母基金名唯一 + 成立日时序核对」映射回备案主体入库，
+          <strong>序列本身取自该份额</strong>（费率结构与备案主体略有差异）。
+          口径不同（累计净值 vs 复权净值），在「有分红」标的上终身收益最多差数倍，
           故<strong>同一只产品的净值为单源、不混拼</strong>；与代销池重叠的标的保持代销池原样。
           备案名录本身也<strong>不是全量</strong>：覆盖
           <strong>{{ regCoverageText }}</strong>（{{ regCoverageTip }}）。

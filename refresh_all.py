@@ -128,6 +128,18 @@ OPT_IN_SCRIPTS = {
         "VLCC 船位（HiFleet REST，逐船按 MMSI 查最新位置，约 90s）",
         [], {"requires_env": "HIFLEET_API_KEY"},
     ),
+    # 私募净值补充源 = 格上理财（licai.com，**免登录**，无需 key）。
+    # 耗时约 8~11 分钟（927 只白名单，含 830 只映射到备案名录，逐只 POST netvalue）。
+    # 「漏跑不丢历史」成立：netvalue 一次返全历史、每次整段覆盖写，不是日频滚存
+    #   → 漏几天补跑一次就全回来了，所以不占整轮 refresh 的固定开销。
+    #     python fetch_private_nav_licai.py                 # 只刷这一源
+    #     python refresh_all.py --fetch --with-licai        # 连同整轮一起跑
+    # ⚠ 与 fetch_private_funds.py 一样属「手动/按需」；日常整轮不跑它。
+    "licai": (
+        "fetch_private_nav_licai.py",
+        "私募净值补充源（格上理财，927 只白名单，免登录，约 10 分钟）",
+        [], {},
+    ),
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -747,6 +759,8 @@ def main():
     parser.add_argument("--fetch",  action="store_true", help="仅运行 fetch 脚本")
     parser.add_argument("--with-vlcc", action="store_true",
                         help="连 VLCC 船位一起刷（约 90s，默认不跑，见 OPT_IN_SCRIPTS）")
+    parser.add_argument("--with-licai", action="store_true",
+                        help="连私募净值补充源（格上理财）一起刷（约 10 分钟，默认不跑）")
     parser.add_argument("--clear",       action="store_true", help="清空所有表数据（需二次确认）")
     parser.add_argument("--force_clear", action="store_true", help="强制清空所有表数据（无需确认）")
     args = parser.parse_args()

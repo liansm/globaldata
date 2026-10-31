@@ -75,7 +75,7 @@ export interface PrivateNavPoint {
   unitNav: number | null
   accNav: number | null
   dailyReturn: number | null
-  /** 净值出处：em_gaoduan=天天基金代销池（accNav=累计净值）；sppw=私募排排网（accNav=复权净值） */
+  /** 净值出处：em_gaoduan=天天基金代销池（accNav=累计净值）；sppw=私募排排网（accNav=复权净值）；licai=格上理财（accNav=累计净值） */
   source?: 'em_gaoduan' | 'sppw' | string | null
 }
 
@@ -92,7 +92,7 @@ export interface PrivateFundDetail extends PrivateFundSummary {
   navPointCount: number
   navEarliest: string | null
   navLatest: string | null
-  /** 净值出处：em_gaoduan=天天基金代销池；sppw=私募排排网；null=无净值 */
+  /** 净值出处：em_gaoduan=天天基金代销池；sppw=私募排排网；licai=格上理财；null=无净值 */
   navSource: string | null
   ytdReturn: number | null
   totalReturn: number | null
