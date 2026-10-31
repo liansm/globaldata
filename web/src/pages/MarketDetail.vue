@@ -13,6 +13,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchMarketDetail, fetchMarketMinutes } from '@/api/markets'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
+import { ytdFrom, wtdFrom } from '@/lib/dateRange'
 import { STOCK_MARKETS, detailNav, navForMarket } from '@/lib/nav'
 import type { MarketDetail, MarketMinutes } from '@/types/market'
 
@@ -27,10 +28,11 @@ const key = computed(() => route.params.key as string)
 const loading = ref(false)
 const error   = ref('')
 const detail  = ref<MarketDetail | null>(null)
-const days    = ref<number | 'ytd'>('ytd')
+const days    = ref<number | 'ytd' | 'wtd'>('ytd')
 
-const daysOptions: { label: string; value: number | 'ytd' }[] = [
+const daysOptions: { label: string; value: number | 'ytd' | 'wtd' }[] = [
   { label: '今年来', value: 'ytd'  },
+  { label: '本周',   value: 'wtd'  },
   { label: '30天',   value: 30    },
   { label: '90天',   value: 90    },
   { label: '180天',  value: 180   },
@@ -65,16 +67,13 @@ const showIntraday   = ref(true)   // default to intraday; switched off for non-
 const minuteLoading  = ref(false)
 const minuteData     = ref<MarketMinutes | null>(null)
 
-function ytdFrom() {
-  return `${new Date().getFullYear()}-01-01`
-}
-
 async function loadDetail() {
   loading.value = true
   error.value   = ''
   try {
-    const params = days.value === 'ytd'
-      ? { from: ytdFrom() }
+    // 'wtd'/'ytd' 走 from（自然周期），数字走滚动天数
+    const params = days.value === 'ytd' ? { from: ytdFrom() }
+      : days.value === 'wtd' ? { from: wtdFrom() }
       : { days: days.value }
     detail.value = await fetchMarketDetail(key.value, params)
     // 回填「本页属于哪个导航项」：/market/:key 的 route.name 分不出股市/航运/建材，
@@ -110,7 +109,7 @@ function switchToIntraday() {
   if (!minuteData.value) loadMinutes()
 }
 
-function switchToDaily(val: number | 'ytd') {
+function switchToDaily(val: number | 'ytd' | 'wtd') {
   showIntraday.value = false
   days.value = val
 }
@@ -143,13 +142,92 @@ function latestClose() {
   const h = detail.value?.history
   return h?.length ? h[0].close : null
 }
-function rangeChange() {
+
+/**
+ * 头部涨跌幅 = 当前所选区间的涨跌幅（与大宗商品详情页同口径）。
+ *
+ * 基准用后端 `baseline`（from **之前**最后一个交易日收盘），含首日当天的涨跌；
+ * 老接口没有 baseline 时退回「区间内首日收盘」—— 会漏掉首日，仅作兜底。
+ * 分时视图不显示区间涨跌幅（日线数据与分时不同口径，混着给会自相矛盾）。
+ */
+function rangeChange(): number | null {
   const h = detail.value?.history
-  if (!h || h.length < 2) return null
+  if (!h || !h.length) return null
   const latest = h[0].close
-  const prev   = h[h.length - 1].close
+  const prev = detail.value?.baseline?.close
+    ?? h[h.length - 1]?.close
+    ?? null
   if (latest == null || prev == null || prev === 0) return null
   return ((latest - prev) / prev) * 100
+}
+
+/** 涨跌幅的区间名（本周 / 30天 / 今年来…），跟着上方标签走 */
+function rangeLabel(): string {
+  return daysOptions.find(o => o.value === days.value)?.label ?? '区间'
+}
+
+/** 分时视图的「最新价」= 末根分钟线收盘（和图上右端点、tooltip 同一序列） */
+function intradayLastClose(): number | null {
+  const m = minuteData.value?.minutes
+  if (!m?.length) return null
+  for (let i = m.length - 1; i >= 0; i--) {
+    if (m[i].close != null) return m[i].close
+  }
+  return null
+}
+
+/** 头部大价格：分时取末根分钟线，日线取最新收盘 —— 必须和下面的涨跌额同源 */
+const headerPrice = computed<number | null>(() =>
+  showIntraday.value ? (intradayLastClose() ?? latestClose()) : latestClose(),
+)
+
+/**
+ * 头部涨跌额 + 涨跌幅 —— 两个数字**必须同一基准**相减，否则「价 − 涨跌额 = 基准」对不上：
+ *   · 分时 → 末根分钟线 − 昨收（minuteData.prevClose，图上那条虚线就是它）
+ *   · 日线 → 区间末收盘 − baseline（区间涨跌幅的老基准，含首日涨跌）
+ * 拿不到基准 → null，不显示，别拿 0% 冒充。
+ */
+const headerChange = computed<{ amt: number | null; pct: number; label: string; title: string } | null>(() => {
+  if (showIntraday.value) {
+    const last = intradayLastClose()
+    const prev = minuteData.value?.prevClose ?? null
+    if (last == null || prev == null || prev === 0) return null
+    const amt = last - prev
+    return {
+      amt,
+      pct: (amt / prev) * 100,
+      label: '今日',
+      title: `今日涨跌（相对昨收 ${fmt(prev, 2)}）：${fmt(last, 2)}`,
+    }
+  }
+  const pct = rangeChange()
+  if (pct == null) return null
+  const h = detail.value?.history
+  const last = h?.[0]?.close ?? null
+  const base = detail.value?.baseline?.close ?? h?.[h.length - 1]?.close ?? null
+  return {
+    amt: last != null && base != null ? last - base : null,
+    pct,
+    label: rangeLabel(),
+    title: rangeTitle(),
+  }
+})
+
+/** 涨跌额格式：整数不补 .00（上证 52.42 / 道指 240），最多两位小数 */
+function fmtAmt(v: number) {
+  return Math.abs(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
+
+/** hover 说明：这个百分比是从哪天什么价算到哪天什么价，方便拿计算器核对 */
+function rangeTitle(): string {
+  const h = detail.value?.history
+  if (!h || !h.length) return ''
+  const latest = h[0]
+  const base = detail.value?.baseline
+  const prev = base?.close ?? h[h.length - 1]?.close ?? null
+  if (prev == null || latest.close == null) return ''
+  const baseDate = base?.date ?? h[h.length - 1]?.date ?? ''
+  return `${rangeLabel()}涨跌幅（收盘价）：${baseDate} ${fmt(prev, 2)} → ${latest.date} ${fmt(latest.close, 2)}`
 }
 
 // ── Daily chart option ─────────────────────────────────────────────────────
@@ -168,6 +246,10 @@ const chartOption = computed(() => {
   const areaStart = isFlow.value ? 'rgba(245,108,108,0.2)' : 'rgba(64,158,255,0.2)'
   const areaEnd   = isFlow.value ? 'rgba(245,108,108,0)'   : 'rgba(64,158,255,0)'
   const hasVolume = !isFlow.value && volumes.some(v => v !== null)
+
+  // 长区间（1年 ~250 个点）靠 ECharts 的 auto interval 会按「未旋转字宽」估间隔，
+  // 但 label 是 rotate:30 的，实际占位更宽 → 标签会挤成一片并压到滑块上。
+  const labelStep = Math.max(1, Math.ceil(dates.length / 10))
 
   // A股/港股/欧洲/亚太的 volume 按「股」入库(100 股 = 1 手)，只有美股的 volume
   // 是明确的成交股数、没有「手」这个口径 → 单独按股展示。
@@ -196,22 +278,35 @@ const chartOption = computed(() => {
           return `${p.axisValue}<br/><b>${val}</b> ${unitLabel}`
         },
       },
-      grid: { top: 20, right: 24, bottom: 60, left: 80 },
+      // bottom 要给「rotate 30° 的日期标签 + 滑块」留够位置，否则标签会压到滑块上
+      grid: { top: 20, right: 24, bottom: 78, left: 80 },
       xAxis: {
         type: 'category', data: dates,
-        axisLabel: { rotate: 30, fontSize: 11, color: '#888' },
+        axisLabel: {
+          rotate: 30, fontSize: 11, color: '#888',
+          interval: labelStep - 1, hideOverlap: true,
+        },
         axisLine: { lineStyle: { color: '#ddd' } },
       },
       yAxis: {
         type: 'value',
         min: Math.max(0, minVal - padding), max: maxVal + padding,
         axisLabel: { fontSize: 11, color: '#888',
+          // max 通常不是刻度值，ECharts 会在轴端补一个 label（1,473 与 1,400 叠两行）
+          showMaxLabel: false, showMinLabel: false,
           formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) },
         splitLine: { lineStyle: { color: '#f0f0f0' } },
       },
       dataZoom: [
         { type: 'inside', start: 0, end: 100 },
-        { type: 'slider', start: 0, end: 100, height: 24, bottom: 4 },
+        {
+          type: 'slider', start: 0, end: 100, height: 16, bottom: 8,
+          showDataShadow: false,
+          borderColor: 'transparent', backgroundColor: '#f5f7fb',
+          fillerColor: 'rgba(64,158,255,.12)',
+          handleStyle: { color: '#409eff' },
+          textStyle: { fontSize: 10, color: '#a8b0be' },
+        },
       ],
       series: [{
         name: detail.value.name, type: 'line', data: closes,
@@ -240,20 +335,24 @@ const chartOption = computed(() => {
       },
     },
     grid: [
-      { top: 20,  right: 24, bottom: 130, left: 80 },  // 价格区
-      { top: 270, right: 24, bottom: 34,  left: 80 },  // 成交量区
+      { top: 20,  right: 24, bottom: 152, left: 80 },  // 价格区
+      { top: 248, right: 24, bottom: 78,  left: 80 },  // 成交量区
     ],
     xAxis: [
       { gridIndex: 0, type: 'category', data: dates,
         axisLabel: { show: false }, axisLine: { lineStyle: { color: '#ddd' } } },
       { gridIndex: 1, type: 'category', data: dates,
-        axisLabel: { rotate: 30, fontSize: 11, color: '#888' },
+        axisLabel: {
+          rotate: 30, fontSize: 11, color: '#888',
+          interval: labelStep - 1, hideOverlap: true,
+        },
         axisLine: { lineStyle: { color: '#ddd' } } },
     ],
     yAxis: [
       { gridIndex: 0, type: 'value',
         min: Math.max(0, minVal - padding), max: maxVal + padding,
         axisLabel: { fontSize: 11, color: '#888',
+          showMaxLabel: false, showMinLabel: false,
           formatter: (v: number) => v.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) },
         splitLine: { lineStyle: { color: '#f0f0f0' } } },
       { gridIndex: 1, type: 'value',
@@ -261,7 +360,14 @@ const chartOption = computed(() => {
     ],
     dataZoom: [
       { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
-      { type: 'slider', xAxisIndex: [0, 1], start: 0, end: 100, height: 24, bottom: 4 },
+      {
+        type: 'slider', xAxisIndex: [0, 1], start: 0, end: 100, height: 16, bottom: 8,
+        showDataShadow: false,
+        borderColor: 'transparent', backgroundColor: '#f5f7fb',
+        fillerColor: 'rgba(64,158,255,.12)',
+        handleStyle: { color: '#409eff' },
+        textStyle: { fontSize: 10, color: '#a8b0be' },
+      },
     ],
     series: [
       {
@@ -422,17 +528,20 @@ const intradayOption = computed(() => {
 
         <div class="price-block">
           <div class="latest-price">
-            {{ fmt(latestClose()) }}
+            {{ fmt(headerPrice) }}
             <span class="unit">{{ detail.unit ?? (isFlow ? '亿元' : '点') }}</span>
           </div>
+          <!-- 涨跌额 + 涨跌幅：分时 → 今日（相对昨收）；日线 → 所选区间 -->
           <div
-            v-if="!showIntraday && rangeChange() != null"
+            v-if="headerChange"
             class="change"
-            :class="rangeChange()! >= 0 ? 'up' : 'down'"
+            :class="headerChange.pct >= 0 ? 'up' : 'down'"
+            :title="headerChange.title"
           >
-            {{ rangeChange()! >= 0 ? '▲' : '▼' }}
-            {{ Math.abs(rangeChange()!).toFixed(2) }}%
-            <span class="change-label">（区间）</span>
+            {{ headerChange.pct >= 0 ? '▲' : '▼' }}
+            <span v-if="headerChange.amt != null" class="change-amt">{{ fmtAmt(headerChange.amt) }}</span>
+            ({{ headerChange.pct >= 0 ? '+' : '-' }}{{ Math.abs(headerChange.pct).toFixed(2) }}%)
+            <span class="change-label">（{{ headerChange.label }}）</span>
           </div>
         </div>
       </div>
@@ -451,9 +560,9 @@ const intradayOption = computed(() => {
         </el-button>
 
         <el-radio-group
-          :model-value="showIntraday ? null : days"
+          :model-value="showIntraday ? undefined : days"
           size="small"
-          @update:model-value="val => switchToDaily(val as number | 'ytd')"
+          @update:model-value="val => switchToDaily(val as number | 'ytd' | 'wtd')"
         >
           <el-radio-button v-for="opt in daysOptions" :key="String(opt.value)" :value="opt.value">
             {{ opt.label }}
@@ -476,8 +585,13 @@ const intradayOption = computed(() => {
       </div>
 
       <!-- 日线走势图 -->
+      <!-- ⚠ 空态必给：选「本周」遇整周休市时 history 为 0 行，白底空轴图看着像坏了 -->
       <div v-else class="chart-wrap" v-loading="loading">
-        <AnnotatedLineChart :option="chartOption" autoresize style="width:100%;height:380px" />
+        <AnnotatedLineChart
+          v-if="detail.history.length"
+          :option="chartOption" autoresize style="width:100%;height:380px"
+        />
+        <div v-else-if="!loading" class="no-data">该区间没有数据 —— 多为整周休市（国庆 / 春节）。换「今年来」或更长的区间看看。</div>
       </div>
 
       <el-descriptions :title="isFlow ? '资金流向信息' : '指数信息'" :column="3" border size="small" class="desc-card">
@@ -558,6 +672,12 @@ h1 {
   font-size: 15px;
   font-weight: 600;
   margin-top: 4px;
+}
+
+/* 涨跌额与百分比同一行：等宽数字，切区间时不左右抖动 */
+.change-amt {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
 .up   { color: #f56c6c; }

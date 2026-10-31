@@ -228,10 +228,14 @@ function exchangeTagType(label: string | null) {
 
               <div class="card-footer">
                 <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-                <template v-if="item.spotUpdatedAt">
+                <template v-if="item.spotSnapshotKind">
                   <span class="card-sep">·</span>
-                  <span class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
-                  <span class="card-spot-badge">实时</span>
+                  <template v-if="item.spotSnapshotKind === 'intraday'">
+                    <span v-if="item.spotUpdatedAt" class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
+                    <span class="card-spot-badge">实时</span>
+                  </template>
+                  <!-- 收市静态价：价格是最近交易日收盘，不再跳动，别写「实时」 -->
+                  <span v-else class="card-spot-badge is-close">收盘</span>
                 </template>
                 <span v-if="item.hasMinutes" class="card-minutes-icon" title="有分时图">📈</span>
                 <span v-else class="card-arrow">→</span>
@@ -286,10 +290,13 @@ function exchangeTagType(label: string | null) {
 
             <div class="card-footer">
               <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-              <template v-if="item.spotUpdatedAt">
+              <template v-if="item.spotSnapshotKind">
                 <span class="card-sep">·</span>
-                <span class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
-                <span class="card-spot-badge">实时</span>
+                <template v-if="item.spotSnapshotKind === 'intraday'">
+                  <span v-if="item.spotUpdatedAt" class="card-spot-time">{{ fmtSpotTime(item.spotUpdatedAt) }}</span>
+                  <span class="card-spot-badge">实时</span>
+                </template>
+                <span v-else class="card-spot-badge is-close">收盘</span>
               </template>
               <span v-if="item.hasMinutes" class="card-minutes-icon" title="有分时图">📈</span>
               <span v-else class="card-arrow">→</span>
@@ -525,6 +532,12 @@ h1 {
   color: #409eff;
   font-weight: 500;
   vertical-align: middle;
+}
+
+/* 收市静态价：用中性灰和「实时」的蓝色区分开 */
+.card-spot-badge.is-close {
+  background: #f4f4f5;
+  color: #909399;
 }
 
 .card-minutes-icon {

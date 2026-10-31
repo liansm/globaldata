@@ -13,6 +13,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchFundDetail, fetchFundNav, fetchFundNavSummary, fetchFundYearly } from '@/api/funds'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
+import { ytdFrom } from '@/lib/dateRange'
 import type {
   FundDetailResp, FundHolding, FundNavPoint, FundNavSummaryResp, FundYearlyItem,
 } from '@/types/fund'
@@ -86,17 +87,6 @@ function returnTip(kind: 'ytd' | 'total'): string {
   }
   return `${head}；下面「分红不复投」按累计净值口径计算为 ${acc.toFixed(2)}%，`
     + '差额来自分红没有参与复利'
-}
-
-/**
- * 「今年来」的起点 = 本自然年 1 月 1 日（与 MarketDetail.vue / Detail.vue 的 ytdFrom 同写法规约）。
- * 刻意**不用** latestNavDate 的年份：库里有已终止/停更的基金，快照停在若干年前，
- * 按数据年算会把 2024 年的曲线标成「今年来」——那是粉饰。按系统年算，
- * 这类基金只会得到一个空图，是真实的「今年没数据」。
- * （1 月初数据尚未更新时也会短暂为空，同样属实。）
- */
-function ytdFrom() {
-  return `${new Date().getFullYear()}-01-01`
 }
 
 /** 走势图区间摘要：区间涨跌（双口径）与区间最高最低 */

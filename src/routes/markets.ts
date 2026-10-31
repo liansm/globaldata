@@ -1,9 +1,34 @@
 import { FastifyInstance } from 'fastify'
 import { db } from '../db'
 import { marketIndices, indexPrices, indexMinutes, indexSpot } from '../db/schema'
-import { eq, desc, gte, lte, and, sql } from 'drizzle-orm'
+import { eq, desc, gte, lte, lt, and, sql } from 'drizzle-orm'
 
 const toNum = (v: string | null) => (v == null ? null : parseFloat(v))
+
+/**
+ * 当前是否在该市场的交易时段内（Asia/Shanghai）。用于判断 index_spot 的当日快照
+ * 还能不能当「实时」用 —— 收盘后它就不再刷新，继续用会把收盘价显示成盘中价。
+ *
+ * ⚠ 只判「工作日 + 时段」，**不判节假日**（没有交易日历）。节假日会误判成 true，
+ *   但那种情况 `spot_date` 是节前最后一天、不等于今天，`spotIsToday` 会先把它挡掉。
+ * ⚠ 收盘时间留 5~10 分钟余量：让收盘后最后一批快照（接近收盘价）能被用上，
+ *   之后日线入库就切回日线。
+ */
+function inTradingWindow(market: string, now = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(now)
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? ''
+  const wd = get('weekday')
+  if (wd === 'Sat' || wd === 'Sun') return false
+  const hm = parseInt(get('hour'), 10) * 60 + parseInt(get('minute'), 10)
+  // A股 09:15 集合竞价起 / 15:05 收盘余量；港股 09:30 起 / 16:10 收盘余量
+  const [open, close] = market === '港股'
+    ? [9 * 60 + 15, 16 * 60 + 10]
+    : [9 * 60 + 15, 15 * 60 + 5]
+  return hm >= open && hm <= close
+}
 
 export async function marketsRoutes(app: FastifyInstance) {
 
@@ -70,6 +95,34 @@ export async function marketsRoutes(app: FastifyInstance) {
           FROM index_spot
           WHERE index_key = ${marketIndices.key}
         )`.as('spot_updated_at'),
+        // 'intraday' = 盘中实时（fetch_index_spot.py 在交易时段写入）
+        // 'close'    = 收盘快照（收盘后写入，价格就是该交易日收盘，且**带成交额**）
+        // 两种都能当现价用，区别只在「能不能信」和前端 badge 文案。
+        spotKind: sql<string>`(
+          SELECT COALESCE(snapshot_kind, 'intraday') FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_kind'),
+        // ── spot 是否还能当「实时」用 ─────────────────────────────────────
+        // index_spot 的行**会残留**：fetch_index_spot.py 的 _is_today_snapshot()
+        // 在「最新价 == 某历史收盘价」时故意跳过写库（防盘前把昨日收盘记成今天），
+        // 所以收盘后再怎么跑都不会刷新这一行 —— 最后一次盘中快照会一直躺在表里。
+        // 直接拿它当现价，卡片就会显示**上一个交易日盘中的价格**：
+        // 实测 2026-10-31（周六）上证卡片 3615.4043 / -0.99%，那是 10-30 09:44 的盘中价，
+        // 而 10-30 真实收盘是 3599.0170 / -1.43%。时间没错，价格是错的。
+        spotIsToday: sql<boolean>`(
+          SELECT spot_date = (NOW() AT TIME ZONE 'Asia/Shanghai')::date
+          FROM index_spot
+          WHERE index_key = ${marketIndices.key}
+        )`.as('spot_is_today'),
+        // 日线已经有 spot 那天的收盘 → 当天已结算，盘中价作废，必须用日线收盘
+        dailyCoversSpotDate: sql<boolean>`(
+          EXISTS (
+            SELECT 1 FROM index_spot s
+            JOIN index_prices p
+              ON p.index_key = s.index_key AND p.price_date = s.spot_date
+            WHERE s.index_key = ${marketIndices.key}
+          )
+        )`.as('daily_covers_spot_date'),
       })
       .from(marketIndices)
       .orderBy(marketIndices.market, marketIndices.key)
@@ -82,8 +135,32 @@ export async function marketsRoutes(app: FastifyInstance) {
       const spotChangePct  = toNum(r.spotChangePct)
       const spotTurnover   = toNum(r.spotTurnover)
 
-      // Use real-time spot data when available for A股 and 港股
-      const useSpot = (r.market === 'A股' || r.market === '港股') && spotPrice != null
+      // ── spot 能不能当现价用 ────────────────────────────────────────────────
+      // 见上面 spotIsToday / dailyCoversSpotDate / spotKind 的注释。分两种快照：
+      //
+      // ① intraday（盘中写入）：必须来自「今天」，且不能是「日线已收盘入库」之后
+      //    —— 那种情况下日线的收盘价才是准的。
+      // ② close（收盘后写入）：`spot_date` 就是它所属的交易日（脚本会把它校正成
+      //    真实交易日，周末抓到的会是周五而不是周六）。只要不早于日线最新日期，
+      //    它就是「最近交易日的收盘」，直接用 —— **这样能保住成交额**
+      //    （index_prices.turnover 恒为 NULL，新浪 stock_zh_index_daily 不给）。
+      //
+      // 早期版本只有 ① 一半的判断（spotPrice != null），于是把周六那天残留的
+      // 「10-30 09:44 盘中价」当现价显示成「实时 3615.40」（真收盘 3599.02）。
+      // 后来改成「收盘后一律不写 spot」，价格对了但成交额退化成成交量。
+      // 现在两者兼顾：写 close 快照 + 按 kind 区分展示。
+      const kind = r.spotKind
+      const closeIsCurrent =
+        kind === 'close' && r.spotDate != null
+        && (r.latestDate == null || r.spotDate >= r.latestDate)
+      const intradayIsCurrent =
+        kind !== 'close' && r.spotIsToday === true
+        && (inTradingWindow(r.market) || r.dailyCoversSpotDate !== true)
+
+      const useSpot =
+        (r.market === 'A股' || r.market === '港股')
+        && spotPrice != null
+        && (closeIsCurrent || intradayIsCurrent)
 
       const displayClose = useSpot ? spotPrice : latestClose
 
@@ -102,8 +179,12 @@ export async function marketsRoutes(app: FastifyInstance) {
         // 成交额缺失时前端回退显示成交量（新浪美股 amount 恒为 0 → turnover 为 NULL）
         latestVolume:   toNum(r.latestVolume),
         changePct,
-        // Non-null when spot data is active — used by frontend to show "实时" badge + time
-        latestSpotUpdatedAt: useSpot ? (r.spotUpdatedAt ?? null) : null,
+        // 'intraday' → 前端显示「HH:MM · 实时」；'close' → 显示「收盘」
+        // null = 当前展示的是日线，不该挂任何快照标记
+        spotSnapshotKind: useSpot ? (kind === 'close' ? 'close' : 'intraday') : null,
+        // 只有盘中快照才有「几点几分」的意义；收盘快照的 updated_at 是抓取时刻，
+        // 拿它当"收盘时间"会误导（周末 11:34 抓的也是周五收盘），所以不给。
+        latestSpotUpdatedAt: useSpot && kind !== 'close' ? (r.spotUpdatedAt ?? null) : null,
       }
     })
   })
@@ -149,6 +230,19 @@ export async function marketsRoutes(app: FastifyInstance) {
       ))
       .orderBy(desc(indexPrices.priceDate))
 
+    // 区间涨跌幅的基期：fromDate **之前**最近一条收盘。
+    // 与 /api/commodities/:key 的 baseline 同口径：没有它只能拿区间内首日收盘当基准，
+    // 「本周」会漏掉周一当天的涨跌。
+    const [baseline] = await db
+      .select({ date: indexPrices.priceDate, close: indexPrices.close })
+      .from(indexPrices)
+      .where(and(
+        eq(indexPrices.indexKey, key),
+        lt(indexPrices.priceDate, fromDate),
+      ))
+      .orderBy(desc(indexPrices.priceDate))
+      .limit(1)
+
     return {
       key:       meta.key,
       symbol:    meta.symbol,
@@ -162,6 +256,8 @@ export async function marketsRoutes(app: FastifyInstance) {
         volume:   toNum(h.volume),
         turnover: toNum(h.turnover),
       })),
+      // 区间基期（区间起点前最后一个交易日收盘）；序列在区间内才有数据时为 null
+      baseline: baseline ? { date: baseline.date, close: toNum(baseline.close) } : null,
     }
   })
 
@@ -188,21 +284,19 @@ export async function marketsRoutes(app: FastifyInstance) {
     }
 
     // Resolve target date
+    // ⚠ 用 SQL 取日期，别在 JS 里对 `TIMESTAMP` 做 getFullYear()：pg 把无时区的
+    //   timestamp 当 UTC 解析，本地（UTC+8）一加就跨天。A股收盘 15:00 后暂时不会踩到，
+    //   但和 /api/commodities/:key/minutes 保持同一写法（那边夜盘 23:00 会直接算错一天）。
     let targetDate = date
     if (!targetDate) {
       const [latest] = await db
-        .select({ dt: indexMinutes.dt })
+        .select({ date: sql<string>`to_char(MAX(${indexMinutes.dt}), 'YYYY-MM-DD')` })
         .from(indexMinutes)
         .where(eq(indexMinutes.indexKey, key))
-        .orderBy(desc(indexMinutes.dt))
-        .limit(1)
-      if (!latest) {
+      if (!latest?.date) {
         return { key, name: meta.name, market: meta.market, date: null, minutes: [] }
       }
-      // dt is stored as China local time — format as YYYY-MM-DD directly
-      const d = latest.dt
-      const pad = (n: number) => String(n).padStart(2, '0')
-      targetDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      targetDate = latest.date
     }
 
     // Prefer index_spot.prev_close (updated by fetch_index_spot.py from real-time feed)

@@ -11,9 +11,12 @@ export interface Commodity {
   updatedAt: string | null
   latestDate: string | null
   latestPrice: number | null
-  // Real-time spot fields (non-null when commodity_spot has a record)
+  // Spot snapshot fields (non-null when a usable commodity_spot row exists)
   spotChangePct: number | null   // e.g. 1.23 for +1.23%
-  spotUpdatedAt: string | null   // "YYYY-MM-DD HH:MM" (Asia/Shanghai)
+  spotUpdatedAt: string | null   // "YYYY-MM-DD HH:MM" (Asia/Shanghai)；仅盘中快照有值
+  //   'intraday' → 盘中/夜盘实时价，显示「HH:MM · 实时」
+  //   'close'    → 收市静态价（日期已校正成最近交易日），显示「收盘」
+  spotSnapshotKind: 'intraday' | 'close' | null
   hasMinutes:    boolean         // true when intraday minute bars exist for today
 }
 
@@ -26,6 +29,7 @@ export interface SpotSnapshot {
   turnover:  number | null
   spotDate:  string | null
   updatedAt: string | null
+  snapshotKind: 'intraday' | 'close' | null
 }
 
 export interface PricePoint {
@@ -54,6 +58,9 @@ export interface CommodityDetail {
   updatedAt: string | null
   spot: SpotSnapshot | null
   history: PricePoint[]
+  // 区间涨跌幅的基期：区间起点**前**最后一个交易日的收盘价。
+  // 后端按本次请求的 from 计算；序列在区间内才有数据（无更早历史）时为 null。
+  baseline: PricePoint | null
 }
 
 export interface CommodityMinutes {
@@ -73,4 +80,6 @@ export interface LatestPrice {
 }
 
 // 时间范围选项
-export type DaysOption = 'ytd' | 7 | 30 | 90 | 180 | 365 | 730 | 1825 | 3650 | 7300
+// 'ytd' / 'wtd' 是**自然周期**（今年来 = 1 月 1 日起、本周 = 本周一起），不是滚动 N 天；
+// 数字才是滚动天数。两者不能混：本周六选「本周」应看到周一至今 5 个交易日，不是近 7 天。
+export type DaysOption = 'wtd' | 'ytd' | 7 | 30 | 90 | 180 | 365 | 730 | 1825 | 3650 | 7300

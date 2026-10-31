@@ -13,6 +13,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchPrivateFundDetail, fetchPrivateNav } from '@/api/privateFunds'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
+import { ytdFrom } from '@/lib/dateRange'
 import type { PrivateFundDetail, PrivateNavPoint } from '@/types/privateFund'
 
 use([CanvasRenderer, LineChart, TitleComponent, TooltipComponent,
@@ -60,15 +61,6 @@ const rangeOptions: { label: string; value: NavRange }[] = [
   { label: '近 1 年', value: 365 },
   { label: '全部',   value: 0 },
 ]
-
-/**
- * 「今年来」的起点 = 本自然年 1 月 1 日（同 Detail.vue / MarketDetail.vue / FundDetail.vue 的 ytdFrom 规约）。
- * 刻意不用最新净值日的年份：代销池里有已清算/停更的产品，快照停在往年，
- * 按数据年算会把旧数据标成「今年来」——那是粉饰。按系统年算，这类产品只会得到空图。
- */
-function ytdFrom() {
-  return `${new Date().getFullYear()}-01-01`
-}
 
 async function loadNav(code: string) {
   navLoading.value = true

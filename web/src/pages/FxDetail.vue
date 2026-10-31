@@ -10,6 +10,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import { fetchFxDetail } from '@/api/fx'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
+import { ytdFrom, wtdFrom } from '@/lib/dateRange'
 import type { FxDetail, FxRateType } from '@/types/fx'
 
 use([CanvasRenderer, LineChart, TitleComponent, TooltipComponent,
@@ -24,12 +25,13 @@ const loading = ref(false)
 const error   = ref('')
 const detail  = ref<FxDetail | null>(null)
 
-type RangeKey = 'ytd' | 'all' | number
+type RangeKey = 'ytd' | 'wtd' | 'all' | number
 const range    = ref<RangeKey>('ytd')
 const rateType = ref<FxRateType>('mid')
 
 const RANGE_OPTIONS: { label: string; value: RangeKey }[] = [
   { label: '今年来', value: 'ytd' },
+  { label: '本周',   value: 'wtd' },
   { label: '1月',   value: 30    },
   { label: '3月',   value: 90    },
   { label: '1年',   value: 365   },
@@ -67,10 +69,6 @@ const availableTypes = computed<FxRateType[]>(() => {
   return (['mid', 'spot'] as FxRateType[]).filter(k => (t[k]?.points ?? 0) > 0)
 })
 
-function ytdFrom() {
-  return `${new Date().getFullYear()}-01-01`
-}
-
 async function load() {
   loading.value = true
   error.value = ''
@@ -80,6 +78,8 @@ async function load() {
     let params: any
     if (range.value === 'ytd') {
       params = { rateType: rateType.value, from: ytdFrom() }
+    } else if (range.value === 'wtd') {
+      params = { rateType: rateType.value, from: wtdFrom() }
     } else if (range.value === 'all') {
       const earliest = cfg?.availableTypes?.[rateType.value]?.earliest
       params = earliest

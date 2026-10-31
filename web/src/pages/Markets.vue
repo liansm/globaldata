@@ -20,35 +20,40 @@ onMounted(async () => {
   }
 })
 
+// 板块前缀一律用**两字母区域码**，不用国旗 emoji：Windows 不渲染国旗，
+// 🇭🇰 会退成「HK」、🇨🇳 退成「CN」，而 🌏 这类符号是真图标 → 一栏里字母和图标混着，很脏。
+// 统一成字母码后各平台一致。AP = Asia-Pacific（亚太）—— 别用 AS（ISO 里是美属萨摩亚）、
+// 也别写 APAC（四个字符会把这一组前缀撑宽，右边界对不齐）。
 const SECTIONS = [
   {
     title: 'A股',
-    icon:  '🇨🇳',
+    code:  'CN',
     keys:  ['idx_sh', 'idx_sz', 'idx_hs300', 'idx_cyb', 'idx_kc50', 'idx_bz50'],
   },
   {
     title: '港股',
-    icon:  '🇭🇰',
+    code:  'HK',
     keys:  ['idx_hsi', 'idx_hscei', 'idx_hstech'],
   },
-  {
-    title: '沪深港通资金流向',
-    icon:  '💰',
-    keys:  ['flow_north', 'flow_south'],
-  },
+  // 「沪深港通资金流向」区块 2026-10-31 下线（不展示）：
+  //   北向资金港交所 2024-08-19 起停披露每日净买入，`flow_north` 停在 2026-04-13，
+  //   卡片上是个半年前的旧值还标着日期，容易被当成本周资金流出。
+  // 只摘了入口 —— fetch_markets.py 的 FLOW_CONFIGS、market_indices 的两行、
+  // /api/markets 与 /market/:key 详情**全部保留**，行情照常入库，恢复时加回这一组即可。
+  // 卡片渲染分支（isFlow / fmtFlow / flowClass）也留着，就是给恢复用的。
   {
     title: '美股',
-    icon:  '🇺🇸',
+    code:  'US',
     keys:  ['idx_dji', 'idx_nasdaq', 'idx_sp500'],
   },
   {
     title: '亚太',
-    icon:  '🌏',
+    code:  'AP',
     keys:  ['idx_nikkei', 'idx_kospi', 'idx_sensex', 'idx_sti', 'idx_vni'],
   },
   {
     title: '欧洲',
-    icon:  '🇪🇺',
+    code:  'EU',
     keys:  ['idx_ftse', 'idx_dax', 'idx_cac40'],
   },
 ]
@@ -140,7 +145,7 @@ function changePctClass(v: number | null | undefined) {
     <div class="page-header">
       <div>
         <h1>全球股市</h1>
-        <p class="subtitle">A股 · 港股 · 沪深港通资金流向</p>
+        <p class="subtitle">A股 · 港股 · 美股 · 亚太 · 欧洲</p>
       </div>
     </div>
 
@@ -160,7 +165,7 @@ function changePctClass(v: number | null | undefined) {
     <template v-else>
       <section v-for="sec in sections" :key="sec.title" class="section">
         <div class="section-header">
-          <span class="section-icon">{{ sec.icon }}</span>
+          <span class="section-code">{{ sec.code }}</span>
           <h2 class="section-title">{{ sec.title }}</h2>
           <span class="section-count">{{ sec.items.length }} 个</span>
         </div>
@@ -211,10 +216,16 @@ function changePctClass(v: number | null | undefined) {
 
             <div class="card-footer">
               <span class="card-date">{{ fmtDate(item.latestDate) }}</span>
-              <template v-if="item.latestSpotUpdatedAt">
+              <template v-if="item.spotSnapshotKind">
                 <span class="card-intraday-sep">·</span>
-                <span class="card-intraday-time">{{ fmtSpotTime(item.latestSpotUpdatedAt) }}</span>
-                <span class="card-intraday-badge">实时</span>
+                <template v-if="item.spotSnapshotKind === 'intraday'">
+                  <span v-if="item.latestSpotUpdatedAt" class="card-intraday-time">
+                    {{ fmtSpotTime(item.latestSpotUpdatedAt) }}
+                  </span>
+                  <span class="card-intraday-badge">实时</span>
+                </template>
+                <!-- 收盘快照：价格就是当日收盘，只是收盘后不再跳动，别写成「实时」 -->
+                <span v-else class="card-intraday-badge is-close">收盘</span>
               </template>
             </div>
           </div>
@@ -260,7 +271,22 @@ h1 {
   margin-bottom: 14px;
 }
 
-.section-icon { font-size: 18px; line-height: 1; }
+/* 区域码：两字母等宽显示，宽度固定，长名字板块也能对齐 */
+.section-code {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: #6f6f7d;
+  background: #f1f1f5;
+  border-radius: 4px;
+}
 
 .section-title {
   margin: 0;
@@ -388,6 +414,12 @@ h1 {
   color: #409eff;
   font-weight: 500;
   vertical-align: middle;
+}
+
+/* 收盘快照：价格静止，用中性灰和「实时」的蓝色区分开 */
+.card-intraday-badge.is-close {
+  background: #f4f4f5;
+  color: #909399;
 }
 
 /* ── Skeleton ─────────────────────────────────────────────────────────── */
