@@ -31,11 +31,12 @@ const SECTIONS = [
     icon:  '🇭🇰',
     keys:  ['idx_hsi', 'idx_hscei', 'idx_hstech'],
   },
-  {
-    title: '沪深港通资金流向',
-    icon:  '💰',
-    keys:  ['flow_north', 'flow_south'],
-  },
+  // 「沪深港通资金流向」区块 2026-10-31 下线（不展示）：
+  //   北向资金港交所 2024-08-19 起停披露每日净买入，`flow_north` 停在 2026-04-13，
+  //   卡片上是个半年前的旧值还标着日期，容易被当成本周资金流出。
+  // 只摘了入口 —— fetch_markets.py 的 FLOW_CONFIGS、market_indices 的两行、
+  // /api/markets 与 /market/:key 详情**全部保留**，行情照常入库，恢复时加回这一组即可。
+  // 卡片渲染分支（isFlow / fmtFlow / flowClass）也留着，就是给恢复用的。
   {
     title: '美股',
     icon:  '🇺🇸',
@@ -140,7 +141,7 @@ function changePctClass(v: number | null | undefined) {
     <div class="page-header">
       <div>
         <h1>全球股市</h1>
-        <p class="subtitle">A股 · 港股 · 沪深港通资金流向</p>
+        <p class="subtitle">A股 · 港股 · 美股 · 亚太 · 欧洲</p>
       </div>
     </div>
 
