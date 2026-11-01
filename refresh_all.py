@@ -56,6 +56,11 @@ FETCH_SCRIPTS = [
     #   周频 → 漏一期丢一期，但可翻 24 页回补 9 年，比日频源安全。
     ("fetch_coal_intl.py",         "国际动力煤 FOB（CCTD 国际煤炭周报，周频可回补）"),
     ("fetch_cement.py",            "水泥价格：CEMPI 指数 + P.O42.5 均价（中国水泥网，日频含历史）"),
+    # 生鲜乳收购价（元/公斤，10 主产省平均）—— 国内**没有牛奶期货**，这是原奶定价锚。
+    #   源 = 农业农村部畜牧兽医局《畜产品和饲料集贸市场价格情况》周报，周频。
+    #   增量只抓最近 20 天发布的那 2~3 期（约 2 个请求、秒级）；全量 462 期手动跑：
+    #     python fetch_milk_price.py --full      （约 5-8 分钟，走进度文件可续跑）
+    ("fetch_milk_price.py",        "生鲜乳收购价（农业农村部畜牧兽医局周报，10 主产省均价）"),
     # AI 硬件（一个脚本三块数据）：
     #   ① 存储颗粒现货 DDR5/DDR4 —— 源站历史只有**滚动半年**（半年内跑过就不丢），
     #      但只有 9 品种 × 10 个请求、约 20 秒 → 日更，不值得为它加节流
@@ -181,6 +186,21 @@ STATUS_QUERIES = [
             FROM prices
         """,
         "cols": ["rows", "commodities", "earliest", "latest"],
+    },
+    {
+        # ⚠ 周频：正常应是「每周 +1 期」，latest 距今 > 14 天说明农业农村部那期没发或没抓到。
+        "title": "prices  (生鲜乳收购价 元/公斤 · 10主产省)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   MIN(price_date)::text AS earliest,
+                   MAX(price_date)::text AS latest,
+                   (SELECT price::text FROM prices
+                     WHERE commodity_key = 'milk_raw'
+                     ORDER BY price_date DESC LIMIT 1) AS latest_price
+            FROM prices
+            WHERE commodity_key = 'milk_raw'
+        """,
+        "cols": ["rows", "earliest", "latest", "latest_price"],
     },
     {
         # ⚠ 只应覆盖滚动半年（约 120~125 个报价日/品种）：earliest 明显早于半年前
