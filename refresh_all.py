@@ -37,7 +37,13 @@ BASE_DIR     = Path(__file__).parent
 # 「没配置」而不是「抓取坏了」，不该把整轮 refresh 的结论染红。
 # 但会显式打印 [SKIP] 原因，绝不静默跳过。
 FETCH_SCRIPTS = [
-    ("fetch_markets.py",           "A股/港股指数 + 沪深港通资金流向（历史日线）"),
+    # ⚠ 沪深港通南北向资金（flow_north / flow_south）**2026-11-02 起不接入默认刷新**：
+    #   前端「沪深港通资金流向」组 2026-10-31 已下线，指数照常要、资金不再需要，
+    #   所以给 fetch_markets.py 传 --skip-flows，只抓指数。
+    #   FLOW_CONFIGS / /api/markets 接口 / 详情页全部保留，历史数据照旧可查；
+    #   要补资金历史时手动跑（不带参数即可）：
+    #     python fetch_markets.py
+    ("fetch_markets.py",           "A股/港股/海外指数（历史日线；南北向资金已跳过）", ["--skip-flows"]),
     ("fetch_index_spot.py",        "A股/港股指数实时快照（stock_zh/hk_index_spot_sina）"),
     ("fetch_market_minutes.py",    "A股指数分时 1 分钟 K 线"),
     ("fetch_ccfi.py",              "CCFI 中国出口集装箱运价指数（上海航交所，每周五发布）"),
