@@ -360,22 +360,28 @@ export async function privateFundsRoutes(app: FastifyInstance) {
   // ── GET /api/private-funds/:code/nav ──────────────────────────────────────
   // 净值序列（仅代销池有数据的 1,208 只；其余返回空数组）。
   // Query: from=2026-01-01（今年来用） | days=365（0 = 全部） | offset | order=asc|desc
+  //        withRange=1 → 附带区间涨跌幅摘要（只有走势图要；表格分页调用别白算一次聚合）
   app.get<{
     Params: { code: string }
-    Querystring: { days?: string; from?: string; offset?: string; limit?: string; order?: string }
+    Querystring: {
+      days?: string; from?: string; offset?: string; limit?: string; order?: string; withRange?: string
+    }
   }>('/api/private-funds/:code/nav', async (req) => {
     const { code } = req.params
-    const { days = '365', from, offset = '0', limit, order = 'desc' } = req.query
+    const { days = '365', from, offset = '0', limit, order = 'desc', withRange } = req.query
     const dayN = parseInt(days)
     // 上限 3000：走势图「全部」区间一次最多拿 3000 点，表格分页靠 offset+limit
     const lim = Math.min(Math.max(parseInt(limit || '3000') || 3000, 1), 3000)
 
     const conds = [eq(privateFundNav.fundNo, code)]
+    // 区间下界要留着算「区间起点前最后一个披露日」这个基期
+    let lowerBound: string | null = null
     if (from) {
+      lowerBound = from
       conds.push(gte(privateFundNav.navDate, from))
     } else if (dayN > 0) {
-      const since = new Date(Date.now() - dayN * 86400000).toISOString().slice(0, 10)
-      conds.push(gte(privateFundNav.navDate, since))
+      lowerBound = new Date(Date.now() - dayN * 86400000).toISOString().slice(0, 10)
+      conds.push(gte(privateFundNav.navDate, lowerBound))
     }
 
     const [{ total }] = await db
@@ -397,8 +403,77 @@ export async function privateFundsRoutes(app: FastifyInstance) {
       .limit(lim)
       .offset(Math.max(parseInt(offset) || 0, 0))
 
+    // ── 区间涨跌幅摘要 ────────────────────────────────────────────────────
+    // 口径与详情页 ytdReturn / totalReturn 完全一致：以**含分红口径净值 accNav**
+    // （排排网源=复权净值，代销池/格上源=累计净值）为准，末点 ÷ 基期 − 1。
+    // 基期取「区间起点**前**最后一个披露日」，含区间首日当天涨跌（Wind 区间涨跌幅
+    // 口径），所以「今年来」区间的数字与首屏「今年来」相等，不会自相矛盾。
+    // 没有更早披露日（全部历史 / 序列本身从区间内开始）时退回区间首点，并沿用
+    // 详情接口的「首日 1.0000 占位值」守卫（首两点相差 >50% 时改用第二点）。
+    // ⚠ 基于完整区间算，不受 rows 的 limit/offset/order 影响（表格走 desc 分页）。
+    let range: {
+      from: string | null; to: string | null
+      baseDate: string | null; baseNav: number | null; endNav: number | null
+      returnPct: number | null; points: number; hasBaseline: boolean
+    } | null = null
+
+    if (withRange === '1') {
+      const [agg] = await db
+        .select({
+          firstAcc:   accAgg('ASC'),
+          secondAcc:  accAgg('ASC', 2),
+          lastAcc:    accAgg('DESC'),
+          firstDate:  sql<string | null>`(MIN(${privateFundNav.navDate}) FILTER (WHERE ${privateFundNav.accNav} > 0))::text`,
+          secondDate: sql<string | null>`(ARRAY_AGG(${privateFundNav.navDate} ORDER BY ${privateFundNav.navDate} ASC)
+                          FILTER (WHERE ${privateFundNav.accNav} > 0))[2]::text`,
+          lastDate:   sql<string | null>`(MAX(${privateFundNav.navDate}) FILTER (WHERE ${privateFundNav.accNav} > 0))::text`,
+          points:     sql<number>`(COUNT(*) FILTER (WHERE ${privateFundNav.accNav} > 0))::int`,
+        })
+        .from(privateFundNav)
+        .where(and(...conds))
+
+      let baseDate: string | null = null
+      let baseNav: number | null = null
+      let hasBaseline = false
+      if (lowerBound) {
+        const [b] = await db
+          .select({ navDate: privateFundNav.navDate, accNav: privateFundNav.accNav })
+          .from(privateFundNav)
+          .where(and(
+            eq(privateFundNav.fundNo, code),
+            sql`${privateFundNav.navDate} < ${lowerBound}::date`,
+            sql`${privateFundNav.accNav} > 0`,
+          ))
+          .orderBy(desc(privateFundNav.navDate))
+          .limit(1)
+        if (b) {
+          baseDate = b.navDate
+          baseNav = toNum(b.accNav)
+          hasBaseline = true
+        }
+      }
+      if (!hasBaseline) {
+        const first = toNum(agg?.firstAcc), second = toNum(agg?.secondAcc)
+        const placeholder = first != null && second != null && Math.abs(second / first - 1) > 0.5
+        baseDate = placeholder ? (agg?.secondDate ?? null) : (agg?.firstDate ?? null)
+        baseNav = placeholder ? second : first
+      }
+
+      range = {
+        from: agg?.firstDate ?? null,
+        to: agg?.lastDate ?? null,
+        baseDate,
+        baseNav,
+        endNav: toNum(agg?.lastAcc),
+        returnPct: pctOf(toNum(agg?.lastAcc), baseNav),
+        points: agg?.points ?? 0,
+        hasBaseline,
+      }
+    }
+
     return {
       total,
+      ...(range ? { range } : {}),
       rows: rows.map((r) => ({
         ...r,
         unitNav: toNum(r.unitNav),

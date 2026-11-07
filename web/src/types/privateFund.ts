@@ -82,9 +82,23 @@ export interface PrivateNavPoint {
   source?: 'em_gaoduan' | 'sppw' | string | null
 }
 
+/** 走势图区间摘要（后端 withRange=1 才返回）。涨跌幅口径见后端 /nav 注释：
+ *  含分红口径净值 accNav，基期取区间起点前最后一个披露日（含区间首日当天涨跌）。 */
+export interface PrivateNavRange {
+  from: string | null          // 区间内首个有效净值日
+  to: string | null            // 区间内最后一个有效净值日
+  baseDate: string | null      // 基数点日期（可能是区间前一日）
+  baseNav: number | null
+  endNav: number | null
+  returnPct: number | null     // 区间涨跌幅（%）
+  points: number               // 区间内有效净值点数
+  hasBaseline: boolean         // true=基数来自区间前一披露日；false=退回区间首点
+}
+
 export interface PrivateNavResp {
   total: number
   rows: PrivateNavPoint[]
+  range?: PrivateNavRange | null
 }
 
 export interface PrivateFundDetail extends PrivateFundSummary {

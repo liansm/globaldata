@@ -103,7 +103,10 @@ export function fetchPrivateFundDetail(code: string): Promise<PrivateFundDetail>
 /** 净值序列。days=0 全部历史；from='YYYY-MM-DD' 用于「今年来」；limit 供表格分页 */
 export function fetchPrivateNav(
   code: string,
-  options: { days?: number; from?: string; order?: 'asc' | 'desc'; offset?: number; limit?: number } = {},
+  options: {
+    days?: number; from?: string; order?: 'asc' | 'desc'
+    offset?: number; limit?: number; withRange?: boolean
+  } = {},
 ): Promise<PrivateNavResp> {
   return http
     .get<PrivateNavResp>(`/private-funds/${code}/nav`, {
@@ -113,6 +116,8 @@ export function fetchPrivateNav(
         order: options.order ?? 'desc',
         offset: options.offset ?? 0,
         limit: options.limit,
+        // 只有走势图要区间涨跌幅；表格分页请求别让后端白算一次聚合
+        withRange: options.withRange ? 1 : undefined,
       },
     })
     .then(r => r.data)
