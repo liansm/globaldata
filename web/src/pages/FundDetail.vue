@@ -42,7 +42,7 @@ const navLoading = ref(false)
 
 /** 区间：天数（0 = 全部历史）或 'ytd'（今年来，按自然年取 1 月 1 日起） */
 type NavRange = number | 'ytd'
-const navRange = ref<NavRange>(365)
+const navRange = ref<NavRange>('ytd')
 
 /** 货币基金口径不同：nav=万份收益(元)、accNav=七日年化(%)，没有「单位净值」 */
 const isMoney = computed(() => detail.value?.navKind === 'money')
