@@ -4,7 +4,7 @@
 // ⚠ 本组件内部自带一层 el-tabs（备案产品 / 管理人），嵌在外层 tab 里 → 内层改 card 型区分层级。
 // 口径提示条（私募不得公开披露业绩）是这一页的核心，**位置与措辞都不要动**。
 import { ref, reactive, onMounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   fetchPrivateFunds,
   fetchPrivateManagers,
@@ -20,12 +20,14 @@ import type {
   PrivateTypeCount,
 } from '@/types/privateFund'
 
+const route  = useRoute()
 const router = useRouter()
 
 const stats  = ref<PrivateFundStats | null>(null)
 const states = ref<PrivateStateCount[]>([])
 const types  = ref<PrivateTypeCount[]>([])
-const tab    = ref<'funds' | 'managers'>('funds')
+// 从管理人详情页「返回私募基金」时带 ?sub=managers，落回内层「管理人」tab 而不是产品 tab。
+const tab    = ref<'funds' | 'managers'>(route.query.sub === 'managers' ? 'managers' : 'funds')
 
 // ── 产品列表 ────────────────────────────────────────────────────────────────
 const fundLoading = ref(false)
@@ -51,6 +53,7 @@ const mgrTotal   = ref(0)
 const mgrFilter = reactive({
   q: '',
   investType: '',
+  order: 'fundCount',
   page: 1,
   pageSize: 50,
 })
@@ -86,6 +89,7 @@ async function loadManagers() {
     const resp = await fetchPrivateManagers({
       q: mgrFilter.q,
       investType: mgrFilter.investType,
+      order: mgrFilter.order,
       page: mgrFilter.page,
       pageSize: mgrFilter.pageSize,
     })
@@ -99,7 +103,14 @@ async function loadManagers() {
 }
 
 onMounted(async () => {
-  loadFunds()
+  // ⚠ 直接以 ?sub=managers 进页面时 el-tabs 不会抛 tab-change，
+  //   这里必须按初始 tab 主动加载，否则管理人列表是空的（返回态白表）。
+  if (tab.value === 'managers') {
+    loadManagers()
+    try { types.value = await fetchPrivateManagerTypes() } catch { /* 非阻塞 */ }
+  } else {
+    loadFunds()
+  }
   try { stats.value = await fetchPrivateStats() } catch { /* 非阻塞 */ }
   try { states.value = await fetchPrivateStates() } catch { /* 非阻塞 */ }
 })
@@ -132,6 +143,12 @@ function onMgrPage(p: number) { mgrFilter.page = p; loadManagers() }
 function onMgrPageSize(s: number) { mgrFilter.pageSize = s; mgrFilter.page = 1; loadManagers() }
 
 function goDetail(row: { fundNo: string }) { router.push(`/private-fund/${row.fundNo}`) }
+
+/** from 只用于详情页「返回」时落回内层正确的 tab：managers / funds */
+function goManagerByNo(registerNo: string, from: 'funds' | 'managers' = 'managers') {
+  router.push({ path: `/private-manager/${registerNo}`, query: { from } })
+}
+function goManager(row: { registerNo: string }) { goManagerByNo(row.registerNo, 'managers') }
 
 // ── Formatters ──────────────────────────────────────────────────────────────
 function fmtDate(d: string | null) { return d ? d.slice(0, 10) : '—' }
@@ -281,7 +298,15 @@ const regCoverageTip = computed(() => {
             <template #default="{ row }"><span class="name-cell">{{ row.fundName }}</span></template>
           </el-table-column>
           <el-table-column prop="managerName" label="管理人" min-width="180" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.managerName ?? '—' }}</template>
+            <template #default="{ row }">
+              <!-- 有登记编号才做成链接；@click.stop 拦住行的 goDetail，否则点管理人会误跳产品详情 -->
+              <span v-if="row.managerRegisterNo" class="mgr-cell-link"
+                    :title="`查看管理人 ${row.managerName ?? ''}（${row.managerRegisterNo}）`"
+                    @click.stop="goManagerByNo(row.managerRegisterNo, 'funds')">
+                {{ row.managerName ?? '—' }}
+              </span>
+              <span v-else>{{ row.managerName ?? '—' }}</span>
+            </template>
           </el-table-column>
           <el-table-column prop="workingState" label="运行状态" width="110">
             <template #default="{ row }">
@@ -348,14 +373,20 @@ const regCoverageTip = computed(() => {
                        :label="`${t.investType ?? '未分类'} (${t.count})`" :value="t.investType ?? ''" />
           </el-select>
 
+          <el-select v-model="mgrFilter.order" style="width: 160px" @change="onMgrFilterChange">
+            <el-option label="按在管产品数" value="fundCount" />
+            <el-option label="按登记时间" value="register" />
+            <el-option label="按名称" value="name" />
+          </el-select>
+
           <span v-if="mgrTotal" class="total-badge">共 {{ mgrTotal.toLocaleString() }} 家</span>
         </div>
 
         <el-table :data="mgrList" v-loading="mgrLoading" style="width: 100%"
-                  class="pf-table"
+                  class="pf-table" @row-click="goManager"
                   :header-cell-style="{ background: '#fafbfc', color: '#555', fontWeight: 600 }">
           <el-table-column prop="managerName" label="管理人名称" min-width="230" show-overflow-tooltip>
-            <template #default="{ row }"><span class="name-cell">{{ row.managerName }}</span></template>
+            <template #default="{ row }"><span class="name-cell mgr-link">{{ row.managerName }}</span></template>
           </el-table-column>
           <el-table-column prop="registerNo" label="登记编号" width="110">
             <template #default="{ row }"><span class="mono">{{ row.registerNo }}</span></template>
@@ -459,6 +490,11 @@ const regCoverageTip = computed(() => {
 
 .code-link { color: #409eff; font-variant-numeric: tabular-nums; font-weight: 500; }
 .name-cell { font-weight: 500; color: #1a1a2e; }
+.mgr-link { color: #1a1a2e; cursor: pointer; }
+.mgr-link:hover { color: #409eff; text-decoration: underline; }
+/* 产品列表里的管理人名称：蓝色链接 = 可进管理人详情页；无登记编号的仍是普通文本 */
+.mgr-cell-link { color: #409eff; cursor: pointer; }
+.mgr-cell-link:hover { text-decoration: underline; }
 .mono { font-variant-numeric: tabular-nums; color: #666; }
 .num { font-variant-numeric: tabular-nums; font-weight: 600; color: #1a1a2e; }
 .dash { color: #ccc; }

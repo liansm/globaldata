@@ -60,7 +60,7 @@ python refresh_all.py --status
 
 ---
 
-## 二、会抓哪些数据（19 个脚本，按执行顺序）
+## 二、会抓哪些数据（20 个脚本，按执行顺序）
 
 ### 行情 / 指数
 
@@ -88,6 +88,7 @@ python refresh_all.py --status
 | 9b | `fetch_coal_flash.py` | **动力煤港口价**：汾渭 CCI 港口指数 5500/5000/4500 + CCTD 环渤海参考价 5000/4500 + **广州港进口煤场地含税价（澳洲5500/印尼4500）** + **神华巴图塔外购车板价（5500/5000/4500）**（ctctc.cn 市场快讯转载） | `prices`（港口沿用原 `coal_port_*`，进口/车板为新建 key） |
 | 9c | `fetch_coal_intl.py` | **国际动力煤 FOB（美元/吨，周频）**：澳洲纽卡斯尔 / 南非理查兹港 / 欧洲三港，CCTD「国际煤炭」栏目周报 | `prices`（`coal_newc_fob` / `coal_richards_fob` / `coal_ara_fob`） |
 | 10 | `fetch_cement.py` | CEMPI 水泥价格指数 + P.O42.5 均价（元/吨） | `index_prices` `prices` |
+| 10b | `fetch_milk_price.py` | **生鲜乳收购价（元/公斤，周频）**：农业农村部畜牧兽医局《畜产品和饲料集贸市场价格情况》周报的 10 主产省均价。国内**没有牛奶期货**，这是原奶定价锚。双索引取并集（主站 message 数组 + `xmsyj.moa.gov.cn/jcyj` 翻页），进度文件续跑 | `prices`（`milk_raw`） |
 | 11 | `fetch_ai_hardware.py` | ① DDR5/DDR4 颗粒现货（库里 11 个 key）② NAND/SSD/HDD 成品（110+ 品种，每 GB 价）③ GPU 云租价（6 型号 × 17 家，美元/卡·小时） | `dram_*` `storage_*` `gpu_*` |
 | 12 | `fetch_commodity_spot.py` | 期货实时快照 | `commodity_spot` |
 | 13 | `fetch_commodity_minutes.py` | 期货主力当日 1 分钟 K 线（20 个品种） | `commodity_minutes` |
@@ -124,13 +125,14 @@ python refresh_all.py --status
 
 按抓取方式分四类：
 
-### A. 真增量 —— 先查库里 `MAX(date)`，只写更新的行（3 个）
+### A. 真增量 —— 先查库里 `MAX(date)` / 进度文件，只抓更新的期次（4 个）
 
 | 脚本 | 判断依据 |
 |---|---|
 | `fetch_bdi.py` | 按序列查 `MAX(price_date)`，只 upsert 严格更新的行（源一次返回 ~5000 交易日全历史，但不重写） |
 | `fetch_cement.py` | 同上，按序列查 `MAX(price_date)` |
 | `fetch_ctfi_history.py` | 增量默认只解析**新报告**（`--full` 才全重抓） |
+| `fetch_milk_price.py` | 按**发布日窗口**（库中最新采集日 − 20 天）裁期次 + `.workbuddy/milk_progress.json` 跳过已成功的 URL。周频，日常只 2~3 个请求 |
 
 ### B. 窗口重拉 —— 每次重新拉一个固定窗口，全靠 `ON CONFLICT DO UPDATE` 去重（6 个）
 

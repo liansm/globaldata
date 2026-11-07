@@ -13,6 +13,12 @@ HK indices (Sina):
 Capital flows (akshare stock_hsgt_hist_em, 东方财富数据中心, 免费无需 token):
   北向资金 (Northbound) = 沪股通 + 深股通  [注: 港交所2024-08-19起停披露北向每日净买入额, 之后无新值]
   南向资金 (Southbound) = 港股通(沪) + 港股通(深)
+
+用法:
+  python fetch_markets.py                 # 指数 + 资金流向（手动补历史时用）
+  python fetch_markets.py --skip-flows    # 只抓指数（refresh_all 默认带这个参数）
+  注: 2026-11-02 起资金流向不再每日抓——前端「沪深港通资金流向」组已下线，
+      指数照常要。FLOW_CONFIGS / 接口 / 详情页全部保留，历史数据不清。
 """
 
 import os
@@ -435,7 +441,7 @@ def fetch_capital_flow(cfg):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main() -> int:
+def main(skip_flows: bool = False) -> int:
     failed = []
 
     print("Connecting to database...")
@@ -499,20 +505,24 @@ def main() -> int:
             saved += 1
 
         # ── 资金流向 ──────────────────────────────────────────────────────────
-        print("\nFetching Stock Connect capital flows...")
-        for cfg in FLOW_CONFIGS:
-            print(f"  {cfg['name']}...")
-            entries = fetch_capital_flow(cfg)
-            if entries is None:
-                failed.append(cfg["key"])
-                continue
-            db_upsert_index(conn, cfg["key"], cfg["symbol"],
-                            cfg["name"], cfg["market"], cfg["unit"])
-            db_upsert_prices(conn, cfg["key"], entries)
-            latest = entries[0]
-            sign = "+" if (latest["close"] or 0) >= 0 else ""
-            print(f"    [OK] {latest['date']} 净流入 {sign}{latest['close']:.2f} 亿元")
-            saved += 1
+        if skip_flows:
+            print("\n[SKIP] Stock Connect capital flows (--skip-flows)")
+            print("       南北向资金不再每日抓取；历史数据保留，需要时手动跑 python fetch_markets.py")
+        else:
+            print("\nFetching Stock Connect capital flows...")
+            for cfg in FLOW_CONFIGS:
+                print(f"  {cfg['name']}...")
+                entries = fetch_capital_flow(cfg)
+                if entries is None:
+                    failed.append(cfg["key"])
+                    continue
+                db_upsert_index(conn, cfg["key"], cfg["symbol"],
+                                cfg["name"], cfg["market"], cfg["unit"])
+                db_upsert_prices(conn, cfg["key"], entries)
+                latest = entries[0]
+                sign = "+" if (latest["close"] or 0) >= 0 else ""
+                print(f"    [OK] {latest['date']} 净流入 {sign}{latest['close']:.2f} 亿元")
+                saved += 1
 
         conn.commit()
         print(f"\nCommitted {saved} index dataset(s) to database.")
@@ -534,4 +544,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="抓取 A股/港股/海外指数 + 沪深港通南北向资金（akshare）")
+    ap.add_argument("--skip-flows", action="store_true",
+                    help="跳过沪深港通南北向资金，只抓指数（refresh_all 默认带上该参数）")
+    _args = ap.parse_args()
+    sys.exit(main(skip_flows=_args.skip_flows))

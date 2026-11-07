@@ -14,7 +14,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { fetchPrivateFundDetail, fetchPrivateNav } from '@/api/privateFunds'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
 import { ytdFrom } from '@/lib/dateRange'
-import type { PrivateFundDetail, PrivateNavPoint } from '@/types/privateFund'
+import type { PrivateFundDetail, PrivateNavPoint, PrivateNavRange } from '@/types/privateFund'
 
 use([CanvasRenderer, LineChart, TitleComponent, TooltipComponent,
      GridComponent, DataZoomComponent, LegendComponent])
@@ -29,6 +29,8 @@ const detail  = ref<PrivateFundDetail | null>(null)
 // ── 净值 ────────────────────────────────────────────────────────────────────
 const navPoints  = ref<PrivateNavPoint[]>([])
 const navLoading = ref(false)
+/** 当前区间的涨跌幅摘要。切换区间时立刻作废，避免「新标签配旧数字」。 */
+const navSummary = ref<PrivateNavRange | null>(null)
 
 /**
  * 该产品的净值是否来自私募排排网（复权净值口径）。
@@ -62,15 +64,27 @@ const rangeOptions: { label: string; value: NavRange }[] = [
   { label: '全部',   value: 0 },
 ]
 
+const rangeLabel = computed(() => rangeOptions.find(o => o.value === navRange.value)?.label ?? '')
+/** 涨跌幅用的那条序列：排排网源只有复权净值，代销池/格上源用累计净值。
+ *  ⚠ 图上主蓝线（代销池源）画的是单位净值，涨跌幅不跟它算 —— 分红会让两者差很远，
+ *    标签必须写清口径，否则「线跌了但涨跌幅是正的」会被当成 bug。 */
+const rangeNavLabel = computed(() => detail.value?.navSource === 'sppw' ? '复权净值' : '累计净值')
+
 async function loadNav(code: string) {
   navLoading.value = true
+  navSummary.value = null   // 旧区间的涨跌幅立刻作废，别让「近 3 月」配「今年来」的数字
   try {
     const resp = navRange.value === 'ytd'
-      ? await fetchPrivateNav(code, { from: ytdFrom(), order: 'asc' })
-      : await fetchPrivateNav(code, { days: navRange.value as number, order: 'asc' })
-    navPoints.value = resp.rows
+      ? await fetchPrivateNav(code, { from: ytdFrom(), order: 'desc', limit: 3000, withRange: true })
+      : await fetchPrivateNav(code, { days: navRange.value as number, order: 'desc', limit: 3000, withRange: true })
+    // ⚠ /nav 有 3000 点上限。原来 asc+limit 取的是**最早** 3000 点，库里有 7 只长历史
+    //   产品（最多 3,733 点）会让图表末端停在几年前，而区间涨跌幅按完整序列的最新点算
+    //   → 图与数字对不上。改成 desc 取最新 3000 点再反转成 asc，末点一定对齐。
+    navPoints.value = resp.rows.slice().reverse()
+    navSummary.value = resp.range ?? null
   } catch {
     navPoints.value = []
+    navSummary.value = null
   } finally {
     navLoading.value = false
   }
@@ -199,6 +213,7 @@ async function loadAll() {
       notFound.value = true
       detail.value = null
       navPoints.value = []
+      navSummary.value = null
       tableRows.value = []
       tableTotal.value = 0
       return
@@ -322,7 +337,15 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
         <div class="info-grid">
           <div class="info-item">
             <span class="info-label">管理人</span>
-            <span class="info-value">{{ detail?.managerName ?? '—' }}</span>
+            <span class="info-value">
+              <!-- 能关联到 private_managers 才给链接；否则纯文本，避免点进「管理人不存在」 -->
+              <router-link v-if="detail?.managerRegisterNo"
+                           :to="{ path: `/private-manager/${detail.managerRegisterNo}`, query: { from: 'funds' } }"
+                           class="mgr-link">
+                {{ detail.managerName ?? '—' }}
+              </router-link>
+              <template v-else>{{ detail?.managerName ?? '—' }}</template>
+            </span>
           </div>
           <div class="info-item">
             <span class="info-label">管理类型</span>
@@ -357,6 +380,33 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
             {{ o.label }}
           </el-radio-button>
         </el-radio-group>
+      </div>
+
+      <!-- 区间涨跌：随上面选的区间变，所以放在图上方而不是首屏统计卡。
+           ⚠ 口径必须与首屏「今年来 / 有数据以来」一致（含分红口径净值 accNav、
+           基期取区间起点前一披露日），否则同一个「今年来」会出现两个数字。 -->
+      <div v-if="!navLoading && navSummary && navPoints.length" class="range-strip">
+        <span class="rs-scope"
+              :title="`净值区间 ${navSummary.from} ~ ${navSummary.to}（${navSummary.points} 个有效净值日）`">
+          {{ rangeLabel }}<i>{{ navSummary.points }} 个披露日</i>
+        </span>
+        <span class="rs-cell">
+          <span class="rs-k">区间涨跌<em class="stat-flag">{{ rangeNavLabel }}</em></span>
+          <b class="rs-v" :class="pctClass(navSummary.returnPct)">{{ fmtPct(navSummary.returnPct) }}</b>
+        </span>
+        <span v-if="navSummary.baseNav != null" class="rs-cell"
+              :title="`以 ${navSummary.baseDate} 的${rangeNavLabel} ${fmtNav(navSummary.baseNav)} 为基数，末值 ${fmtNav(navSummary.endNav)}`">
+          <span class="rs-k">基数</span>
+          <b class="rs-v">{{ fmtNav(navSummary.baseNav) }}</b>
+          <i class="rs-d">{{ navSummary.baseDate }}</i>
+        </span>
+        <span class="rs-note">
+          {{ navSummary.hasBaseline ? '含区间首日涨跌（基期取区间前一披露日）' : '以区间首个披露日为基期' }}
+        </span>
+        <!-- /nav 单次上限 3000 点；超出时图表只画最近 3000 点，但涨跌幅按完整区间算，必须说破 -->
+        <span v-if="navSummary.points > navPoints.length" class="rs-note rs-warn">
+          图表仅显示最近 {{ navPoints.length }} 个披露日，涨跌幅按完整区间 {{ navSummary.points }} 点计算
+        </span>
       </div>
 
       <div class="chart-card" v-loading="navLoading">
@@ -490,6 +540,8 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
 .info-item { display: flex; flex-direction: column; gap: 4px; }
 .info-label { font-size: 12px; color: #999; }
 .info-value { font-size: 14px; color: #1a1a2e; font-weight: 500; word-break: break-all; }
+.mgr-link { color: #409eff; text-decoration: none; }
+.mgr-link:hover { text-decoration: underline; }
 
 /* ── 区块 ───────────────────────────────────────────────────────────────── */
 .section-header {
@@ -521,6 +573,27 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
 .dash { color: #ccc; }
 
 .pagination-wrap { display: flex; justify-content: flex-end; margin-top: 16px; }
+
+/* ── 区间涨跌条：一行横向排布，窄屏自动折行（与公募详情页同款） ───────── */
+.range-strip {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px;
+  margin: 0 0 12px; padding: 9px 14px;
+  background: #fafafc; border: 1px solid #f0f0f4; border-radius: 8px;
+}
+.rs-scope { font-size: 13px; font-weight: 600; color: #1a1a2e; }
+.rs-scope i { margin-left: 6px; font-style: normal; font-weight: 400; font-size: 11px; color: #9a9aa8; }
+.rs-cell { display: inline-flex; align-items: baseline; gap: 6px; }
+.rs-k { font-size: 12px; color: #888; }
+.rs-k .stat-flag {
+  margin-left: 4px; font-style: normal; font-size: 11px;
+  color: #409eff; background: #e8f3ff; border-radius: 3px; padding: 1px 5px;
+}
+.rs-v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; color: #1a1a2e; }
+.rs-v.up   { color: #e8534a; }   /* 涨红跌绿（中式约定） */
+.rs-v.down { color: #26a17b; }
+.rs-d { font-style: normal; font-size: 11px; color: #aaa; font-variant-numeric: tabular-nums; }
+.rs-note { font-size: 11px; color: #aaa; }
+.rs-warn { color: #b08900; }
 
 /* ── 口径说明 ───────────────────────────────────────────────────────────── */
 .scope-note {

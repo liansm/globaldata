@@ -73,7 +73,9 @@ const SECTIONS = [
   {
     title: '农产品',
     icon: '🌾',
-    keys: ['corn', 'soybean_oil', 'eggs', 'live_hog', 'cotton', 'sugar'],
+    // milk_raw = 农业农村部「10 主产省份生鲜乳收购价」，**周频**、单位 元/公斤（不是元/吨）。
+    // 国内无牛奶期货（大商所畜牧类只有鸡蛋/生猪），这是原奶定价的官方锚。
+    keys: ['milk_raw', 'corn', 'soybean_oil', 'eggs', 'live_hog', 'cotton', 'sugar'],
   },
 ]
 
@@ -149,6 +151,8 @@ function exchangeLabel(c: Commodity): string | null {
     return match[1].trim().split(/\s+/)[0]
   }
   if (c.key === 'gold' || c.key === 'silver') return 'SGE'
+  // 生鲜乳不是交易所品种（国内没有牛奶期货），来源是农业农村部畜牧兽医局周报
+  if (c.key === 'milk_raw') return '农业农村部'
   return null
 }
 

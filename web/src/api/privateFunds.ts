@@ -7,6 +7,7 @@ import type {
   PrivateTypeCount,
   PrivateNavResp,
   PrivateFundDetail,
+  PrivateManagerDetail,
 } from '@/types/privateFund'
 
 const http = axios.create({
@@ -48,6 +49,7 @@ export function fetchPrivateManagers(options: {
   q?: string
   investType?: string
   province?: string
+  order?: string
   page?: number
   pageSize?: number
 } = {}): Promise<PrivateManagerListResp> {
@@ -57,6 +59,32 @@ export function fetchPrivateManagers(options: {
         q: options.q || undefined,
         investType: options.investType || undefined,
         province: options.province || undefined,
+        order: options.order || undefined,
+        page: options.page ?? 1,
+        pageSize: options.pageSize ?? 50,
+      },
+    })
+    .then(r => r.data)
+}
+
+export function fetchPrivateManagerDetail(
+  registerNo: string,
+  options: {
+    q?: string
+    state?: string
+    hasNav?: boolean
+    order?: string
+    page?: number
+    pageSize?: number
+  } = {},
+): Promise<PrivateManagerDetail> {
+  return http
+    .get<PrivateManagerDetail>(`/private-funds/managers/${registerNo}`, {
+      params: {
+        q: options.q || undefined,
+        state: options.state || undefined,
+        hasNav: options.hasNav ? 1 : undefined,
+        order: options.order || undefined,
         page: options.page ?? 1,
         pageSize: options.pageSize ?? 50,
       },
@@ -75,7 +103,10 @@ export function fetchPrivateFundDetail(code: string): Promise<PrivateFundDetail>
 /** 净值序列。days=0 全部历史；from='YYYY-MM-DD' 用于「今年来」；limit 供表格分页 */
 export function fetchPrivateNav(
   code: string,
-  options: { days?: number; from?: string; order?: 'asc' | 'desc'; offset?: number; limit?: number } = {},
+  options: {
+    days?: number; from?: string; order?: 'asc' | 'desc'
+    offset?: number; limit?: number; withRange?: boolean
+  } = {},
 ): Promise<PrivateNavResp> {
   return http
     .get<PrivateNavResp>(`/private-funds/${code}/nav`, {
@@ -85,6 +116,8 @@ export function fetchPrivateNav(
         order: options.order ?? 'desc',
         offset: options.offset ?? 0,
         limit: options.limit,
+        // 只有走势图要区间涨跌幅；表格分页请求别让后端白算一次聚合
+        withRange: options.withRange ? 1 : undefined,
       },
     })
     .then(r => r.data)
