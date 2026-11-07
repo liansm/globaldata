@@ -93,15 +93,24 @@ export async function privateFundsRoutes(app: FastifyInstance) {
   // ── GET /api/private-funds/managers ───────────────────────────────────────
   // 管理人列表。Query: q=名称关键词 | investType=机构类型 | province=注册地 | page | pageSize
   app.get<{
-    Querystring: { q?: string; investType?: string; province?: string; page?: string; pageSize?: string }
+    Querystring: { q?: string; investType?: string; province?: string; order?: string; page?: string; pageSize?: string }
   }>('/api/private-funds/managers', async (req) => {
-    const { q, investType, province, page = '1', pageSize = '50' } = req.query
+    const { q, investType, province, order = 'fundCount', page = '1', pageSize = '50' } = req.query
 
     const conds = []
     if (q)          conds.push(ilike(privateManagers.managerName, `%${q}%`))
     if (investType) conds.push(ilike(privateManagers.investType, `%${investType}%`))
     if (province)   conds.push(ilike(privateManagers.registerProvince, `%${province}%`))
     const where = conds.length ? and(...conds) : undefined
+
+    // ⚠ 管理规模(AUM)中基协不公开披露，库里仅 0.05% 产品带 size，无法汇总；
+    //   故「规模」排序只能用「在管产品数」(fundCount) 作全量可用的代理指标，UI 如实标注。
+    const managerOrderBy = order === 'register'
+      ? sql`${privateManagers.registerDate} DESC NULLS LAST, ${privateManagers.managerName} ASC`
+      : order === 'name'
+        ? asc(privateManagers.managerName)
+        // 默认：在管产品数降序（监管口径下最接近「规模」的可比指标）
+        : sql`${privateManagers.fundCount} DESC NULLS LAST, ${privateManagers.managerName} ASC`
 
     const limit  = Math.min(parseInt(pageSize) || 50, 200)
     const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit
@@ -127,13 +136,135 @@ export async function privateFundsRoutes(app: FastifyInstance) {
       })
       .from(privateManagers)
       .where(where)
-      // 注意：这里不能写成 desc(sql`... DESC NULLS LAST`)——外面再包 desc() 会生成
-      // `"fund_count" DESC NULLS LAST desc`，PG 报 42601 语法错误。排序方向写在片段里。
-      .orderBy(sql`${privateManagers.fundCount} DESC NULLS LAST`, asc(privateManagers.managerName))
+      .orderBy(managerOrderBy)
       .limit(limit)
       .offset(offset)
 
     return { total, page: Math.max(parseInt(page) || 1, 1), pageSize: limit, rows }
+  })
+
+  // ── GET /api/private-funds/managers/:registerNo ─────────────────────────
+  // 管理人详情：备案字段 + 通过 manager_id 关联的旗下基金列表（分页/筛选/排序）+ 统计。
+  // ⚠ registerNo 是登记编号（如 P1000000），与列表返回同码；内部用 manager_id 关联 products。
+  // 注册顺序：本路由带参数，必须放在 /:code 之前（其实 Fastify 静态段优先于参数段，这里只是顺手排前）。
+  app.get<{
+    Params: { registerNo: string }
+    Querystring: { q?: string; state?: string; hasNav?: string; order?: string; page?: string; pageSize?: string }
+  }>('/api/private-funds/managers/:registerNo', async (req) => {
+    const { registerNo } = req.params
+    const { q, state, hasNav, order = 'record', page = '1', pageSize = '50' } = req.query
+
+    const [manager] = await db
+      .select()
+      .from(privateManagers)
+      .where(eq(privateManagers.registerNo, registerNo))
+      .limit(1)
+
+    // ⚠ 详情接口一律 200 + {found:false}，不要返 404：axios 对 404 直接抛异常，
+    //   前端会落到「加载失败，请检查后端服务」而不是「管理人不存在」（全项目统一约定）。
+    //   rows/total/page/pageSize 要补齐，前端 resp.rows 才能安全遍历。
+    if (!manager) {
+      return { found: false, registerNo, total: 0, page: 1, pageSize: 50, rows: [] }
+    }
+
+    // manager_id 实测全表非空（18,394 家 / 0 个 null）。这里既做类型收窄，
+    // 也避免万一出现 null 时 drizzle 把条件拼成 `= NULL`（永不命中、还看不出原因）。
+    // 中基协内部 id 都是正的大整数，-1 是不可能命中的哨兵值。
+    const mId = manager.managerId ?? -1
+
+    const conds = [eq(privateFunds.managerId, mId)]
+    if (q) conds.push(sql`(${privateFunds.fundName} ILIKE ${'%' + q + '%'} OR ${privateFunds.fundNo} ILIKE ${'%' + q + '%'})`)
+    if (state)  conds.push(eq(privateFunds.workingState, state))
+    if (hasNav) conds.push(eq(privateFunds.hasNav, true))
+    const where = and(...conds)
+
+    const orderBy = order === 'record'
+      ? sql`${privateFunds.recordDate} DESC NULLS LAST, ${privateFunds.fundNo} ASC`
+      : order === 'established'
+        ? sql`${privateFunds.establishDate} DESC NULLS LAST, ${privateFunds.fundNo} ASC`
+        : sql`${privateFunds.latestNavDate} DESC NULLS LAST, ${privateFunds.fundNo} ASC`
+
+    const limit  = Math.min(parseInt(pageSize) || 50, 200)
+    const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit
+
+    const [{ total }] = await db
+      .select({ total: sql<number>`COUNT(*)::int` })
+      .from(privateFunds)
+      .where(where)
+
+    const rows = await db
+      .select({
+        fundNo:            privateFunds.fundNo,
+        fundName:          privateFunds.fundName,
+        // 前端「管理人」列要能点进 /private-manager/:registerNo，产品表只存内部 manager_id，
+        // 登记编号得从管理人表补。关联不上的为 null → 前端渲成纯文本，不做假链接。
+        managerRegisterNo: privateManagers.registerNo,
+        managerName:       privateFunds.managerName,
+        managerType:       privateFunds.managerType,
+        workingState:      privateFunds.workingState,
+        recordDate:        privateFunds.recordDate,
+        establishDate:     privateFunds.establishDate,
+        mandatorName:      privateFunds.mandatorName,
+        inRegistry:        privateFunds.inRegistry,
+        hasNav:            privateFunds.hasNav,
+        latestNav:         privateFunds.latestNav,
+        latestAccNav:      privateFunds.latestAccNav,
+        latestNavDate:     privateFunds.latestNavDate,
+        latestDailyReturn: privateFunds.latestDailyReturn,
+        latestFundSize:    privateFunds.latestFundSize,
+      })
+      .from(privateFunds)
+      // ⚠ private_managers.manager_id 实测唯一（18,394 家 / 18,394 个不同 id），
+      //   LEFT JOIN 不会放大行数，所以上面的 COUNT(*) 仍可在单表上算，不必一起 join。
+      .leftJoin(privateManagers, eq(privateFunds.managerId, privateManagers.managerId))
+      .where(where)
+      .orderBy(orderBy)
+      .limit(limit)
+      .offset(offset)
+
+    // 管理人级统计：库内通过 manager_id 匹配到的产品口径。
+    // 注意 manager.fundCount 是中基协公示的「在管基金数量」，与库内匹配数可能略有差异（产品未全量入库）
+    const [st] = await db
+      .select({
+        totalFunds: sql<number>`COUNT(*)::int`,
+        withNav:    sql<number>`COUNT(*) FILTER (WHERE ${privateFunds.hasNav})::int`,
+        registry:   sql<number>`COUNT(*) FILTER (WHERE ${privateFunds.inRegistry})::int`,
+      })
+      .from(privateFunds)
+      .where(eq(privateFunds.managerId, mId))
+
+    return {
+      found: true,
+      manager: {
+        registerNo:       manager.registerNo,
+        managerName:      manager.managerName,
+        artificialPerson: manager.artificialPerson,
+        investType:       manager.investType,
+        registerProvince: manager.registerProvince,
+        officeAddress:    manager.officeAddress,
+        establishDate:    manager.establishDate,
+        registerDate:     manager.registerDate,
+        fundCount:        manager.fundCount,
+        memberType:       manager.memberType,
+        hasCreditTips:    manager.hasCreditTips,
+      },
+      stats: {
+        totalFunds: st?.totalFunds ?? 0,
+        withNav:    st?.withNav ?? 0,
+        registry:   st?.registry ?? 0,
+      },
+      total,
+      page: Math.max(parseInt(page) || 1, 1),
+      pageSize: limit,
+      // ⚠ drizzle numeric 取出来是字符串，出口统一转 number
+      rows: rows.map((r) => ({
+        ...r,
+        latestNav:         toNum(r.latestNav),
+        latestAccNav:      toNum(r.latestAccNav),
+        latestDailyReturn: toNum(r.latestDailyReturn),
+        latestFundSize:    toNum(r.latestFundSize),
+      })),
+    }
   })
 
   // ── GET /api/private-funds/manager-types ──────────────────────────────────
@@ -184,6 +315,9 @@ export async function privateFundsRoutes(app: FastifyInstance) {
       .select({
         fundNo:            privateFunds.fundNo,
         fundName:          privateFunds.fundName,
+        // 前端「管理人」列要能点进 /private-manager/:registerNo，产品表只存内部 manager_id，
+        // 登记编号得从管理人表补。关联不上的为 null → 前端渲成纯文本，不做假链接。
+        managerRegisterNo: privateManagers.registerNo,
         managerName:       privateFunds.managerName,
         managerType:       privateFunds.managerType,
         workingState:      privateFunds.workingState,
@@ -199,6 +333,9 @@ export async function privateFundsRoutes(app: FastifyInstance) {
         latestFundSize:    privateFunds.latestFundSize,
       })
       .from(privateFunds)
+      // ⚠ private_managers.manager_id 实测唯一（18,394 家 / 18,394 个不同 id），
+      //   LEFT JOIN 不会放大行数，所以上面的 COUNT(*) 仍可在单表上算，不必一起 join。
+      .leftJoin(privateManagers, eq(privateFunds.managerId, privateManagers.managerId))
       .where(where)
       .orderBy(orderBy)
       .limit(limit)
@@ -285,6 +422,17 @@ export async function privateFundsRoutes(app: FastifyInstance) {
 
     if (!fund) return { found: false, code }
 
+    // 管理人登记编号：与列表同一口径（manager_id → private_managers.register_no）。
+    // 覆盖率实测 247,309 / 248,630 = 99.47%；剩下的 1,187 只有 id 但名录里没有、
+    // 1,134 连名称/id 都没有 → 返回 null，前端不渲染链接，避免点进「管理人不存在」。
+    const [mgr] = fund.managerId
+      ? await db
+          .select({ registerNo: privateManagers.registerNo })
+          .from(privateManagers)
+          .where(eq(privateManagers.managerId, fund.managerId))
+          .limit(1)
+      : []
+
     const ytdStart = `${new Date().getFullYear()}-01-01`
     const [agg] = await db
       .select({
@@ -312,6 +460,7 @@ export async function privateFundsRoutes(app: FastifyInstance) {
     return {
       found: true,
       ...fund,
+      managerRegisterNo: mgr?.registerNo ?? null,
       latestNav:         toNum(fund.latestNav),
       latestAccNav:      toNum(fund.latestAccNav),
       latestDailyReturn: toNum(fund.latestDailyReturn),

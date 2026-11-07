@@ -89,6 +89,13 @@ const router = createRouter({
       component: () => import('@/pages/PrivateFundDetail.vue'),
     },
     {
+      // :registerNo 是登记编号（如 P1000000），与中基协同码；
+      // 入口来自「基金信息 → 私募基金 → 管理人」tab 的行点击
+      path: '/private-manager/:registerNo',
+      name: 'private-manager-detail',
+      component: () => import('@/pages/PrivateManagerDetail.vue'),
+    },
+    {
       // 新股日历：A股 / 北交所 / 港股，日历 + 列表双视图
       path: '/ipo-calendar',
       name: 'ipo-calendar',

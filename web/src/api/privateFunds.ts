@@ -7,6 +7,7 @@ import type {
   PrivateTypeCount,
   PrivateNavResp,
   PrivateFundDetail,
+  PrivateManagerDetail,
 } from '@/types/privateFund'
 
 const http = axios.create({
@@ -48,6 +49,7 @@ export function fetchPrivateManagers(options: {
   q?: string
   investType?: string
   province?: string
+  order?: string
   page?: number
   pageSize?: number
 } = {}): Promise<PrivateManagerListResp> {
@@ -57,6 +59,32 @@ export function fetchPrivateManagers(options: {
         q: options.q || undefined,
         investType: options.investType || undefined,
         province: options.province || undefined,
+        order: options.order || undefined,
+        page: options.page ?? 1,
+        pageSize: options.pageSize ?? 50,
+      },
+    })
+    .then(r => r.data)
+}
+
+export function fetchPrivateManagerDetail(
+  registerNo: string,
+  options: {
+    q?: string
+    state?: string
+    hasNav?: boolean
+    order?: string
+    page?: number
+    pageSize?: number
+  } = {},
+): Promise<PrivateManagerDetail> {
+  return http
+    .get<PrivateManagerDetail>(`/private-funds/managers/${registerNo}`, {
+      params: {
+        q: options.q || undefined,
+        state: options.state || undefined,
+        hasNav: options.hasNav ? 1 : undefined,
+        order: options.order || undefined,
         page: options.page ?? 1,
         pageSize: options.pageSize ?? 50,
       },

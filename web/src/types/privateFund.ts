@@ -5,6 +5,9 @@
 export interface PrivateFundSummary {
   fundNo: string
   fundName: string
+  /** 管理人登记编号（/private-manager/:registerNo 的入参）。产品表只存内部 manager_id，
+   *  关联不上 private_managers 时为 null → 前端渲染成纯文本，不做假链接。 */
+  managerRegisterNo?: string | null
   managerName: string | null
   managerType: string | null
   workingState: string | null      // 正在运作 / 延期清算 / 提前清算 / 正常清算
@@ -96,4 +99,36 @@ export interface PrivateFundDetail extends PrivateFundSummary {
   navSource: string | null
   ytdReturn: number | null
   totalReturn: number | null
+}
+
+export interface PrivateManagerInfo {
+  registerNo: string
+  managerName: string
+  artificialPerson: string | null
+  investType: string | null
+  registerProvince: string | null
+  officeAddress: string | null
+  establishDate: string | null
+  registerDate: string | null
+  fundCount: number | null          // 中基协公示的「在管基金数量」
+  memberType: string | null
+  hasCreditTips: boolean | null
+}
+
+export interface PrivateManagerStats {
+  totalFunds: number                 // 库内通过 manager_id 匹配到的产品数
+  withNav: number                    // 其中有净值的
+  registry: number                   // 其中在备案库的
+}
+
+/** 管理人详情：备案信息 + 旗下基金列表（分页）+ 统计 */
+export interface PrivateManagerDetail {
+  found: boolean
+  registerNo?: string
+  manager?: PrivateManagerInfo
+  stats?: PrivateManagerStats
+  total: number
+  page: number
+  pageSize: number
+  rows: PrivateFundSummary[]
 }

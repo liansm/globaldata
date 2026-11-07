@@ -322,7 +322,15 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
         <div class="info-grid">
           <div class="info-item">
             <span class="info-label">管理人</span>
-            <span class="info-value">{{ detail?.managerName ?? '—' }}</span>
+            <span class="info-value">
+              <!-- 能关联到 private_managers 才给链接；否则纯文本，避免点进「管理人不存在」 -->
+              <router-link v-if="detail?.managerRegisterNo"
+                           :to="{ path: `/private-manager/${detail.managerRegisterNo}`, query: { from: 'funds' } }"
+                           class="mgr-link">
+                {{ detail.managerName ?? '—' }}
+              </router-link>
+              <template v-else>{{ detail?.managerName ?? '—' }}</template>
+            </span>
           </div>
           <div class="info-item">
             <span class="info-label">管理类型</span>
@@ -490,6 +498,8 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
 .info-item { display: flex; flex-direction: column; gap: 4px; }
 .info-label { font-size: 12px; color: #999; }
 .info-value { font-size: 14px; color: #1a1a2e; font-weight: 500; word-break: break-all; }
+.mgr-link { color: #409eff; text-decoration: none; }
+.mgr-link:hover { text-decoration: underline; }
 
 /* ── 区块 ───────────────────────────────────────────────────────────────── */
 .section-header {
