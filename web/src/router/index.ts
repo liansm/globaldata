@@ -28,6 +28,18 @@ const router = createRouter({
       component: () => import('@/pages/MarketDetail.vue'),
     },
     {
+      // A 股股票信息：代码/名称搜索 + 交易所/板块/地域/行业过滤
+      path: '/stocks',
+      name: 'stocks',
+      component: () => import('@/pages/Stocks.vue'),
+    },
+    {
+      // 个股详情：基本信息 + 日/周/月/年 K 线（周月年由后端聚合日线）
+      path: '/stocks/:code',
+      name: 'stock-detail',
+      component: () => import('@/pages/StockDetail.vue'),
+    },
+    {
       path: '/crypto',
       name: 'crypto',
       component: () => import('@/pages/Crypto.vue'),

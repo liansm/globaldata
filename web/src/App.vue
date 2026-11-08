@@ -15,6 +15,9 @@ const route = useRoute()
 // 三个详情页（fund-detail / company-detail / private-fund-detail）都归到这一项。
 const navItems = [
   { label: '全球股市', icon: '📈', to: '/markets',  names: ['markets'] },
+  // A 股个股查询（代码/名称搜索 + 交易所/板块/地域/行业过滤 + 日周月年 K 线）
+  { label: '股票信息', icon: '🏢', to: '/stocks',
+    names: ['stocks', 'stock-detail'] },
   { label: '大宗商品', icon: '📦', to: '/',        names: ['home', 'detail'] },
   // 航运信息紧随「大宗商品」：运价指数（原大宗商品页底部那几组）+ 油船信息（原「油运信息」页）
   { label: '航运信息', icon: '🚢', to: '/shipping', names: ['shipping'] },

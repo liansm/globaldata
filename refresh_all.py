@@ -94,6 +94,20 @@ FETCH_SCRIPTS = [
     ("fetch_fx.py",                "人民币汇率中间价（CFETS）+ 即期汇率（新浪），日频含历史"),
     ("fetch_fund_nav.py",          "公募基金最新净值快照（天天基金排行榜批量，4 个请求拿全市场）"),
     ("fetch_ipo_calendar.py",      "新股日历（东财 A股/北交所 + 财华社/AAStocks/东财 港股，秒级）"),
+    # A 股股票信息（2026-11-08）。**顺序不能反**：先建名录，股价脚本才知道抓哪些代码。
+    #   ① fetch_stock_info.py   名录 + 简介/总股本/地域/行业。默认增量：东财 clist
+    #      全市场 60 页约 10 秒，逐只详情只跑「新上市 / 详情缺失」的股票（日常几乎 0 只）。
+    #      首次全量手动跑：python fetch_stock_info.py --full（约 20~30 分钟，可续跑）
+    #   ② fetch_stock_prices.py 不复权日线（开高低收 + 成交量/成交额）。默认增量：
+    #      从库内各股最新交易日开抓，天然补洞；已到源侧最新日的股票 0 请求（幂等）。
+    #      首次回填默认近 5 年；全历史手动跑：python fetch_stock_prices.py --full
+    #      ⚠ 全市场逐只首次约 5~10 分钟，属正常；周/月/年线由 API 聚合日线，不落库。
+    ("fetch_stock_info.py",        "A股股票基本信息（名录/简介/总股本/地域/行业，增量）"),
+    ("fetch_stock_prices.py",      "A股历史日线（东财，含成交量/成交额，增量）"),
+    # ③ 每股财务快照：EPS(TTM)/PE/PB/每股净资产/股息/股息率。全市场批量约 15 秒，
+    #   每次覆盖写同一批 code、不产生新行；股息率由「近12月已实施分红 / 最新价」自算，
+    #   ⚠ 不采用东财 f133（口径不统一，见脚本 docstring）。
+    ("fetch_stock_fundamentals.py", "A股每股财务指标（EPS/PE/股息/股息率/每股净资产/市净率）"),
     ("fetch_vlcc_fleet.py",        "中国船东 VLCC 名录（招商轮船在役船队 + 中远海能 2021-06 官方快照）"),
     # ⚠ VLCC 船位（fetch_vlcc_position_hifleet.py）**2026-10-30 起不接入默认刷新**，
     #   而是放进 OPT_IN_SCRIPTS（见下方定义），原因是耗时：一轮约 90 秒、
@@ -599,6 +613,68 @@ STATUS_QUERIES = [
         "cols": ["pairs", "last_quote", "spot_date", "last_run"],
         "optional": True,
     },
+    {
+        # 股票信息（2026-11-08）。with_* 与 total 的差额 = 首次全量还没跑完的部分，
+        # 不是「源侧没有」；price_date 落后于最近交易日说明增量刷新漏跑。
+        "title": "stocks  (A股名录/简介/总股本/地域/行业)",
+        "sql": """
+            SELECT COUNT(*) AS total,
+                   COUNT(introduction) AS with_intro,
+                   COUNT(total_shares) AS with_shares,
+                   COUNT(region) AS with_region,
+                   COUNT(industry_csrc) AS with_industry,
+                   COUNT(latest_price_date) AS with_prices,
+                   MAX(latest_price_date)::text AS price_date
+            FROM stocks
+        """,
+        "cols": ["total", "with_intro", "with_shares", "with_region",
+                 "with_industry", "with_prices", "price_date"],
+        "optional": True,
+    },
+    {
+        "title": "stock_prices  (A股不复权日线；周/月/年线由接口聚合)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT code) AS stocks,
+                   MIN(trade_date)::text AS earliest,
+                   MAX(trade_date)::text AS latest
+            FROM stock_prices
+        """,
+        "cols": ["rows", "stocks", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        "title": "stock_industries  (多值行业/概念/地域标签)",
+        "sql": """
+            SELECT kind,
+                   COUNT(*) AS rows,
+                   COUNT(DISTINCT code) AS stocks,
+                   COUNT(DISTINCT name) AS names
+            FROM stock_industries
+            GROUP BY kind ORDER BY kind
+        """,
+        "cols": ["kind", "rows", "stocks", "names"],
+        "multi": True,
+        "optional": True,
+    },
+    {
+        # 财务快照：with_div 远小于 total 是正常的 —— 近 12 个月没分红的股票
+        # dividend 留 NULL，不用 0 充数。report_date 是财报报告期，不是行情日。
+        "title": "stock_fundamentals  (每股财务指标快照 EPS/PE/股息/PB)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(eps_ttm) AS with_eps,
+                   COUNT(pe_ttm) AS with_pe,
+                   COUNT(bvps) AS with_bvps,
+                   COUNT(dividend) AS with_div,
+                   MAX(quote_date)::text AS quote_date,
+                   MAX(report_date)::text AS report_date
+            FROM stock_fundamentals
+        """,
+        "cols": ["rows", "with_eps", "with_pe", "with_bvps", "with_div",
+                 "quote_date", "report_date"],
+        "optional": True,
+    },
 ]
 
 
@@ -722,6 +798,11 @@ def run_fetches(include=()):
 # 按依赖顺序 TRUNCATE（先子表再父表，CASCADE 处理外键）
 CLEAR_TABLES = [
     "fetch_log",
+    # A 股三张表（子表先于父表；清完需先跑 fetch_stock_info.py 建名录再跑股价）
+    "stock_prices",
+    "stock_industries",
+    "stock_fundamentals",
+    "stocks",
     "vlcc_positions",
     "vlcc_vessels",
     "fund_nav",

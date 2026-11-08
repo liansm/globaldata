@@ -1,11 +1,11 @@
 # refresh_all.py 使用文档
 
-> 最后核对：2026-10-30（以 `refresh_all.py` 源码 + 各 `fetch_*.py` docstring 为准；脚本改动后请同步本文）
+> 最后核对：2026-11-08（以 `refresh_all.py` 源码 + 各 `fetch_*.py` docstring 为准；脚本改动后请同步本文）
 
 `refresh_all.py` **本身不抓任何数据**，它只做三件事：
 
 1. **看状态** —— 按表打印行数 / 最新日期 / 覆盖率（`STATUS_QUERIES`）
-2. **串行调度** —— 按 `FETCH_SCRIPTS` 顺序 `subprocess` 调用 **19 个** `fetch_*.py`，逐个打印耗时与成败
+2. **串行调度** —— 按 `FETCH_SCRIPTS` 顺序 `subprocess` 调用 **23 个** `fetch_*.py`，逐个打印耗时与成败
    （另有 `OPT_IN_SCRIPTS` 里的按需脚本默认不跑，见第五节）
 3. **清库** —— 按依赖顺序 `TRUNCATE`（`CLEAR_TABLES`）
 
@@ -27,7 +27,8 @@
 ### 2. 命令
 
 ```bash
-# 默认：先看状态 → 跑全部 19 个脚本 → 再看一次状态（整轮约 6 分钟）
+# 默认：先看状态 → 跑全部 23 个脚本 → 再看一次状态（日常约 6~10 分钟；
+#   含 A 股股价增量与财务快照；首次回填须先手动跑股票脚本，见第二节）
 python refresh_all.py
 
 # 只看库内现状，不抓（纯查询，安全）
@@ -60,7 +61,7 @@ python refresh_all.py --status
 
 ---
 
-## 二、会抓哪些数据（20 个脚本，按执行顺序）
+## 二、会抓哪些数据（23 个脚本，按执行顺序）
 
 ### 行情 / 指数
 
@@ -102,6 +103,20 @@ python refresh_all.py --status
 | 16 | `fetch_ipo_calendar.py` | 新股日历：A股 + 北交所（东财全量含未来排期）、港股 3 源合并 | `ipo_calendar` |
 | 17 | `fetch_vlcc_fleet.py` | 中国船东 VLCC 名录（招商轮船在役 + 中远海能 2021-06 快照，99 艘） | `vlcc_vessels` |
 
+### A 股股票（2026-11-08 新增，3 个脚本）
+
+| 脚本 | 抓什么 | 落表 |
+|---|---|---|
+| `fetch_stock_info.py` | 东财 clist 全市场名录 + F10 公司资料 / `stock/get` 股本 / `slist` 多值板块。**默认增量**：逐只详情只跑 `profile_updated_at` / `boards_updated_at` 为空的股票（日常约 10 秒） | `stocks` `stock_industries` |
+| `fetch_stock_prices.py` | `stock_zh_a_hist` 不复权日线（开高低收 + 成交量/成交额）。**默认增量**：从各股 `latest_price_date` 开抓，已到源侧最新日 0 请求；周/月/年线由 API 聚合日线，不落派生表 | `stock_prices` |
+| `fetch_stock_fundamentals.py` | 每股财务快照：EPS(TTM) / PE(TTM·动态·静态) / 每股净资产 / 市净率 / 股息 / 股息率。全市场批量约 15 秒、覆盖写不产生新行；股息率按「近 12 个月已实施分红 ÷ 最新价」自算 | `stock_fundamentals` |
+
+> ⚠ **顺序不能反**（先名录后股价），首次全量要手动跑：
+> `python fetch_stock_info.py`（约 10 分钟 / 5562 只）→ `python fetch_stock_prices.py --years 5`（约 14 分钟 / 约 640 万行）。
+> 全历史 `python fetch_stock_prices.py --full` 另需约 1 小时、约 1600 万行。
+> 数据源全免费（东方财富公开接口），口径与死路见 `.workbuddy/memory/DATASOURCES.md`「A 股股票信息」节。
+
+
 > **原第 18 条 `fetch_vlcc_position_hifleet.py`（船位）2026-10-30 起默认不跑**，理由是耗时（实测 80.7s ≈ 整轮 16%）。
 > 船位是「最新位置」快照、每次跑覆盖同一条 `(name_ais, ts)` 记录，**漏跑不丢历史**，
 > 时效要求不如日频滚存序列（后者漏一天永久少一天），没必要每天跟着整轮 6 分钟走。
@@ -121,11 +136,11 @@ python refresh_all.py --status
 
 ## 三、到底是不是增量抓取？
 
-**结论：没有一个统一开关。各脚本自行实现，而且只有 3 个是「真增量」，其余靠「重拉固定窗口 + upsert 幂等」。**
+**结论：没有一个统一开关。各脚本自行实现，而且只有 6 个是「真增量」，其余靠「重拉固定窗口 + upsert 幂等」。**
 
 按抓取方式分四类：
 
-### A. 真增量 —— 先查库里 `MAX(date)` / 进度文件，只抓更新的期次（4 个）
+### A. 真增量 —— 先查库里 `MAX(date)` / 进度文件，只抓更新的期次（6 个）
 
 | 脚本 | 判断依据 |
 |---|---|
@@ -133,6 +148,8 @@ python refresh_all.py --status
 | `fetch_cement.py` | 同上，按序列查 `MAX(price_date)` |
 | `fetch_ctfi_history.py` | 增量默认只解析**新报告**（`--full` 才全重抓） |
 | `fetch_milk_price.py` | 按**发布日窗口**（库中最新采集日 − 20 天）裁期次 + `.workbuddy/milk_progress.json` 跳过已成功的 URL。周频，日常只 2~3 个请求 |
+| `fetch_stock_info.py` | 名录每次全量 UPSERT，但逐只详情只挑 `profile_updated_at` / `boards_updated_at` 为空的股票（即新上市或上次失败的）；时间戳即「已入库」进度 |
+| `fetch_stock_prices.py` | 按各股 `stocks.latest_price_date` 开抓（重抓最新日覆盖），`src_latest` 来自 clist f297；已到最新日的股票 **0 请求**。漏跑几天由 hist 从旧日期起一次性补回 |
 
 ### B. 窗口重拉 —— 每次重新拉一个固定窗口，全靠 `ON CONFLICT DO UPDATE` 去重（6 个）
 
@@ -162,10 +179,15 @@ python refresh_all.py --status
 | `fetch_coal_flash.py` | 港口/进口/车板价快讯只发当天，历史靠翻 ctctc 站点分页回补（`--pages N`，列表约 17 页到底 ≈ 11 个月） |
 | `fetch_coal_intl.py` | CCTD 国际煤炭周报每周二发、数据截止上周五；全量 `--pages 24` 可回补 475 期 ≈ 9 年 |
 
-### D. 快照覆盖 —— 每键一行，每次直接覆盖（3 个）
+### D. 快照覆盖 —— 每键一行，每次直接覆盖（4 个）
 
 `fetch_index_spot.py` / `fetch_commodity_spot.py` / `fetch_fx.py` 的 `fx_spot`：
 表里永远只有一行/一品种，看 `updated_at` 与 `quote_time` 判断新鲜度，**没有历史**（历史在对应的日线表里）。
+
+`fetch_stock_fundamentals.py` 也是这一类：5562 行财务快照每次整批覆盖、不产生新行。
+**刻意不做「同一行情日就跳过」的守卫** —— 分红方案会在同一天内新增，跳过就静默漏数据，
+宁可每次 15 秒。二次复跑行数不变（5562）、`updated_at` 刷新。
+
 
 #### 两个抓取时点上的坑（2026-10-30 实测）
 
@@ -184,6 +206,10 @@ python refresh_all.py --status
 ## 四、耗时与失败语义
 
 - **串行执行**，顺序 = `FETCH_SCRIPTS` 顺序；单个脚本失败**不影响后续**，最后统一打 `刷新汇总`。
+- **2026-11-08 起多三个 A 股脚本**：日常增量下 `fetch_stock_info.py` 约 10 秒（只写名录）、
+  `fetch_stock_fundamentals.py` 约 15 秒（全市场批量覆盖写）、
+  `fetch_stock_prices.py` 在全市场已到最新日时约 2 秒（0 请求）；隔了一个交易日才跑时后者
+  约 5~8 分钟（逐只 hist 并发 12 线程、天然补洞）。下面 2026-10-30 的实测秒数**不含这三项**。
 - **改前实测 8 分 14 秒**（2026-10-30 全量跑，20 个脚本合计 493.7s，0 失败）。
 - **改后实测 3 分 45 秒**（同日再跑，19 个脚本 224.9s，0 失败）——即「非存储日」。
   存储日（每 3 天一次）再加上存储段的 ~140s，约 **6 分钟**；平均 ≈4.5 分钟。

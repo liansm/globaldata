@@ -1,0 +1,517 @@
+<script setup lang="ts">
+import { ref, computed, watch, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { use } from 'echarts/core'
+import { CandlestickChart, BarChart, LineChart } from 'echarts/charts'
+import {
+  GridComponent, TooltipComponent, DataZoomComponent,
+  LegendComponent, AxisPointerComponent,
+} from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import VChart from 'vue-echarts'
+import dayjs from 'dayjs'
+import { fetchStockDetail, fetchStockPrices } from '@/api/stocks'
+import type { StockDetailResult, PricePeriod, PriceBar } from '@/types/stocks'
+
+use([CanvasRenderer, CandlestickChart, BarChart, LineChart, GridComponent,
+     TooltipComponent, DataZoomComponent, LegendComponent, AxisPointerComponent])
+
+// A 股习惯：涨红跌绿
+const UP = '#e04b4b'
+const DOWN = '#17a673'
+
+const route = useRoute()
+const router = useRouter()
+const code = computed(() => String(route.params.code || '').trim())
+
+const loading = ref(false)
+const error = ref('')
+const detail = ref<StockDetailResult | null>(null)
+
+const period = ref<PricePeriod>('day')
+type RangeKey = 'ytd' | '1y' | '3y' | '5y' | 'all'
+const range = ref<RangeKey>('1y')
+const bars = ref<PriceBar[]>([])
+const priceLoading = ref(false)
+
+const PERIOD_OPTIONS: { label: string; value: PricePeriod }[] = [
+  { label: '日线', value: 'day' },
+  { label: '周线', value: 'week' },
+  { label: '月线', value: 'month' },
+  { label: '年线', value: 'year' },
+]
+const RANGE_OPTIONS: { label: string; value: RangeKey }[] = [
+  { label: '今年来', value: 'ytd' },
+  { label: '1年', value: '1y' },
+  { label: '3年', value: '3y' },
+  { label: '5年', value: '5y' },
+  { label: '全部', value: 'all' },
+]
+// 年线一根就是一年，区间太短会只剩 1~2 根 → 切年线时自动放宽到全部
+function effectiveRange(): RangeKey {
+  return period.value === 'year' ? 'all' : range.value
+}
+function rangeFrom(k: RangeKey): string {
+  if (k === 'all') return '1990-01-01'
+  if (k === 'ytd') return dayjs().startOf('year').format('YYYY-MM-DD')
+  return dayjs().subtract(Number(k.replace('y', '')), 'year').format('YYYY-MM-DD')
+}
+
+async function loadDetail() {
+  loading.value = true
+  error.value = ''
+  try {
+    detail.value = await fetchStockDetail(code.value)
+    await loadPrices()
+  } catch {
+    error.value = '加载失败，请检查后端服务是否启动'
+    detail.value = null
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadPrices() {
+  priceLoading.value = true
+  try {
+    const r = await fetchStockPrices(code.value, {
+      period: period.value,
+      from: rangeFrom(effectiveRange()),
+      limit: 3000,
+    })
+    bars.value = r.rows
+  } catch {
+    bars.value = []
+  } finally {
+    priceLoading.value = false
+  }
+}
+
+onMounted(loadDetail)
+watch(code, () => { period.value = 'day'; range.value = '1y'; loadDetail() })
+// 年线一根就是一年，选「1年」只会剩一根 K 线 —— 切到年线时把区间同步成「全部」，
+// 避免 radio 高亮「1年」而图里其实是全历史（标签与数据不能自相矛盾）。
+watch([period, range], () => {
+  if (period.value === 'year' && range.value !== 'all') {
+    range.value = 'all'      // 改了 range 会再触发本 watch，到那时才真正取数
+    return
+  }
+  loadPrices()
+})
+
+// ── 展示格式化 ──────────────────────────────────────────────────────────────
+function fmtShares(v: number | null | undefined) {
+  if (v == null) return '—'
+  if (v >= 1e8) return `${(v / 1e8).toFixed(2)} 亿股`
+  if (v >= 1e4) return `${(v / 1e4).toFixed(2)} 万股`
+  return `${v.toLocaleString('zh-CN')} 股`
+}
+function fmtCap(v: number | null | undefined) {
+  if (v == null) return '—'
+  if (v >= 1e12) return `¥${(v / 1e12).toFixed(2)} 万亿`
+  if (v >= 1e8) return `¥${(v / 1e8).toFixed(2)} 亿`
+  return `¥${v.toLocaleString('zh-CN')}`
+}
+function fmtPct(v: number | null | undefined) {
+  if (v == null) return '—'
+  return `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
+}
+function pctClass(v: number | null | undefined) {
+  if (v == null || v === 0) return 'flat'
+  return v > 0 ? 'up' : 'down'
+}
+function fmtNum(v: number | null | undefined, digits = 2) {
+  return v == null ? '—' : v.toFixed(digits)
+}
+
+const stock = computed(() => detail.value?.stock ?? null)
+const fin = computed(() => detail.value?.fundamentals ?? null)
+const lastBar = computed(() => bars.value.length ? bars.value[bars.value.length - 1] : null)
+
+/** 财务指标一律「空值显示 —」，不用 0 充数（无分红 / 亏损 / 停牌） */
+function fmtFin(v: number | null | undefined, digits = 2, unit = '') {
+  return v == null ? '—' : `${v.toFixed(digits)}${unit}`
+}
+
+const INFO_FIELDS = computed(() => {
+  const s = stock.value
+  if (!s) return []
+  return [
+    { label: '公司全称', value: s.companyName },
+    { label: '英文名称', value: s.nameEn },
+    { label: '曾用名', value: s.formerName },
+    { label: '法人代表', value: s.legalPerson },
+    { label: '成立日期', value: s.foundedDate },
+    { label: '上市日期', value: s.listingDate },
+    { label: '注册资本', value: s.registeredCapital == null ? null : `${s.registeredCapital.toLocaleString('zh-CN')} 万元` },
+    { label: '总股本', value: fmtShares(s.totalShares) },
+    { label: '流通股本', value: fmtShares(s.floatShares) },
+    { label: '注册地址', value: s.registeredAddress },
+    { label: '办公地址', value: s.officeAddress },
+    { label: '公司网站', value: s.website },
+    { label: '联系电话', value: s.phone },
+    { label: '电子邮箱', value: s.email },
+    { label: '经营范围', value: s.businessScope },
+  ].filter(x => x.value != null && x.value !== '' && x.value !== '—') as { label: string; value: string }[]
+})
+
+// ── ECharts K 线 + 成交量 ───────────────────────────────────────────────────
+function movingAvg(values: (number | null)[], n: number) {
+  const out: (number | '-')[] = []
+  let sum = 0
+  let valid = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (v != null) { sum += v; valid++ }
+    if (i >= n) {
+      const old = values[i - n]
+      if (old != null) { sum -= old; valid-- }
+    }
+    out.push(i >= n - 1 && valid === n && n > 0 ? Math.round(sum / n * 100) / 100 : '-')
+  }
+  return out
+}
+
+const chartOption = computed(() => {
+  const list = bars.value
+  const dates = list.map(b => b.date ?? '')
+  const ohlc = list.map(b => [
+    b.open ?? '-', b.close ?? '-', b.low ?? '-', b.high ?? '-',
+  ])
+  const closes = list.map(b => b.close)
+  const volumes = list.map(b => ({
+    value: b.volume ?? 0,
+    itemStyle: { color: (b.close ?? 0) >= (b.open ?? 0) ? UP : DOWN },
+  }))
+  // 默认显示最近约 120 根，太长则整段一起看
+  const start = dates.length > 120 ? Math.max(0, 100 - 120 / dates.length * 100) : 0
+  return {
+    animation: false,
+    textStyle: { fontFamily: 'inherit' },
+    legend: {
+      data: ['K线', 'MA5', 'MA10', 'MA20', '成交量'],
+      top: 0, left: 8, itemWidth: 14, itemHeight: 8,
+      textStyle: { color: '#666', fontSize: 11 },
+    },
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'cross' },
+      backgroundColor: 'rgba(255,255,255,.96)', borderColor: '#e6e8ee', borderWidth: 1,
+      textStyle: { color: '#333', fontSize: 12 },
+    },
+    grid: [
+      { left: 66, right: 18, top: 32, height: '55%' },
+      { left: 66, right: 18, top: '70%', height: '15%' },
+    ],
+    xAxis: [
+      { type: 'category', data: dates, gridIndex: 0, boundaryGap: true,
+        axisLine: { lineStyle: { color: '#ddd' } }, axisTick: { show: false },
+        axisLabel: { show: false }, splitLine: { show: false } },
+      { type: 'category', data: dates, gridIndex: 1, boundaryGap: true,
+        axisLine: { lineStyle: { color: '#ddd' } }, axisTick: { show: false },
+        axisLabel: { color: '#999', fontSize: 10 }, splitLine: { show: false } },
+    ],
+    yAxis: [
+      { scale: true, gridIndex: 0, position: 'left',
+        axisLine: { show: false }, axisTick: { show: false },
+        axisLabel: { color: '#999', fontSize: 10 },
+        splitLine: { lineStyle: { color: '#f1f2f5' } } },
+      { scale: true, gridIndex: 1, splitNumber: 2,
+        axisLine: { show: false }, axisTick: { show: false },
+        axisLabel: { color: '#999', fontSize: 10, formatter: (v: number) =>
+          v >= 1e8 ? `${(v / 1e8).toFixed(1)}亿手` : `${(v / 1e4).toFixed(0)}万手` },
+        splitLine: { show: false } },
+    ],
+    dataZoom: [
+      { type: 'inside', xAxisIndex: [0, 1], start, end: 100 },
+      { type: 'slider', xAxisIndex: [0, 1], start, end: 100, bottom: 2, height: 16,
+        borderColor: '#e6e8ee', fillerColor: 'rgba(64,158,255,.12)',
+        handleStyle: { color: '#409eff' }, textStyle: { color: '#999', fontSize: 10 } },
+    ],
+    series: [
+      { name: 'K线', type: 'candlestick', data: ohlc,
+        itemStyle: { color: UP, color0: DOWN, borderColor: UP, borderColor0: DOWN } },
+      { name: 'MA5', type: 'line', data: movingAvg(closes, 5), showSymbol: false,
+        smooth: true, lineStyle: { width: 1, color: '#f0a020' }, itemStyle: { color: '#f0a020' } },
+      { name: 'MA10', type: 'line', data: movingAvg(closes, 10), showSymbol: false,
+        smooth: true, lineStyle: { width: 1, color: '#409eff' }, itemStyle: { color: '#409eff' } },
+      { name: 'MA20', type: 'line', data: movingAvg(closes, 20), showSymbol: false,
+        smooth: true, lineStyle: { width: 1, color: '#9b59b6' }, itemStyle: { color: '#9b59b6' } },
+      { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: volumes,
+        barMaxWidth: 8 },
+    ],
+  }
+})
+</script>
+
+<template>
+  <div class="detail-page" v-loading="loading">
+    <div class="top-row">
+      <el-button @click="router.push('/stocks')">← 返回股票列表</el-button>
+      <span class="crumb">股票信息 / {{ code }}</span>
+    </div>
+
+    <div v-if="error" class="error-box">{{ error }}</div>
+
+    <!-- ⚠ 详情接口是 200 + found:false，必须显式分支，别渲染成全「—」空白页 -->
+    <div v-else-if="detail && !detail.found" class="empty-box">
+      <h2>未找到股票「{{ code }}」</h2>
+      <p>请检查代码，或回到列表重新搜索。</p>
+    </div>
+
+    <template v-else-if="stock">
+      <div class="head-card">
+        <div class="head-left">
+          <div class="title-line">
+            <h1>{{ stock.name }}</h1>
+            <span class="code">{{ stock.code }}</span>
+            <el-tag size="small">{{ stock.exchange }}</el-tag>
+            <el-tag size="small" type="success">{{ stock.board }}</el-tag>
+            <el-tag v-if="stock.region" size="small" type="info">{{ stock.region }}</el-tag>
+          </div>
+          <div class="sub-line">
+            {{ stock.companyName || '—' }}
+            <span v-if="stock.industryCsrc"> · {{ stock.industryCsrc }}</span>
+            <span v-if="stock.industry"> · {{ stock.industry }}</span>
+          </div>
+        </div>
+        <div class="head-price">
+          <div class="big-price" :class="pctClass(stock.changePct)">{{ fmtNum(stock.latestPrice) }}</div>
+          <div class="price-sub" :class="pctClass(stock.changePct)">{{ fmtPct(stock.changePct) }}</div>
+          <div class="price-note">行情快照 {{ stock.quoteDate || '—' }}</div>
+        </div>
+      </div>
+
+      <div class="metric-row">
+        <div class="metric"><span>总股本</span><b>{{ fmtShares(stock.totalShares) }}</b></div>
+        <div class="metric"><span>总市值</span><b>{{ fmtCap(stock.marketCap) }}</b></div>
+        <div class="metric"><span>流通市值</span><b>{{ fmtCap(stock.floatMarketCap) }}</b></div>
+        <div class="metric"><span>上市日期</span><b>{{ stock.listingDate || '—' }}</b></div>
+        <div class="metric"><span>日线覆盖</span><b>{{ detail?.priceStats?.rows ?? 0 }} 根</b></div>
+        <div class="metric"><span>最新交易日</span><b>{{ detail?.priceStats?.latest || '—' }}</b></div>
+      </div>
+
+      <!-- 每股财务指标：紧跟顶部「总股本 / 总市值」指标条，首屏就能看到；长口径说明默认折叠 -->
+      <div class="card fin-card">
+        <div class="card-head">
+          <h2>每股财务指标 <small>按最新收盘价 {{ fin ? fmtFin(fin.price) + ' 元' : '—' }} 计算</small></h2>
+          <span v-if="fin?.quoteDate" class="fin-date">行情日 {{ fin.quoteDate }} · 报告期 {{ fin.reportDate || '—' }}</span>
+        </div>
+
+        <div v-if="fin" class="fin-grid">
+          <div class="fin-item">
+            <span>每股收益 <i>TTM</i></span>
+            <b>{{ fmtFin(fin.epsTtm, 2, ' 元') }}</b>
+            <small>滚动 12 个月，= 最新价 ÷ 市盈率(TTM)</small>
+          </div>
+          <div class="fin-item">
+            <span>市盈率 <i>TTM</i></span>
+            <b>{{ fmtFin(fin.peTtm, 2, ' 倍') }}</b>
+            <small>动态 {{ fmtFin(fin.peDynamic, 2) }} / 静态 {{ fmtFin(fin.peStatic, 2) }} 倍</small>
+          </div>
+          <div class="fin-item">
+            <span>股息 <i>近12月</i></span>
+            <b>{{ fmtFin(fin.dividend, 3, ' 元/股') }}</b>
+            <small>已实施现金分红合计，税前</small>
+          </div>
+          <div class="fin-item">
+            <span>股息率</span>
+            <b>{{ fmtFin(fin.dividendYield, 2, '%') }}</b>
+            <small>= 股息 ÷ 最新价</small>
+          </div>
+          <div class="fin-item">
+            <span>每股净资产</span>
+            <b>{{ fmtFin(fin.bvps, 2, ' 元') }}</b>
+            <small>{{ fin.reportDate || '最新' }} 报告期</small>
+          </div>
+          <div class="fin-item">
+            <span>市净率</span>
+            <b>{{ fmtFin(fin.pb, 2, ' 倍') }}</b>
+            <small>东方财富源侧值</small>
+          </div>
+        </div>
+        <div v-else class="no-data">
+          暂无财务数据 —— 请先运行 <code>python fetch_stock_fundamentals.py</code>。
+        </div>
+
+        <details v-if="fin" class="fin-note">
+          <summary>口径说明（股息率与东方财富页面可能不同，点击展开）</summary>
+          <p>
+            <b>股息口径</b>：{{ fin.dividendPlans ? `近 12 个月已实施 ${fin.dividendPlans} 次现金分红，最近除权除息日 ${fin.dividendLastEx || '—'}` : '近 12 个月无已实施现金分红' }}；
+            股息率 = 税前每股股息 ÷ 最新收盘价。⚠ 东方财富页面上的「股息率」口径不统一
+            （部分股票只算最近一次分红），本页统一按近 12 个月合计，数值可能与该页面不同。
+          </p>
+          <p>
+            <b>每股收益口径</b>：主数值为 TTM（滚动 12 个月）；最新报告期<b>累计未年化</b>为
+            {{ fmtFin(fin.epsReport, 2, ' 元') }}（{{ fin.reportDate || '—' }}），一季报仅约全年 1/4，两者不能混用。
+            市盈率同时给 TTM / 动态 / 静态三种口径，主数值为 TTM。
+          </p>
+          <p>
+            <b>市净率</b>为东方财富源侧值，个别股票（多为科创板，近期股本变动）与
+            「最新价 ÷ 每股净资产」不完全对应，属源侧口径差异，未强行改写。
+            无分红 / 亏损 / 停牌的指标显示「—」，不用 0 充数。
+          </p>
+          <p class="src-note">数据来源：东方财富 clist 行情 / 数据中心分红明细 / 业绩报表（免费公开接口）。</p>
+        </details>
+      </div>
+
+      <!-- K 线：日/周/月/年，周月年由后端聚合日线生成 -->
+      <div class="card chart-card">
+        <div class="card-head">
+          <h2>价格走势 <small>不复权 · 成交量单位「手」· 成交额单位「元」</small></h2>
+          <div class="switches">
+            <el-radio-group v-model="period" size="small">
+              <el-radio-button v-for="p in PERIOD_OPTIONS" :key="p.value" :value="p.value">
+                {{ p.label }}
+              </el-radio-button>
+            </el-radio-group>
+            <el-radio-group v-model="range" size="small" :disabled="period === 'year'">
+              <el-radio-button v-for="r in RANGE_OPTIONS" :key="r.value" :value="r.value">
+                {{ r.label }}
+              </el-radio-button>
+            </el-radio-group>
+          </div>
+        </div>
+        <div v-if="bars.length" class="chart-wrap">
+          <v-chart :option="chartOption" autoresize class="chart" />
+          <div class="chart-foot">
+            区间 {{ effectiveRange() === 'all' ? '全部' : RANGE_OPTIONS.find(r => r.value === effectiveRange())?.label }}
+            · {{ bars.length }} 根 {{ PERIOD_OPTIONS.find(p => p.value === period)?.label }}
+            · 最新收盘 <b>{{ fmtNum(lastBar?.close) }}</b>
+            <span v-if="lastBar?.volume != null"> · 成交量 {{ fmtNum(lastBar.volume / 1e4, 2) }} 万手</span>
+            <span v-if="lastBar?.turnover != null"> · 成交额 {{ fmtNum(lastBar.turnover / 1e8, 2) }} 亿元</span>
+          </div>
+        </div>
+        <div v-else class="no-data">
+          <template v-if="priceLoading">正在加载 K 线…</template>
+          <template v-else>该区间暂无日线数据 —— 请先运行 <code>python fetch_stock_prices.py</code> 回填历史。</template>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>公司基本信息</h2></div>
+        <div class="info-grid">
+          <div v-for="f in INFO_FIELDS" :key="f.label" class="info-item" :class="{ wide: f.label === '经营范围' }">
+            <span>{{ f.label }}</span><b>{{ f.value }}</b>
+          </div>
+        </div>
+        <div v-if="stock.introduction" class="intro">
+          <h3>公司简介</h3>
+          <p>{{ stock.introduction }}</p>
+        </div>
+      </div>
+
+      <div class="card" v-if="detail?.industries">
+        <div class="card-head"><h2>所属行业 / 概念（多值）</h2></div>
+        <div class="tag-block" v-if="detail.industries.industry.length">
+          <span class="tag-label">行业</span>
+          <el-tag v-for="t in detail.industries.industry" :key="t" size="small" class="tag">{{ t }}</el-tag>
+        </div>
+        <div class="tag-block" v-if="detail.industries.concept.length">
+          <span class="tag-label">概念</span>
+          <el-tag v-for="t in detail.industries.concept.slice(0, 40)" :key="t" size="small" type="info" class="tag">{{ t }}</el-tag>
+          <span v-if="detail.industries.concept.length > 40" class="muted">等 {{ detail.industries.concept.length }} 个</span>
+        </div>
+        <div class="tag-block" v-if="detail.industries.region.length">
+          <span class="tag-label">地域板块</span>
+          <el-tag v-for="t in detail.industries.region" :key="t" size="small" type="success" class="tag">{{ t }}</el-tag>
+        </div>
+        <p class="src-note">
+          数据来源：东方财富 clist / F10 / 板块行情（免费公开接口）；行业为东财多层级分类与概念标签，
+          公司资料来自 F10。行情快照为最近交易日，日线为不复权价。
+        </p>
+      </div>
+    </template>
+  </div>
+</template>
+
+<style scoped>
+.detail-page { padding: 20px 28px 48px; max-width: 1400px; }
+.top-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.crumb { font-size: 12px; color: #9aa0ac; }
+.error-box { padding: 14px 18px; background: #fff2f0; color: #c0392b; border-radius: 8px; }
+.empty-box { padding: 60px 20px; text-align: center; background: #fff; border-radius: 10px; }
+.empty-box h2 { margin: 0 0 10px; font-size: 18px; }
+.empty-box p { color: #888; }
+
+.head-card {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  background: #fff; border: 1px solid #eceef3; border-radius: 10px;
+  padding: 18px 22px; margin-bottom: 12px;
+}
+.title-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.title-line h1 { margin: 0; font-size: 24px; font-weight: 650; }
+.code { font-family: ui-monospace, Consolas, monospace; font-size: 16px; color: #409eff; font-weight: 600; }
+.sub-line { margin-top: 10px; font-size: 13px; color: #777; }
+.head-price { text-align: right; min-width: 140px; }
+.big-price { font-size: 30px; font-weight: 700; line-height: 1.1; }
+.price-sub { font-size: 15px; font-weight: 600; margin-top: 4px; }
+.price-note { font-size: 11px; color: #aaa; margin-top: 6px; }
+.up { color: #e04b4b; } .down { color: #17a673; } .flat { color: #333; }
+
+.metric-row {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 12px;
+}
+.metric {
+  background: #fff; border: 1px solid #eceef3; border-radius: 8px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+}
+.metric span { font-size: 12px; color: #999; }
+.metric b { font-size: 15px; color: #1a1a2e; font-weight: 600; }
+
+.card { background: #fff; border: 1px solid #eceef3; border-radius: 10px; padding: 16px 20px; margin-bottom: 12px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.card-head h2 { margin: 0; font-size: 16px; font-weight: 650; }
+.card-head small { font-size: 11px; font-weight: 400; color: #aaa; margin-left: 8px; }
+.switches { display: flex; gap: 10px; flex-wrap: wrap; }
+.chart-wrap { width: 100%; }
+.chart { width: 100%; height: 460px; }
+.chart-foot { font-size: 12px; color: #888; padding: 4px 4px 0; }
+.chart-foot b { color: #333; }
+.no-data { padding: 70px 0; text-align: center; color: #aaa; font-size: 13px; }
+.no-data code { background: #f5f6fa; padding: 2px 5px; border-radius: 4px; color: #666; }
+
+.info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 26px; }
+.info-item { display: flex; gap: 12px; padding: 9px 0; border-bottom: 1px solid #f4f5f8; font-size: 13px; }
+.info-item.wide { grid-column: 1 / -1; }
+.info-item span { color: #999; min-width: 84px; flex-shrink: 0; }
+.info-item b { color: #333; font-weight: 500; word-break: break-all; }
+.intro { margin-top: 18px; }
+.intro h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.intro p { margin: 0; font-size: 13px; line-height: 1.9; color: #555; white-space: pre-wrap; }
+
+.fin-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.fin-item {
+  background: #fafbfd; border: 1px solid #eef0f5; border-radius: 8px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 5px;
+}
+.fin-item > span { font-size: 12px; color: #888; }
+.fin-item > span i {
+  font-style: normal; font-size: 10px; color: #409eff; background: #e8f3ff;
+  padding: 1px 5px; border-radius: 4px; margin-left: 4px;
+}
+.fin-item > b { font-size: 20px; font-weight: 650; color: #1a1a2e; }
+.fin-item > small { font-size: 11px; color: #aaa; line-height: 1.5; }
+.fin-date { font-size: 11px; color: #9aa0ac; }
+.fin-note { margin-top: 14px; border-top: 1px dashed #e8eaf0; padding-top: 12px; }
+.fin-note summary {
+  cursor: pointer; font-size: 12px; color: #409eff;
+  outline: none; user-select: none;
+}
+.fin-note summary:hover { color: #1f7fd6; }
+.fin-note[open] summary { margin-bottom: 10px; }
+.fin-note p { margin: 0 0 7px; font-size: 11.5px; line-height: 1.75; color: #777; }
+.fin-note b { color: #555; }
+.fin-note .src-note { color: #aaa; margin-top: 10px; }
+@media (max-width: 1100px) { .fin-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.tag-block { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.tag-label { font-size: 12px; color: #999; min-width: 64px; }
+.tag { margin: 2px; }
+.muted { color: #aaa; font-size: 12px; }
+.src-note { margin: 14px 0 0; font-size: 11px; color: #aaa; line-height: 1.7; }
+
+@media (max-width: 1100px) {
+  .metric-row { grid-template-columns: repeat(3, 1fr); }
+  .info-grid { grid-template-columns: 1fr; }
+}
+</style>
