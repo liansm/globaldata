@@ -11,6 +11,7 @@ import { ipoRoutes } from './routes/ipo'
 import { vlccRoutes } from './routes/vlcc'
 import { fxRoutes } from './routes/fx'
 import { aiRoutes } from './routes/ai'
+import { stocksRoutes } from './routes/stocks'
 
 const app = Fastify({
   logger: {
@@ -37,6 +38,7 @@ app.register(ipoRoutes)
 app.register(vlccRoutes)
 app.register(fxRoutes)
 app.register(aiRoutes)
+app.register(stocksRoutes)
 
 // Health check
 app.get('/health', async () => ({

@@ -1,4 +1,6 @@
 import { FastifyInstance } from 'fastify'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { db } from '../db'
 import { privateFunds, privateManagers, privateFundNav } from '../db/schema'
 import { eq, desc, asc, sql, and, isNotNull, ilike, gte, lte, SQL } from 'drizzle-orm'
@@ -27,17 +29,31 @@ const accAgg = (dir: 'ASC' | 'DESC', nth = 1, dateCond?: SQL) => sql<string | nu
 export async function privateFundsRoutes(app: FastifyInstance) {
 
   /**
-   * 中基协 `pof/fund` 响应里自报的 `totalElements` —— 即备案名录的**分母**。
+   * 中基协 `pof/fund` 首帧自报的 `totalElements` —— 备案名录覆盖率的**分母**。
    *
-   * ⚠ 这个数会随后端实例在两套快照间波动（实测同一分钟内 249,863 / 249,931 交替），
-   * 所以只能当「量级参考」，不能当精确分母。但我们扫到的 / 它，是唯一能自己算出来的
-   * 覆盖率口径 —— 前端必须展示，否则用户会以为名录是全量的。
+   * ⚠ 2026-11-07 修正：原先这里硬编码 249863（9 月的源侧快照）。源侧总量每天在涨，
+   * 11-07 已是 251,760，而库内 in_registry 经过增量补齐到了 250,352 →
+   * 前端显示**备案覆盖率 100.20%**，明显是分母过期而非数据多了。
+   * 现在改成读 `fetch_private_funds.py` 每轮写入的元数据文件；文件缺失/损坏才回退常量，
+   * 且把 `asOf` 一起返给前端，让「分母是哪天的」可见，不再把旧快照伪装成当前值。
    *
-   * ℹ 分母里还含约 700 条 `fundNo` 为空的 2013~2016 年通道类资管计划
-   * （中基协未赋备案编码），抓到也写不进库（主键缺失）→ 可入库上限 ≈ 249,231。
-   * 即 100% 是做不到的，详见 fetch_private_funds.py 的 docstring。
+   * ℹ 分母含约 700 条 `fundNo` 为空的 2013~2016 年通道类资管计划
+   * （中基协未赋备案编码），抓到也写不进库（主键缺失）→ 100% 本来就做不到。
+   * 详见 fetch_private_funds.py 的 docstring。
    */
-  const AMAC_SOURCE_TOTAL = 249863
+  const AMAC_SOURCE_TOTAL_FALLBACK = 249863
+  const AMAC_META_FILE = resolve(process.cwd(), '.workbuddy', 'private_registry_meta.json')
+
+  function amacSourceTotal(): { total: number; asOf: string | null } {
+    try {
+      const meta = JSON.parse(readFileSync(AMAC_META_FILE, 'utf8'))
+      const n = Number(meta.totalElements)
+      if (Number.isFinite(n) && n > 0) {
+        return { total: n, asOf: typeof meta.asOf === 'string' ? meta.asOf : null }
+      }
+    } catch { /* 元数据文件不存在/损坏 → 回退常量，绝不因它让 /stats 挂掉 */ }
+    return { total: AMAC_SOURCE_TOTAL_FALLBACK, asOf: null }
+  }
 
   // ── GET /api/private-funds/stats ──────────────────────────────────────────
   // 概览：备案基数、代销池覆盖情况。⚠ 两个 coverage 都必须展示给用户 ——
@@ -64,18 +80,20 @@ export async function privateFundsRoutes(app: FastifyInstance) {
     const funds   = f?.funds    ?? 0
     const withNav = f?.withNav  ?? 0
     const registry = f?.registry ?? 0
+    const amac = amacSourceTotal()
     return {
       managers:      m?.managers ?? 0,
       funds,
       registry,
-      registrySource: AMAC_SOURCE_TOTAL,
+      registrySource: amac.total,
+      registrySourceAsOf: amac.asOf,
       withNav,
       navRows:       n?.navRows  ?? 0,
       latestNavDate: n?.latestNavDate ?? null,
       // 公开净值覆盖率（%），前端要显著展示。分子 = private_funds.has_nav（两源并集）
       navCoverage:   funds > 0 ? Math.round((withNav / funds) * 1000000) / 10000 : null,
       // 备案名录相对源端自报总量的覆盖率（%）。注意分子会随多遍扫描上升，分母会随快照波动
-      registryCoverage: Math.round((registry / AMAC_SOURCE_TOTAL) * 1000000) / 10000,
+      registryCoverage: Math.round((registry / amac.total) * 1000000) / 10000,
     }
   })
 

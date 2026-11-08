@@ -1,6 +1,7 @@
 import {
   pgTable,
   varchar,
+  text,
   integer,
   numeric,
   date,
@@ -705,4 +706,158 @@ export const storagePrices = pgTable('storage_prices', {
 }, (t) => [
   unique('storage_prices_uniq').on(t.key, t.priceDate),
   index('idx_storage_prices_key_date').on(t.key, t.priceDate),
+])
+
+// --------------------------------------------------------------------------
+// A 股股票信息（2026-11-08 落地）
+//   stocks           ← fetch_stock_info.py   （名录 + 静态属性 + 行情快照列）
+//   stock_industries ← fetch_stock_info.py   （多值行业 / 概念 / 地域标签）
+//   stock_prices     ← fetch_stock_prices.py （不复权日线 OHLCV + 成交量成交额）
+//
+// ⚠ 六条口径，改这里之前必须看：
+//   ① 范围 = 沪深主板 + 创业板 + 科创板。北交所（8/4/920 开头）与 B 股不收。
+//      exchange / board **由代码前缀定**，不用源侧 f13 —— 北交所也返回 0，会混进深市。
+//   ② total_shares / float_shares 单位 = **股**（东财 f84/f85）；
+//      巨潮「注册资金」单位是 **万元**，单列 registered_capital，两者别混用。
+//   ③ region = 东财地域板块 f128 去掉「板块」后缀。少数公司（境外注册等）
+//      源侧返回 "-"，留 NULL，不拿注册地址硬猜省份。
+//   ④ 行业三套并存：industry = 东财细分行业（f127，单值，如「白酒Ⅱ」）；
+//      industry_csrc = 巨潮证监会门类（单值，如「酒、饮料和精制茶制造业」）；
+//      「一只股票可属多个行业/概念」→ stock_industries 多值表，kind 区分。
+//   ⑤ stock_prices 一律 **不复权**（akshare adjust=''）。除权日有跳空，
+//      **禁止与 qfq/hfq 序列拼接**；成交量单位「手」、成交额「元」。
+//   ⑥ 周 / 月 / 年线 **不落库**，由 /api/stocks/:code/prices 用 date_trunc 聚合日线，
+//      避免派生表与源表不一致。日线是唯一事实来源。
+//
+// ⚠ 写库分工：fetch_stock_info.py 只更新名录列 + 静态属性 + 行情快照，
+//   fetch_stock_prices.py 只更新 latest_price_date。两者都不清空对方写的列。
+// --------------------------------------------------------------------------
+export const stocks = pgTable('stocks', {
+  code:              varchar('code', { length: 10 }).primaryKey(),
+  name:              varchar('name', { length: 120 }).notNull(),
+  // NFKC + 去空白 + 大写的检索键：「万  科Ａ」→「万科A」，供名称搜索用
+  nameSearch:        text('name_search'),
+  companyName:       text('company_name'),
+  nameEn:            text('name_en'),
+  formerName:        text('former_name'),
+  introduction:      text('introduction'),          // 机构简介 = 基本介绍
+  mainBusiness:      text('main_business'),
+  businessScope:     text('business_scope'),
+  totalShares:       numeric('total_shares',        { precision: 24, scale: 2 }),
+  floatShares:       numeric('float_shares',        { precision: 24, scale: 2 }),
+  registeredCapital: numeric('registered_capital',  { precision: 20, scale: 4 }),  // 万元
+  marketCap:         numeric('market_cap',          { precision: 24, scale: 2 }),  // 元
+  floatMarketCap:    numeric('float_market_cap',    { precision: 24, scale: 2 }),  // 元
+  industry:          varchar('industry',       { length: 120 }),
+  industryCsrc:      varchar('industry_csrc',  { length: 120 }),
+  region:            varchar('region',         { length: 40  }),
+  exchange:          varchar('exchange',       { length: 20  }).notNull(),  // 上交所 | 深交所
+  board:             varchar('board',          { length: 20  }).notNull(),  // 沪市主板|科创板|深市主板|创业板
+  listingDate:       date('listing_date'),
+  foundedDate:       date('founded_date'),
+  legalPerson:       varchar('legal_person',   { length: 100 }),
+  registeredAddress: text('registered_address'),
+  officeAddress:     text('office_address'),
+  website:           text('website'),
+  email:             text('email'),
+  phone:             text('phone'),
+  // 行情快照（clist 全市场批量，非日线；盘中可能是未完成的一根 K 线）
+  latestPrice:       numeric('latest_price',  { precision: 16, scale: 4 }),
+  changePct:         numeric('change_pct',    { precision: 10, scale: 4 }),
+  quoteDate:         date('quote_date'),
+  // 日线最新日：唯一写入方 = fetch_stock_prices.py
+  latestPriceDate:   date('latest_price_date'),
+  // 最后一次「源侧已查过、确认没有更新」的行情日，写入方同样是股价脚本。
+  // 退市 / 长期停牌股的 latest_price_date 永远追不上 src_latest，
+  // 没有这列就会每天重复抓这 300 多只（实测 345 只 / 30 秒）；
+  // 新交易日到来时 src_latest 变大，它们自然会被重抓一次。
+  priceCheckedDate:  date('price_checked_date'),
+  profileUpdatedAt:  timestamp('profile_updated_at', { withTimezone: true }),
+  boardsUpdatedAt:   timestamp('boards_updated_at',  { withTimezone: true }),
+  source:            varchar('source', { length: 200 }),
+  updatedAt:         timestamp('updated_at', { withTimezone: true })
+                       .default(sql`NOW()`).notNull(),
+}, (t) => [
+  index('idx_stocks_name').on(t.name),
+  index('idx_stocks_name_search').on(t.nameSearch),
+  index('idx_stocks_exchange_board').on(t.exchange, t.board),
+  index('idx_stocks_region').on(t.region),
+  index('idx_stocks_industry').on(t.industry),
+  index('idx_stocks_industry_csrc').on(t.industryCsrc),
+])
+
+export const stockIndustries = pgTable('stock_industries', {
+  id:        bigserial('id', { mode: 'number' }).primaryKey(),
+  code:      varchar('code',       { length: 10  }).notNull(),
+  kind:      varchar('kind',       { length: 12  }).notNull(),  // industry | concept | region | unknown
+  name:      varchar('name',       { length: 120 }).notNull(),
+  boardCode: varchar('board_code', { length: 16  }),            // 东财板块代码 BKxxxx
+}, (t) => [
+  unique('stock_industries_uniq').on(t.code, t.kind, t.name),
+  index('idx_stock_industries_name').on(t.name),
+  index('idx_stock_industries_code').on(t.code),
+])
+
+export const stockPrices = pgTable('stock_prices', {
+  id:           bigserial('id', { mode: 'number' }).primaryKey(),
+  code:         varchar('code',       { length: 10 }).notNull(),
+  tradeDate:    date('trade_date').notNull(),
+  open:         numeric('open',          { precision: 16, scale: 4 }),
+  high:         numeric('high',          { precision: 16, scale: 4 }),
+  low:          numeric('low',           { precision: 16, scale: 4 }),
+  close:        numeric('close',         { precision: 16, scale: 4 }),
+  volume:       numeric('volume',        { precision: 24, scale: 2 }),  // 手
+  turnover:     numeric('turnover',      { precision: 24, scale: 2 }),  // 元
+  amplitude:    numeric('amplitude',     { precision: 10, scale: 4 }),  // %
+  changePct:    numeric('change_pct',    { precision: 10, scale: 4 }),  // %
+  changeAmt:    numeric('change_amt',    { precision: 16, scale: 4 }),
+  turnoverRate: numeric('turnover_rate', { precision: 10, scale: 4 }),  // %
+}, (t) => [
+  unique('stock_prices_uniq').on(t.code, t.tradeDate),
+  index('idx_stock_prices_code_date').on(t.code, t.tradeDate),
+  index('idx_stock_prices_date').on(t.tradeDate),
+])
+
+// --------------------------------------------------------------------------
+// stock_fundamentals — 每股财务指标快照（2026-11-08 落地，fetch_stock_fundamentals.py）
+//
+// ⚠ 六条口径，改这里或 UI 之前必须看：
+//   ① 股息率 = dividend/price×100 由本表自算，可验算；eps_ttm = price/pe_ttm 是反推式。
+//      ⚠ **PB = price/bvps 不恒成立**：实测前 200 只里 5 只（多为科创板，如 688809）
+//      偏差 7~28%，源侧 f23 与 f113 的报告期/股本口径并不总一致 → 保留源侧 PB，
+//      不强行用 price/bvps 改写，也不宣称两者可互相验算。
+//   ② eps_ttm = price / pe_ttm，是**滚动 12 个月**每股收益（由市盈率(TTM)反推）；
+//      eps_report = 最新**报告期累计、未年化**的基本每股收益（clist f112），
+//      一季报只有全年约 1/4，两者绝不能混用。report_date 标明报告期。
+//   ③ pe_ttm / pe_dynamic / pe_static 分别是 TTM / 动态(报告期年化) / 静态(上年年报)，
+//      数值可差 30%+（五粮液 23.99 / 22.59 / 32.66），UI 主显示 pe_ttm 并标口径。
+//   ④ bvps = 最新报告期每股净资产（clist f113），pb = 市净率（clist f23）。
+//   ⑤ dividend = **近 12 个月已实施**（除权除息日 ≤ 今天）现金分红合计，
+//      税前、元/股；dividend_yield = dividend / price × 100（%）。
+//      ⚠ 东财 clist 的 f133「股息率」口径不统一（茅台只算最近一次 1.93%，
+//      平安银行却算近 12 个月 5.16%）→ **不用 f133**，只拿它做交叉校验。
+//   ⑥ 无分红 / 亏损 / 停牌的字段一律 NULL，前端显示「—」，**不用 0 充数**。
+// --------------------------------------------------------------------------
+export const stockFundamentals = pgTable('stock_fundamentals', {
+  code:             varchar('code', { length: 10 }).primaryKey(),
+  epsTtm:           numeric('eps_ttm',          { precision: 16, scale: 4 }),
+  epsReport:        numeric('eps_report',       { precision: 16, scale: 4 }),
+  reportDate:       date('report_date'),
+  peTtm:            numeric('pe_ttm',           { precision: 16, scale: 4 }),
+  peDynamic:        numeric('pe_dynamic',       { precision: 16, scale: 4 }),
+  peStatic:         numeric('pe_static',        { precision: 16, scale: 4 }),
+  bvps:             numeric('bvps',             { precision: 16, scale: 4 }),
+  pb:               numeric('pb',               { precision: 16, scale: 4 }),
+  dividend:         numeric('dividend',         { precision: 16, scale: 6 }),
+  dividendYield:    numeric('dividend_yield',   { precision: 10, scale: 4 }),
+  dividendPlans:    integer('dividend_plans'),
+  dividendLastEx:   date('dividend_last_ex'),
+  price:            numeric('price',            { precision: 16, scale: 4 }),
+  quoteDate:        date('quote_date'),
+  source:           varchar('source', { length: 200 }),
+  updatedAt:        timestamp('updated_at', { withTimezone: true })
+                      .default(sql`NOW()`).notNull(),
+}, (t) => [
+  index('idx_stock_fundamentals_quote').on(t.quoteDate),
+  index('idx_stock_fundamentals_pe').on(t.peTtm),
 ])
