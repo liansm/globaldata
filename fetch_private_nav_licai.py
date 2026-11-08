@@ -41,6 +41,20 @@ Data sources
 * 名称归一化后能映射到中基协备案名录 **830 只（89.5%）**，
   其中 **682 只当前无净值** → 这是本源的真实增量
 
+⚠ 2026-11-07：netvalue 接口开始返 HTTP 403（Tengine 反爬 HTML 页）
+----------------------------------------------------------------
+`product/list` 仍正常（933 只白名单照返），**只有 netvalue 被挡**。
+实测排除项：① 请求频率（第 1 只就 403，非累计触发）② 出口 IP
+（直连 / 沙箱代理 56439 / clash 10808 三种全部 403）③ 请求头
+（补 Accept / Accept-Language / sec-ch-ua / Sec-Fetch-* / X-Requested-With
+并先 GET 详情页拿 cookie，仍 403）④ product_id（换 3 个白名单 ID 都一样）。
+→ 判定为**源站对该接口新增了鉴权/风控**，不是我们能靠改脚本绕过的。
+本轮 `--refresh` 只完成 33 只就中止（已落库、无脏数据），其余保持上次数据。
+处理：`main()` 在 `aborted` 时**返回退出码 2**，让编排脚本判 FAIL 而非静默 OK；
+隔一段时间重跑 `refresh_private.py --only licai` 即可（`--stale-days 3`
+会跳过已刷新的产品接着补）。**不要**为了绕过 403 去加代理轮换/改 UA 池，
+那属于对抗源站风控，且已实测无效。
+
 死路（已复核，勿重踩）
 --------------------
 * **sitemap 那 16 万条 product URL 基本空转**：随机抽 65 只（跨 2020/2023/2024/2026）
@@ -90,7 +104,9 @@ SOURCE = "licai"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 PAGE_SIZE = 100
-DEFAULT_INTERVAL = 0.35
+# 2026-11-07 调大：0.35s 在 --refresh 第 33 只就吃到 HTTP 403（源站比 10-30 收紧了）。
+# 645 只 × 0.8s ≈ 8.6 分钟，仍可接受；配合 post_json 的单次温和退避。
+DEFAULT_INTERVAL = 0.8
 # 源侧空序列的产品（is_show_nv=0 那批）每次都会白跑一趟；缓存 7 天不再重试。
 # 只记「确实返了 total=0」，**不记失败** —— 失败必须每轮重试，别让一次网络抖动变成长期空洞。
 EMPTY_CACHE = HERE / ".workbuddy" / "licai_empty_cache.json"
@@ -107,10 +123,13 @@ def database_url() -> str:
 
 
 class RateLimited(RuntimeError):
-    """被源站临时封禁（HTTP 403）。
+    """被源站临时封禁（HTTP 403 / 429）。
 
     2026-10-30 实测：连续跑两轮（约 1,300 次 POST）后开始 403，且**当时不会自愈**
     （隔 1 分钟仍在封）。处理原则：立即中止本轮，别继续打 —— 越打封得越久。
+    2026-11-07 补充：也可能是**偶发单帧 403**（本轮第 33 只就中了），
+    所以 post_json 只做一次 20s 退避重试，仍 403 才抛这里；配合 --stale-days
+    重跑接着补，不重复请求已刷新的产品。
     """
 
 
@@ -129,6 +148,13 @@ def post_json(url: str, body: dict, referer: str = REFERER, tries: int = 3) -> d
                 return json.loads(resp.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as exc:
             if exc.code in (403, 429):
+                # 只做一次温和退避：连续打会越封越久，但偶发单帧 403 直接放弃
+                # 整轮太亏（2026-11-07 曾让 645 只只完成 33 只）。
+                if i == 0:
+                    print(f"  [限流] HTTP {exc.code}，冷却 20s 后重试一次", flush=True)
+                    time.sleep(20)
+                    last = exc
+                    continue
                 raise RateLimited(f"HTTP {exc.code} {url}") from exc
             last = exc
             time.sleep(1.5 * (i + 1))
@@ -391,6 +417,13 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="最多处理多少只（试点）")
     ap.add_argument("--status", action="store_true", help="只显示库内现状")
     ap.add_argument("--interval", type=float, default=DEFAULT_INTERVAL, help="请求间隔秒")
+    ap.add_argument("--refresh", action="store_true",
+                    help="连本源已入库的产品一起重抓（默认只补新进池产品）。"
+                         "netvalue 一次返全历史、UPSERT 覆盖写，所以这是刷新而非追加；"
+                         "其他 source 的产品永远跳过，守住「同一 fund_no 只有一个 source」")
+    ap.add_argument("--stale-days", type=int, default=0,
+                    help="配合 --refresh：只重抓「最新净值日早于 N 天」的本源产品（0 = 全量重抓）。"
+                         "被源站限流中止后重跑用这个接着补，不重复请求已刷新的产品")
     args = ap.parse_args()
 
     conn = psycopg2.connect(database_url())
@@ -405,6 +438,26 @@ def main() -> int:
 
     registry = load_registry(conn)
     owners = load_nav_owners(conn)
+    if args.refresh:
+        # 默认语义 = 只补新进池：owners 里所有已有净值的 fund_no 都跳过。
+        # 刷新模式下把「本来就是本源」的放回来重抓（全历史覆盖写），
+        # 但 em_gaoduan / sppw 的产品仍然跳过 —— 口径不同，绝不混拼。
+        other = {no: src for no, src in owners.items() if src != SOURCE}
+        print(f"  [刷新模式] 本源已有 {len(owners) - len(other)} 只纳入重抓；"
+              f"其他源 {len(other)} 只仍跳过")
+        owners = other
+        if args.stale_days > 0:
+            # 断点语义：本轮已经刷到「够新」的产品放回跳过集合，陈旧的仍在队列。
+            # 被 403 中止后重跑只会接着补，不会把上一轮已完成的 33 只再打一遍
+            # （越打越容易被封）。判据用 nav 表最新日期，不另记进度文件。
+            cutoff = (date.today() - timedelta(days=args.stale_days)).isoformat()
+            with conn.cursor() as cur:
+                cur.execute("""SELECT fund_no, MAX(nav_date)::text FROM private_fund_nav
+                               WHERE source = %s GROUP BY fund_no""", (SOURCE,))
+                fresh = {no for no, d in cur.fetchall() if d and d >= cutoff}
+            owners.update({no: SOURCE for no in fresh})
+            print(f"  [陈旧阈值] {args.stale_days} 天内已更新 {len(fresh)} 只跳过，"
+                  f"其余本源产品纳入重抓（限流中断后重跑接着补）")
 
     mapped, unmapped = [], []
     skipped: dict[str, int] = defaultdict(int)
@@ -507,6 +560,11 @@ def main() -> int:
 
     if not args.dry_run:
         cmd_status(conn)
+    if aborted:
+        # ⚠ 限流中止必须让编排脚本看到非 0，否则「中止：入库 0 只」会被
+        #   refresh_private.py 当成 OK，失败被静默（2026-11-07 踩过）。
+        print("  ✗ 本轮被源站限流中止，未完成全部目标；退出码 2", file=sys.stderr)
+        return 2
     return 0
 
 

@@ -55,7 +55,8 @@ export interface PrivateFundStats {
   managers: number
   funds: number
   registry: number
-  registrySource: number          // 中基协自报的备案总量（分母，会随快照波动）
+  registrySource: number          // 中基协自报的备案总量（分母，由抓取脚本每轮刷新）
+  registrySourceAsOf: string | null // 该分母的源侧快照日期；null = 回退到硬编码旧常量
   registryCoverage: number        // 备案名录覆盖率 %
   withNav: number
   navRows: number

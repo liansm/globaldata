@@ -2,7 +2,8 @@
 // 「基金信息」页 · 私募基金 tab。
 // 原 pages/PrivateFunds.vue 整页搬迁而来：去页面级容器、去 h1。
 // ⚠ 本组件内部自带一层 el-tabs（备案产品 / 管理人），嵌在外层 tab 里 → 内层改 card 型区分层级。
-// 口径提示条（私募不得公开披露业绩）是这一页的核心，**位置与措辞都不要动**。
+// 口径提示条是这一页的核心，**位置不要动**；法规依据以《私募证券投资基金运作指引》
+// 第六条为准（净值展示权绑定代销协议 / 合格投资者），改措辞前先核对原文。
 import { ref, reactive, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -197,7 +198,10 @@ const regCoverageText = computed(() => {
 const regCoverageTip = computed(() => {
   const s = stats.value
   if (!s) return ''
-  return `库内 ${s.registry.toLocaleString()} / 中基协自报 ${s.registrySource.toLocaleString()}`
+  const asOf = s.registrySourceAsOf
+    ? `（${s.registrySourceAsOf} 源侧快照）`
+    : '（分母为旧快照，可能已过期）'
+  return `库内 ${s.registry.toLocaleString()} / 中基协自报 ${s.registrySource.toLocaleString()}${asOf}`
 })
 </script>
 
@@ -208,7 +212,8 @@ const regCoverageTip = computed(() => {
       <div class="scope-row">
         <span class="scope-badge">口径</span>
         <span>
-          私募<strong>不得公开宣传推介与披露业绩</strong>（《私募投资基金募集行为管理办法》），
+          私募<strong>净值展示受严格限制</strong>（《私募证券投资基金运作指引》第六条：
+          除合格投资者、基金评价机构及签有代销协议的销售机构外，不得提供或展示净值），
           所以公开渠道只有 <strong>备案名录</strong> 能大规模获取；
           <strong>规模 / 持仓 / 净值没有全量数据</strong>。
           本页净值来自三个公开源，合计覆盖 <strong>{{ coverageText }}</strong>：

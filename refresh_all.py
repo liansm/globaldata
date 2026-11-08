@@ -165,6 +165,18 @@ OPT_IN_SCRIPTS = {
         "私募净值补充源（格上理财，927 只白名单，免登录，约 10 分钟）",
         [], {},
     ),
+    # 私募整轮更新（2026-11-07 新增）：备案增量 + 代销池/格上/排排网三源净值。
+    # ⚠ 已包含上面的格上（--refresh 模式），`--with-private` 与 `--with-licai`
+    #   同时开会让格上跑两遍（幂等但费时），两个 flag 选一个即可。
+    # 耗时约 35~45 分钟，且「漏跑不丢历史」（净值源都是全历史覆盖写），
+    # 所以不进 FETCH_SCRIPTS 拖慢每日整轮，用 --with-private 显式打开。
+    # 排排网需要 .workbuddy/.cdp_session.json；没会话时脚本自检后 SKIP 该源，
+    # 其余三源照常刷新，不会把「匿名态成功但 0 点」的假数据写进库。
+    "private": (
+        "refresh_private.py",
+        "私募整轮更新（备案增量 + 三源净值，约 35~45 分钟）",
+        [], {},
+    ),
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -490,37 +502,53 @@ STATUS_QUERIES = [
         "optional": True,
     },
     {
-        "title": "private_funds  (私募备案产品 + 代销池净值快照)",
+        "title": "private_funds  (私募备案产品 + 净值快照)",
         "sql": """
             SELECT COUNT(*) AS total,
                    COUNT(*) FILTER (WHERE in_registry) AS registry,
                    COUNT(*) FILTER (WHERE has_nav) AS with_nav,
-                   MAX(latest_nav_date)::text AS nav_date
+                   MAX(latest_nav_date)::text AS nav_date,
+                   MAX(record_date)::text AS last_record,
+                   CURRENT_DATE - MAX(record_date) AS record_stale_days,
+                   MAX(updated_at)::date::text AS refreshed,
+                   CURRENT_DATE - MAX(updated_at)::date AS refresh_stale_days
             FROM private_funds
         """,
-        "cols": ["total", "registry", "with_nav", "nav_date"],
+        "cols": ["total", "registry", "with_nav", "nav_date", "last_record",
+                 "record_stale_days", "refreshed", "refresh_stale_days"],
         "optional": True,
     },
     {
         "title": "private_managers  (私募基金管理人)",
         "sql": """
             SELECT COUNT(*) AS total,
-                   COUNT(fund_count) AS with_count
+                   COUNT(fund_count) AS with_count,
+                   MAX(updated_at)::date::text AS refreshed,
+                   CURRENT_DATE - MAX(updated_at)::date AS stale_days
             FROM private_managers
         """,
-        "cols": ["total", "with_count"],
+        "cols": ["total", "with_count", "refreshed", "stale_days"],
         "optional": True,
     },
     {
-        "title": "private_fund_nav  (私募净值日线，仅代销池 ~0.5%)",
+        # 按源分开看陈旧度：三源披露频率不同（sppw 周频 / em 日频 / licai 日周混合），
+        # 全表一个 MAX(nav_date) 会把「某一源停更」藏在另一源后面。
+        "title": "private_fund_nav  (私募净值日线 · 按源新鲜度)",
         "sql": """
-            SELECT COUNT(*) AS rows,
-                   COUNT(DISTINCT fund_no) AS funds,
-                   MIN(nav_date)::text AS earliest,
-                   MAX(nav_date)::text AS latest
-            FROM private_fund_nav
+            WITH last AS (SELECT fund_no, MAX(nav_date) AS d FROM private_fund_nav GROUP BY fund_no),
+                 src  AS (SELECT fund_no, MIN(source) AS source FROM private_fund_nav GROUP BY fund_no),
+                 cnt  AS (SELECT fund_no, COUNT(*) AS n FROM private_fund_nav GROUP BY fund_no)
+            SELECT s.source,
+                   COUNT(*) AS funds,
+                   SUM(c.n) AS rows,
+                   MAX(l.d)::text AS latest,
+                   CURRENT_DATE - MAX(l.d) AS stale_days,
+                   COUNT(*) FILTER (WHERE l.d >= CURRENT_DATE - 30) AS fresh_30d
+            FROM last l JOIN src s USING (fund_no) JOIN cnt c USING (fund_no)
+            GROUP BY s.source ORDER BY 2 DESC
         """,
-        "cols": ["rows", "funds", "earliest", "latest"],
+        "cols": ["source", "funds", "rows", "latest", "stale_days", "fresh_30d"],
+        "multi": True,
         "optional": True,
     },
     {
@@ -868,6 +896,9 @@ def main():
                         help="连 VLCC 船位一起刷（约 90s，默认不跑，见 OPT_IN_SCRIPTS）")
     parser.add_argument("--with-licai", action="store_true",
                         help="连私募净值补充源（格上理财）一起刷（约 10 分钟，默认不跑）")
+    parser.add_argument("--with-private", action="store_true",
+                        help="连私募整轮更新一起刷（备案增量 + 三源净值，约 35~45 分钟；"
+                             "已含格上，勿与 --with-licai 同开）")
     parser.add_argument("--clear",       action="store_true", help="清空所有表数据（需二次确认）")
     parser.add_argument("--force_clear", action="store_true", help="强制清空所有表数据（无需确认）")
     args = parser.parse_args()

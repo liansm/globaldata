@@ -11,10 +11,12 @@ import {
   LegendComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { fetchPrivateFundDetail, fetchPrivateNav } from '@/api/privateFunds'
+import { fetchPrivateFundDetail, fetchPrivateNav, fetchPrivateStats } from '@/api/privateFunds'
 import AnnotatedLineChart from '@/components/AnnotatedLineChart.vue'
 import { ytdFrom } from '@/lib/dateRange'
-import type { PrivateFundDetail, PrivateNavPoint, PrivateNavRange } from '@/types/privateFund'
+import type {
+  PrivateFundDetail, PrivateNavPoint, PrivateNavRange, PrivateFundStats,
+} from '@/types/privateFund'
 
 use([CanvasRenderer, LineChart, TitleComponent, TooltipComponent,
      GridComponent, DataZoomComponent, LegendComponent])
@@ -25,6 +27,13 @@ const router = useRouter()
 const loading = ref(true)
 const error   = ref('')
 const detail  = ref<PrivateFundDetail | null>(null)
+// 无净值产品需要给出「全库有多少产品有净值」，否则用户会以为是自己这一只抓漏了。
+const stats   = ref<PrivateFundStats | null>(null)
+const navCoverageText = computed(() => {
+  const s = stats.value
+  if (!s || s.navCoverage == null) return ''
+  return `全库 ${s.withNav.toLocaleString()} / ${s.funds.toLocaleString()} 只产品有公开净值（${s.navCoverage.toFixed(2)}%）`
+})
 
 // ── 净值 ────────────────────────────────────────────────────────────────────
 const navPoints  = ref<PrivateNavPoint[]>([])
@@ -227,7 +236,11 @@ async function loadAll() {
   await Promise.all([loadNav(code), loadTable()])
 }
 
-onMounted(loadAll)
+onMounted(() => {
+  loadAll()
+  // 非阻塞：拿不到覆盖率也只是少一行说明，不能挡住详情页
+  fetchPrivateStats().then(s => { stats.value = s }).catch(() => {})
+})
 watch(() => route.params.code, () => {
   navRange.value = 'ytd'
   tablePage.value = 1
@@ -313,17 +326,21 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
         <div class="stat-card">
           <div class="stat-label">今年来</div>
           <div class="stat-value" :class="pctClass(detail?.ytdReturn)">{{ fmtPct(detail?.ytdReturn) }}</div>
-          <div class="stat-sub">{{ isSppwSource ? '复权净值口径' : '累计净值口径' }}</div>
+          <div class="stat-sub">
+            {{ !detail?.hasNav ? '无公开净值' : (isSppwSource ? '复权净值口径' : '累计净值口径') }}
+          </div>
         </div>
         <div class="stat-card">
           <div class="stat-label">有数据以来</div>
           <div class="stat-value" :class="pctClass(detail?.totalReturn)">{{ fmtPct(detail?.totalReturn) }}</div>
-          <div class="stat-sub">自 {{ fmtDate(detail?.navEarliest) }}</div>
+          <div class="stat-sub">
+            {{ detail?.hasNav ? '自 ' + fmtDate(detail?.navEarliest) : '无公开净值' }}
+          </div>
         </div>
         <div class="stat-card">
           <div class="stat-label">{{ isSppwSource ? '最新复权净值' : '最新单位净值' }}</div>
           <div class="stat-value">{{ fmtNav(detail?.latestNav) }}</div>
-          <div class="stat-sub">{{ fmtDate(detail?.latestNavDate) }}</div>
+          <div class="stat-sub">{{ detail?.hasNav ? fmtDate(detail?.latestNavDate) : '未披露' }}</div>
         </div>
         <div class="stat-card">
           <div class="stat-label">规模</div>
@@ -375,7 +392,8 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
       <!-- ── 净值走势 ──────────────────────────────────────────────────────── -->
       <div class="section-header">
         <h2>净值走势</h2>
-        <el-radio-group v-model="navRange" size="small">
+        <!-- 无净值时切区间也只会得到空白，反而让人以为「换个区间就有了」 -->
+        <el-radio-group v-if="detail?.hasNav" v-model="navRange" size="small">
           <el-radio-button v-for="o in rangeOptions" :key="String(o.value)" :value="o.value">
             {{ o.label }}
           </el-radio-button>
@@ -413,6 +431,22 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
         <AnnotatedLineChart v-if="navPoints.length"
                             :option="chartOption" autoresize
                             style="width: 100%; height: 380px" />
+        <!-- 无净值 ≠ 加载失败：占满 380px 的空白 + 一行浅灰小字会被当成页面坏了。
+             这里必须把「为什么没有」和「备案信息仍然完整」说清楚。 -->
+        <div v-else-if="!navLoading && detail && !detail.hasNav" class="nav-empty">
+          <div class="ne-icon"><el-icon :size="30"><Document /></el-icon></div>
+          <h3>该产品暂无公开净值</h3>
+          <p>按《私募证券投资基金运作指引》第六条，私募净值只能向合格投资者、基金评价机构
+             及签约代销机构提供，第三方平台<strong>只能展示其代销的产品</strong>。本站只采集
+             天天基金代销池、私募排排网可见名录、格上理财可见名录三处已公开的数值，
+             本产品不在这三份名单内。</p>
+          <p>因此净值、收益率和走势图都没有数据；<strong>上方的管理人、托管人、成立/备案时间等
+             备案信息是完整的</strong>，这不是加载失败或抓取遗漏。</p>
+          <p v-if="navCoverageText" class="ne-stat">
+            {{ navCoverageText }}，这是公开渠道的上限；换付费数据库也不保证覆盖本产品，
+            且净值展示另受监管与授权限制。
+          </p>
+        </div>
         <div v-else class="empty-hint">{{ emptyNavHint || '暂无净值数据' }}</div>
       </div>
       <p v-if="navPoints.length" class="chart-foot">
@@ -476,7 +510,9 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
           </li>
           <li>其余产品只有中基协<strong>备案级</strong>信息（名称 / 管理人 / 托管人 / 运行状态 / 备案时间）。</li>
           <li>
-            按监管要求，私募基金<strong>不得公开披露净值与持仓</strong>，因此不存在「全市场私募净值库」。
+            按《私募证券投资基金运作指引》第六条，私募净值只对合格投资者、基金评价机构及
+            签约代销机构披露；管理人对评价机构也是<strong>自愿提供、可以不给</strong>，
+            因此不存在「全市场私募净值库」，<strong>付费数据库同样如此</strong>。
             ⚠ 三个源口径不同（复权净值 vs 累计净值），在「有分红」标的上终身收益最多差数倍，
             故<strong>同一产品只取单一来源、不跨源混拼序列</strong>。
           </li>
@@ -562,6 +598,24 @@ function stateTagType(s: string | null | undefined): 'success' | 'warning' | 'in
   height: 380px;
   display: flex; align-items: center; justify-content: center;
   color: #bbb; font-size: 14px;
+}
+/* 无公开净值的空状态：说清原因，别让 380px 空白看起来像加载失败 */
+.nav-empty {
+  min-height: 380px; padding: 28px 40px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; gap: 10px;
+}
+.ne-icon {
+  width: 58px; height: 58px; border-radius: 50%; margin-bottom: 4px;
+  background: #f4f6fa; color: #a8b0c0;
+  display: flex; align-items: center; justify-content: center;
+}
+.nav-empty h3 { margin: 0; font-size: 17px; font-weight: 600; color: #303133; }
+.nav-empty p  { margin: 0; max-width: 660px; font-size: 13px; line-height: 1.85; color: #7a8291; }
+.nav-empty strong { color: #4a5262; font-weight: 600; }
+.nav-empty .ne-stat {
+  margin-top: 6px; padding: 7px 14px; border-radius: 6px;
+  background: #f7f9fc; color: #6b7688; font-size: 12px;
 }
 .chart-foot { margin: 0 0 26px; font-size: 12px; color: #999; }
 

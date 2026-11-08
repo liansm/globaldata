@@ -138,10 +138,34 @@ Usage
 -----
     python fetch_private_funds.py --limit-pages 2        # 小范围试点（各拉 2 页）
     python fetch_private_funds.py                         # 备案全量（约 55 分钟）
-    python fetch_private_funds.py --nav                   # 代销池净值回填（约 13 分钟）
+    python fetch_private_funds.py --incremental 200       # 备案低价增量（见下，约 4 分钟）
+    python fetch_private_funds.py --nav-only --full       # 代销池净值**全量刷新**（约 13 分钟）
+    python fetch_private_funds.py --nav                   # 代销池净值只补新进池产品
     python fetch_private_funds.py --nav --limit-nav 20    # 净值先跑 20 只试点
     python fetch_private_funds.py --dry-run               # 只抓不写库
     python fetch_private_funds.py --status                # 只看库内现状
+
+⚠ 备案增量（--incremental PAGES，2026-11-07 新增）
+--------------------------------------------------
+中基协 `pof/fund` 没有 ORDER BY，但实测**默认顺序就是 id 倒序 = 备案时间倒序**：
+2026-11-07 探针 page 0 的 100 条 record_date 是 11-05~11-06、page 1 是 11-04~11-05，
+且这 300 条在库内 **0 条命中**（库停在 9-16）。因此「只扫前 PAGES 页」就能廉价补回
+新备案产品 + 这些产品的运作状态变更，不必每轮都跑 55 分钟全量。
+* 200 页 = 2 万条 ≈ 200 天的新备案，远超一轮更新间隔，分页漂移漏的也会在后面页里补回。
+* 只扫产品，不扫管理人：管理人端点默认顺序是 registerNo 升序，前 N 页**不是**最新，
+  要补管理人只能全量（`--managers-only --passes 2`，约 8 分钟），由 refresh_private.py
+  的 `--with-managers` 低频触发。
+* **绝不写进度文件**：`progress=None` 传入，避免 `funds_page_done=200` 残留，
+  让下次全量重扫误从第 200 页开始（会系统性漏掉最新的 200 页）。
+* 局限：老产品的「正在运作 → 提前清算」这类状态变更落在旧页里，增量扫不到。
+  所以仍需**月度全量重扫**兜底，增量只是把日常时效成本从 55 分钟压到 4 分钟。
+
+⚠ 净值更新必须显式 --full（2026-11-07 澄清）
+--------------------------------------------
+`--nav` 的断点是「private_fund_nav 里已有 fund_no 就跳过」，本意是避免重复抓全历史，
+但代价是**已有产品永远不会再更新** —— 净值永久停在最后一次 --full 那天。
+东财 lsjz 一次返全序列、UPSERT 覆盖写，所以刷新语义是「重抓覆盖」而不是追加。
+日常刷新统一用 `--nav-only --full`（或 refresh_private.py）。
 """
 
 import argparse
@@ -165,6 +189,9 @@ load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata")
 BASE_DIR     = Path(__file__).parent
 PROGRESS_FILE = BASE_DIR / ".workbuddy" / "private_funds_progress.json"
+# 备案名录覆盖率的分母（中基协首帧自报 totalElements），后端 /api/private-funds/stats 读它。
+# ⚠ 不是常量：源侧总量每天在涨，硬编码会让「库内/源侧」算出 >100%（2026-11-07 实测踩过）。
+REGISTRY_META_FILE = BASE_DIR / ".workbuddy" / "private_registry_meta.json"
 
 # 中国标准时间：源里的 ms 时间戳是 UTC 零点，必须固定偏移换算（用 localtime 在别的时区会错一天）
 CST = timezone(timedelta(hours=8))
@@ -419,6 +446,7 @@ def fetch_funds(limiter: RateLimiter, max_pages: int | None = None,
     total_pages = int(first.get("totalPages") or 0)
     total_elems = first.get("totalElements")
     print(f"  [产品]   totalElements={total_elems}  totalPages={total_pages}")
+    save_registry_meta(total_elems)   # 覆盖率分母要跟着源侧涨，别让前端算出 >100%
     if total_pages == 0:
         return rows
 
@@ -731,6 +759,22 @@ def save_progress(progress: dict):
                              encoding="utf-8")
 
 
+def save_registry_meta(total) -> None:
+    """记下中基协自报的备案总量，供后端 /stats 当覆盖率分母（失败不影响抓取）。"""
+    try:
+        n = int(total)
+        if n <= 0:
+            return
+        REGISTRY_META_FILE.parent.mkdir(parents=True, exist_ok=True)
+        REGISTRY_META_FILE.write_text(json.dumps({
+            "totalElements": n,
+            "asOf": date.today().isoformat(),
+            "source": "gs.amac.org.cn/amac-infodisc/api/pof/fund",
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (TypeError, ValueError, OSError) as exc:
+        print(f"  [WARN] 备案分母元数据写入失败（不影响抓取）：{exc}")
+
+
 # ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
@@ -780,7 +824,20 @@ def main() -> int:
     ap.add_argument("--passes", type=int, default=1,
                     help="备案每个实体扫几遍并取并集。中基协分页无稳定排序，"
                          "单遍会因偏移漂移「重复若干条 + 漏抓同样多条」，多遍可收敛（建议 3）")
+    ap.add_argument("--incremental", type=int, metavar="PAGES", default=0,
+                    help="备案低价增量：只扫最新 PAGES 页产品（默认 0 = 全量）。"
+                         "不写进度文件、不抓净值、不扫管理人，详见模块 docstring")
     args = ap.parse_args()
+
+    if args.incremental:
+        # 语义归一：一次参数表达「只补新备案」，避免调用方漏掉 --funds-only 等组合，
+        # 也避免 --limit-pages 那条路径把进度写脏（见 docstring）。
+        args.limit_pages = args.incremental
+        args.registry_only = True
+        args.funds_only = True
+        args.passes = 1
+        print(f"  [增量模式] 只扫最新 {args.limit_pages} 页产品备案；"
+              f"不写进度、不抓净值、不扫管理人")
 
     requests.packages.urllib3.disable_warnings()  # noqa
 
@@ -810,7 +867,9 @@ def main() -> int:
     # ── 备案 ────────────────────────────────────────────────────────────────
     if do_registry:
         print("\n── 中基协备案公示 ──────────────────────────────────────────────")
-        progress = {} if args.full else load_progress()
+        # 增量模式传 None：fetch_* 里只有 progress 非空才写进度文件，
+        # 否则 funds_page_done 会残留在中途页号上污染下次全量重扫。
+        progress = None if args.incremental else ({} if args.full else load_progress())
 
         # ⚠ 两个实体各自「抓完即写库」，不要合并成最后统一写。
         #   否则一旦在写库前崩溃，progress 里 *_page_done 已记满 →
@@ -914,13 +973,23 @@ def main() -> int:
             return 1
         print(f"  [清单] 代销池共 {len(pool)} 只产品")
 
-        # 断点：只处理 private_fund_nav 里还没有记录的
+        # 断点：只处理还没被别的源占用的备案号。
+        # ⚠ --full 原来是「done 置空 = 全部重抓」，这会绕过一产品一源的保护：
+        #   代销池清单里若有 fund_no 已被 sppw/licai 占用，因两者披露日不同，
+        #   UPSERT 不会覆盖同日行，而是插入一堆 source='em_gaoduan' 的新行 → 混源。
+        #   2026-11-07 实测踩到 SAUW09（sppw 92 行 + em 305 行）。
+        #   所以 --full 的语义改成「跳过**其他源**占用的，本源的照常全量刷新」。
         done: set[str] = set()
-        if conn and not args.full:
+        if conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT DISTINCT fund_no FROM private_fund_nav")
+                if args.full:
+                    cur.execute("SELECT DISTINCT fund_no FROM private_fund_nav "
+                                "WHERE source <> 'em_gaoduan'")
+                else:
+                    cur.execute("SELECT DISTINCT fund_no FROM private_fund_nav")
                 done = {r[0] for r in cur.fetchall()}
-            print(f"  [断点] 已有净值的基金 {len(done)} 只，将跳过")
+            label = "其他源占用" if args.full else "已有净值"
+            print(f"  [断点] {label}的基金 {len(done)} 只，将跳过")
 
         todo = [(c, n) for c, n in pool if c not in done]
         if args.limit_nav:
