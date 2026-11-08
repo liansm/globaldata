@@ -874,8 +874,10 @@ export const stockFundamentals = pgTable('stock_fundamentals', {
 //   ③ 同一 (code, year, quarter) 只留一条**正文**报告：排除摘要 / 英文版 / 更正公告 /
 //      问询函 / 专项报告 / 持续督导；有「（更正后）」正文时优先取更正版。
 //   ④ pdf_url：沪市 https://static.sse.com.cn + URL 字段（脚本 HEAD 会撞 WAF 挑战页，
-//      但浏览器可正常打开，别据此判链接失效）；深市 https://disc.static.szse.cn/download
-//      + attachPath（直出 application/pdf）。
+//      但浏览器可正常打开，别据此判链接失效）；深市 https://disc.static.szse.cn
+//      + attachPath（直出 application/pdf）。⚠ 深市**不要**加 /download 路径段：
+//      那个变体带 Content-Disposition: attachment，浏览器会下载而不是查看；
+//      两版 PDF 字节完全一致，库内统一存内联版。
 // --------------------------------------------------------------------------
 export const stockReports = pgTable('stock_reports', {
   id:           bigserial('id', { mode: 'number' }).primaryKey(),

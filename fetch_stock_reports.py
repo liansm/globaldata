@@ -46,7 +46,13 @@ A 股季度财报 PDF 链接（只存链接，不下载正文）
      ``stock`` 也支持多代码数组。``pageSize`` 传 500 会被**静默夹到 50**。
      ``searchkey`` / ``keyword`` / ``title`` 等关键词参数全部无效；``searchKey``
      还会让响应变成非 JSON（死路）。
-   PDF：``https://disc.static.szse.cn/download`` + attachPath → 200 application/pdf。
+   PDF：``https://disc.static.szse.cn`` + attachPath → 200 application/pdf。
+   ⚠⚠ **不要再加 ``/download`` 路径段**：``/download/disc/...`` 会带
+     ``Content-Disposition: attachment``，浏览器点了直接下载；去掉后是同一份文件、
+     ``application/pdf`` 且**不带** Content-Disposition → 浏览器内置 PDF 阅读器打开。
+     2026-11-08 实测：两版字节完全一致（sha256 相同，3/3），15 条跨 2017~2026 抽样
+     去掉 /download 后全部 200 + %PDF 头 + 无 CD。库内统一存内联版，点开即「查看」。
+     （用户确实要下载时，Chrome 阅读器工具栏自带下载按钮；也可把 /download 加回去。）
 
 口径
 ----
@@ -111,7 +117,12 @@ SSE = "https://query.sse.com.cn/security/stock/queryCompanyBulletin.do"
 #   https 全失败。PDF 静态域 disc.static.szse.cn 的 https 不受影响。
 SZSE = "http://www.szse.cn/api/disc/announcement/annList"
 SSE_PDF = "https://static.sse.com.cn"
-SZSE_PDF = "https://disc.static.szse.cn/download"
+# ⚠ 深市 PDF 只差一个路径段，浏览器行为却完全不同（2026-11-08 实测）：
+#   https://disc.static.szse.cn/download/...  → Content-Disposition: attachment（下载）
+#   https://disc.static.szse.cn/...           → 无 CD + application/pdf（内联查看）
+#   两个 URL 返回的 PDF **字节完全一致**（sha256 相同），所以只存内联版；
+#   老数据的订正见 SQL_NORMALIZE_SZSE_PDF。
+SZSE_PDF = "https://disc.static.szse.cn"
 SSE_SECURITY_TYPE = "0101,120100,020100,020200,120200"
 SZSE_CATS = ["010301", "010303", "010305", "010307"]
 
@@ -136,6 +147,17 @@ CREATE TABLE IF NOT EXISTS stock_reports (
 );
 CREATE INDEX IF NOT EXISTS idx_stock_reports_code_period ON stock_reports(code, report_year, quarter_num);
 CREATE INDEX IF NOT EXISTS idx_stock_reports_publish     ON stock_reports(publish_date);
+"""
+
+# 一次性数据订正（2026-11-08）：老版本写入的深市链接带 /download，点开会下载而非查看。
+# 幂等：订正过之后 WHERE 匹配 0 行，每次跑的开销只是一条 0 行 UPDATE。
+SQL_NORMALIZE_SZSE_PDF = """
+UPDATE stock_reports
+   SET pdf_url = replace(pdf_url,
+                         'https://disc.static.szse.cn/download/',
+                         'https://disc.static.szse.cn/')
+ WHERE source = 'szse'
+   AND pdf_url LIKE 'https://disc.static.szse.cn/download/%'
 """
 
 UPSERT = """
@@ -313,6 +335,7 @@ def szse_task(begin: str, end: str) -> list[dict]:
             for code in codes:
                 out.append({"code": code, "year": year, "quarter": quarter, "qnum": qnum,
                             "title": title,
+                            # attachPath 形如 /disc/disk03/...；**不要**拼 /download
                             "url": SZSE_PDF + path if path.startswith("/") else path,
                             "publish_date": parse_day(x.get("publishTime")), "source": "szse"})
         total = int(j.get("announceCount") or 0)
@@ -378,10 +401,14 @@ def main():
         with conn:
             with conn.cursor() as cur:
                 cur.execute(SQL_ENSURE)
+                cur.execute(SQL_NORMALIZE_SZSE_PDF)
+                normalized = cur.rowcount
         with conn.cursor() as cur:
             cur.execute("SELECT code, exchange FROM stocks")
             code_map = {r[0]: r[1] for r in cur.fetchall()}
-        print(f"[1/5] 库内股票 {len(code_map)} 只；DDL 就绪", flush=True)
+        print(f"[1/5] 库内股票 {len(code_map)} 只；DDL 就绪"
+              + (f"；深市 PDF 链接订正 {normalized} 行（/download → 内联查看）"
+                 if normalized else ""), flush=True)
 
         windows = year_windows(args)
         jobs = build_jobs(windows, args.only)
