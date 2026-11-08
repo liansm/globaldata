@@ -119,3 +119,24 @@ export interface PriceResult {
   page: number
   pageSize: number
 }
+
+/** 季度财报 PDF 链接（只存链接，不下载正文） */
+export interface StockReport {
+  code: string
+  exchange: string
+  reportYear: number | null      // 报告期年份，不是披露年份
+  quarter: string                // Q1 | H1 | Q3 | FY
+  quarterNum: number | null      // 1 | 2 | 3 | 4
+  title: string | null
+  pdfUrl: string
+  publishDate: string | null
+  source: string                 // sse | szse
+}
+
+export interface StockReportsResult {
+  code: string
+  rows: StockReport[]
+  total: number
+  page: number
+  pageSize: number
+}

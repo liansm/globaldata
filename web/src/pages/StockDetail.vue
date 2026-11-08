@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { use } from 'echarts/core'
 import { CandlestickChart, BarChart, LineChart } from 'echarts/charts'
@@ -10,8 +10,8 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import dayjs from 'dayjs'
-import { fetchStockDetail, fetchStockPrices } from '@/api/stocks'
-import type { StockDetailResult, PricePeriod, PriceBar } from '@/types/stocks'
+import { fetchStockDetail, fetchStockPrices, fetchStockReports } from '@/api/stocks'
+import type { StockDetailResult, PricePeriod, PriceBar, StockReport } from '@/types/stocks'
 
 use([CanvasRenderer, CandlestickChart, BarChart, LineChart, GridComponent,
      TooltipComponent, DataZoomComponent, LegendComponent, AxisPointerComponent])
@@ -87,8 +87,63 @@ async function loadPrices() {
   }
 }
 
-onMounted(loadDetail)
-watch(code, () => { period.value = 'day'; range.value = '1y'; loadDetail() })
+// ── 财报链接 tab（只展示交易所公告 PDF 链接，不下载正文）────────────────────
+const QUARTER_LABEL: Record<string, string> = {
+  Q1: '第一季度', H1: '中报', Q3: '第三季度', FY: '年报',
+}
+const QUARTER_OPTIONS = [
+  { label: '第一季度', value: 'Q1' }, { label: '中报', value: 'H1' },
+  { label: '第三季度', value: 'Q3' }, { label: '年报', value: 'FY' },
+]
+const activeTab = ref<'profile' | 'reports'>('profile')
+const reports = ref<StockReport[]>([])
+const reportsTotal = ref(0)
+const reportsLoading = ref(false)
+const reportsError = ref('')
+const reportQuarter = ref('')
+let reportsLoaded = false
+
+async function loadReports() {
+  reportsLoading.value = true
+  reportsError.value = ''
+  try {
+    const r = await fetchStockReports(code.value, {
+      quarter: reportQuarter.value || undefined, limit: 200,
+    })
+    reports.value = r.rows
+    reportsTotal.value = r.total
+    reportsLoaded = true
+  } catch {
+    reportsError.value = '加载失败，请检查后端服务是否启动'
+  } finally {
+    reportsLoading.value = false
+  }
+}
+
+function periodLabel(r: StockReport) {
+  return `${r.reportYear ?? '—'} ${QUARTER_LABEL[r.quarter] ?? r.quarter}`
+}
+
+// 财报列表按需加载；切回行情 tab 时逼 ECharts 重算宽度（隐藏 pane 里宽度会变 0）
+watch(activeTab, async v => {
+  if (v === 'reports' && !reportsLoaded) await loadReports()
+  if (v === 'profile') {
+    await nextTick()
+    window.dispatchEvent(new Event('resize'))
+  }
+})
+
+onMounted(() => {
+  loadDetail()
+  if (route.query.tab === 'reports') activeTab.value = 'reports'
+})
+watch(code, () => {
+  period.value = 'day'
+  range.value = '1y'
+  reportsLoaded = false
+  reports.value = []
+  loadDetail()
+})
 // 年线一根就是一年，选「1年」只会剩一根 K 线 —— 切到年线时把区间同步成「全部」，
 // 避免 radio 高亮「1年」而图里其实是全历史（标签与数据不能自相矛盾）。
 watch([period, range], () => {
@@ -281,6 +336,8 @@ const chartOption = computed(() => {
         </div>
       </div>
 
+      <el-tabs v-model="activeTab" class="stock-tabs">
+        <el-tab-pane label="行情与资料" name="profile">
       <div class="metric-row">
         <div class="metric"><span>总股本</span><b>{{ fmtShares(stock.totalShares) }}</b></div>
         <div class="metric"><span>总市值</span><b>{{ fmtCap(stock.marketCap) }}</b></div>
@@ -420,12 +477,58 @@ const chartOption = computed(() => {
           公司资料来自 F10。行情快照为最近交易日，日线为不复权价。
         </p>
       </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="财报链接" name="reports">
+          <div class="card">
+            <div class="card-head">
+              <h2>定期报告 PDF <small>第一季度 / 中报 / 第三季度 / 年报，按报告期倒序</small></h2>
+              <el-select v-model="reportQuarter" placeholder="全部报告期" clearable
+                         style="width: 150px" @change="loadReports">
+                <el-option v-for="q in QUARTER_OPTIONS" :key="q.value" :label="q.label" :value="q.value" />
+              </el-select>
+            </div>
+            <div v-if="reportsError" class="error-box">{{ reportsError }}</div>
+            <el-table v-else :data="reports" v-loading="reportsLoading" empty-text="暂无财报链接">
+              <el-table-column label="报告期" width="140">
+                <template #default="{ row }"><b>{{ periodLabel(row) }}</b></template>
+              </el-table-column>
+              <el-table-column label="报告名称" min-width="280">
+                <template #default="{ row }">{{ row.title || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="披露日期" width="130">
+                <template #default="{ row }">{{ row.publishDate || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="来源" width="100">
+                <template #default="{ row }">{{ row.source === 'sse' ? '上交所' : '深交所' }}</template>
+              </el-table-column>
+              <el-table-column label="链接" width="130">
+                <template #default="{ row }">
+                  <a :href="row.pdfUrl" target="_blank" rel="noopener noreferrer" class="pdf-link">
+                    查看 PDF ↗
+                  </a>
+                </template>
+              </el-table-column>
+            </el-table>
+            <p class="src-note report-note">
+              共 {{ reportsTotal }} 条 · 只提供交易所公告的 PDF 链接，不下载财报内容。
+              沪市链接来自上交所公告、深市来自深交所公告；「报告期」是财报所属年度/季度，
+              与披露日期不同（例如 2025 年年报通常在 2026 年披露）。
+            </p>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </template>
   </div>
 </template>
 
 <style scoped>
 .detail-page { padding: 20px 28px 48px; max-width: 1400px; }
+.stock-tabs { margin-top: 4px; }
+.stock-tabs :deep(.el-tabs__content) { overflow: visible; }
+.pdf-link { color: #409eff; font-weight: 600; }
+.pdf-link:hover { text-decoration: underline; }
+.report-note { margin-top: 12px; font-size: 11.5px; color: #aaa; line-height: 1.7; }
 .top-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
 .crumb { font-size: 12px; color: #9aa0ac; }
 .error-box { padding: 14px 18px; background: #fff2f0; color: #c0392b; border-radius: 8px; }

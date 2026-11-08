@@ -1,7 +1,7 @@
 import axios from 'axios'
 import type {
   StockListResult, StockFilters, StockDetailResult,
-  PricePeriod, PriceResult,
+  PricePeriod, PriceResult, StockReportsResult,
 } from '@/types/stocks'
 
 const http = axios.create({ baseURL: '/api', timeout: 20_000 })
@@ -35,5 +35,13 @@ export function fetchStockPrices(
   params: { period?: PricePeriod; from?: string; to?: string; limit?: number } = {},
 ): Promise<PriceResult> {
   return http.get<PriceResult>(`/stocks/${encodeURIComponent(code)}/prices`, { params })
+    .then(r => r.data)
+}
+
+export function fetchStockReports(
+  code: string,
+  params: { quarter?: string; limit?: number } = {},
+): Promise<StockReportsResult> {
+  return http.get<StockReportsResult>(`/stocks/${encodeURIComponent(code)}/reports`, { params })
     .then(r => r.data)
 }

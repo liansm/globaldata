@@ -274,4 +274,45 @@ export async function stocksRoutes(app: FastifyInstance) {
     }))
     return { period, code, rows, total: rows.length, page: 1, pageSize: limit }
   })
+
+  // ── GET /api/stocks/:code/reports ─────────────────────────────────────────
+  // 季度财报 PDF 链接，按**报告期**倒序：2026 Q3 → 2026 H1 → 2026 Q1 → 2025 FY …
+  // ⚠ report_year 是报告期年份（「2025年年度报告」2026 年才披露），不是披露年份。
+  //    只返回链接字符串，后端不下载、不代理 PDF。
+  app.get<{
+    Params: { code: string }
+    Querystring: { quarter?: string; limit?: string }
+  }>('/api/stocks/:code/reports', async (req) => {
+    const code = req.params.code.trim()
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit ?? '100', 10) || 100))
+    const quarter = req.query.quarter?.trim() || null
+    const where = sql`code = ${code} AND (${quarter}::text IS NULL OR quarter = ${quarter})`
+    const [res, cnt] = await Promise.all([
+      db.execute(sql`
+        SELECT code, exchange, report_year, quarter, quarter_num, title,
+               pdf_url, publish_date, source
+        FROM stock_reports
+        WHERE ${where}
+        ORDER BY report_year DESC, quarter_num DESC, publish_date DESC NULLS LAST
+        LIMIT ${limit}
+      `),
+      db.execute(sql`SELECT COUNT(*)::int AS n FROM stock_reports WHERE ${where}`),
+    ])
+    const rows = (res.rows as StockRow[]).map(r => ({
+      code:         r.code,
+      exchange:     r.exchange,
+      reportYear:   r.report_year == null ? null : Number(r.report_year),
+      quarter:      r.quarter,
+      quarterNum:   r.quarter_num == null ? null : Number(r.quarter_num),
+      title:        r.title,
+      pdfUrl:       r.pdf_url,
+      publishDate:  day(r.publish_date),
+      source:       r.source,
+    }))
+    return {
+      code, rows,
+      total: (cnt.rows as StockRow[])[0]?.n ?? rows.length,
+      page: 1, pageSize: limit,
+    }
+  })
 }
