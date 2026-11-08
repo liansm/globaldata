@@ -154,7 +154,9 @@ function goDetail(row: MarketIndex) {
 </script>
 
 <template>
-  <div class="shipping-page">
+  <!-- 「油船信息」是地图页，1060 版心会把宽屏两侧各空掉几百像素（1920 屏实测
+       地图只剩 690px）→ 切到该 tab 时整页放宽，运价 tab 维持原来的版心。 -->
+  <div class="shipping-page" :class="{ wide: tab === 'vessels' }">
     <header class="page-head">
       <div>
         <h1>航运信息</h1>
@@ -290,6 +292,14 @@ function goDetail(row: MarketIndex) {
   display: flex;
   flex-direction: column;
 }
+
+/* 油船 tab 专用宽版心：2026-11-08 用户要「页面宽度扩大、地图约翻倍」。
+   1920 屏下 app-main = 1760，1060 版心左右各空 350px、地图只有 690px；
+   放宽后内容区 1716、地图 1346px（≈1.95 倍）。
+   ⚠ 只作用于 vessels tab：运价 tab 的 5 列卡片网格是按 1060 版心排的，
+      整页放宽会把每行拉成 8 列，反而读不成「一条航线一行」。
+   2400 只是超宽屏（>2560）的上限，普通宽屏相当于不封顶。 */
+.shipping-page.wide { --content-max: 2400px; }
 
 .page-head {
   display: flex; align-items: flex-end; justify-content: space-between;

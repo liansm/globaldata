@@ -148,6 +148,10 @@ const mapEl     = ref<HTMLElement | null>(null)
 const mapReady  = ref(false)
 const mapError  = ref('')
 const showGeo   = ref(true)      // 自绘咽喉/海域标注开关（见 GEO_LABELS 注释）
+// 「收起名录 · 全图」：宽版心下再让地图吃掉右侧名录的 356px（1920 屏 1346 → 1716px）。
+// ⚠ 收起会改 .map-wrap 的实际宽度，而腾讯 GL JS 没有 resize() 方法（官方方法表里
+//   只有 resize 事件、SDK 内部自己侦听）→ 见下面 watch 里派发 window resize。
+const listHidden = ref(false)
 let map: any = null
 let markerLayer: any = null
 let labelLayer: any = null
@@ -551,6 +555,17 @@ watch(ownerSel, async () => {
 // 开关只改「显示哪些」，切换时把指纹清掉强制重绘一次
 watch(showGeo, () => { lastGeoKey = '\u0000'; renderGeoLabels() })
 
+// 名录收起/展开 → 地图容器宽度变了。SDK 没有 resize()，只侦听 window 的 resize
+// 事件，所以主动派发一次让 canvas 跟着重算；再按新宽度重选「装船最多的经度窗口」
+// （lonSpanAtFloorZoom() 读的是 mapEl.clientWidth，宽了能多装十几艘）。
+watch(listHidden, async () => {
+  await nextTick()
+  window.dispatchEvent(new Event('resize'))
+  fitAll()
+  // SDK 内部 resize 处理可能是延时的：再补一次，避免 fitBounds 用的还是旧视口
+  setTimeout(() => { if (map) fitAll() }, 250)
+})
+
 onMounted(async () => {
   await nextTick()
   await initMap()
@@ -645,18 +660,25 @@ function retiredWhen(note: string | null | undefined) {
             <code>python fetch_vlcc_position_hifleet.py</code>
           </div>
         </div>
-        <div class="legend" v-if="mapReady && withPos.length">
+        <div class="legend" v-if="mapReady && withPos.length" :style="{ top: listHidden ? '52px' : '12px' }">
           <span v-for="(c, o) in OWNER_COLOR" :key="o">
             <i :style="{ background: c }"></i>{{ o }}
           </span>
         </div>
+        <!-- 收起名录后总得有地方把它叫回来：左上角是唯一干净的角
+             （左下=SDK 比例尺/logo，右上=SDK 缩放控件），图例此时下移 40px 让位。 -->
+        <button v-if="listHidden" class="side-restore" @click="listHidden = false">‹ 显示名录</button>
         <!-- 署名：底图和注记来自天地图，但 SDK 左下角只印腾讯自己的版权行，
              不补这一行等于把天地图的成果挂到腾讯名下（天地图服务条款要求署名）。
              放右下角 —— 左下角是 SDK 的比例尺+logo，右上角是它的缩放控件。 -->
         <div class="map-credit" v-if="mapReady && tdtOn">底图 / 注记：天地图</div>
       </div>
 
-      <aside class="side">
+      <aside class="side" v-show="!listHidden">
+        <div class="side-head">
+          <span>船队名录</span>
+          <button class="side-toggle" title="收起名录，让地图铺满整页" @click="listHidden = true">收起 · 全图 ›</button>
+        </div>
         <div class="filters">
           <el-select v-model="ownerSel" size="small" style="width:100%">
             <el-option label="全部船东" value="全部" />
@@ -844,6 +866,24 @@ function retiredWhen(note: string | null | undefined) {
   width: 356px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px;
   min-height: 0;
   background: #fff; border: 1px solid #eef0f5; border-radius: 12px; padding: 12px;
+}
+/* 收起名录 / 全图 开关：两处入口（名录顶部 + 收起后地图左上角），同一状态。 */
+.side-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12.5px; font-weight: 600; color: #4a5568;
+  border-bottom: 1px solid #f2f4f8; padding-bottom: 7px; flex-shrink: 0;
+}
+.side-toggle, .side-restore {
+  font-family: inherit; font-size: 11.5px; color: #2f6fed; cursor: pointer;
+  background: #f2f7ff; border: 1px solid #d5e4ff; border-radius: 6px;
+  padding: 3px 9px; line-height: 1.5; transition: background .15s, border-color .15s;
+}
+.side-toggle:hover, .side-restore:hover { background: #e4efff; border-color: #a9c8ff; }
+.side-restore {
+  /* >1000：腾讯 GL 的地图容器自带 z-index:1000，低于它会被 canvas 盖住
+     （与 .map-empty 的 1100 同一个坑） */
+  position: absolute; left: 12px; top: 12px; z-index: 1200;
+  background: rgba(255,255,255,.96); box-shadow: 0 2px 8px rgba(20,40,80,.12);
 }
 .filters { display: flex; flex-direction: column; gap: 8px; }
 .filter-row { display: flex; gap: 12px; flex-wrap: wrap; }
