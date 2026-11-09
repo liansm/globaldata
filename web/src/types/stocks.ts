@@ -166,13 +166,116 @@ export interface StockHoldingsResult {
   securityName: string | null
   /** 同 security_code 下被名称闸门排除的其他证券 / 旧名记录（透明展示，不静默吞） */
   excluded: { name: string; count: number }[]
+  /** 被「只统计季度末」规则忽略的非季末披露行数（新建 ETF 建仓 / 临时组合快照） */
+  ignoredNonQuarter: number
+  /** 命中时使用的「去后缀别名」（九号公司-WD → 九号公司），未使用则为 null */
+  matchedAlias: string | null
   summary: {
     funds: number               // 基金份额只数（A/C 类分开计），不是产品只数
-    shares: number | null
-    marketValue: number | null
+    shares: number | null       // 合计持股，万股
+    marketValue: number | null  // 合计持仓市值，万元
+    /** 最新总股本（股），stocks.total_shares；缺失为 null */
+    totalShares: number | null
+    /** 最新流通股本（股），stocks.float_shares；缺失为 null */
+    floatShares: number | null
+    /** 合计持股占总股本 %（已 ×100，如 6.6411 表示 6.6411%）；股本缺失时为 null */
+    shareRatio: number | null
+    /** 合计持股占流通股 %；缺失时为 null */
+    floatShareRatio: number | null
   }
   rows: StockFundHolding[]
   total: number
   page: number
   pageSize: number
+}
+
+/** 财报三表逐季度对比：一行 = 一个报告期（三表合并）*/
+export interface StockFinancialRow {
+  reportDate: string | null
+  reportYear: number | null
+  quarterNum: number | null
+  reportType: string | null
+  // 年初至今累计值
+  revenue: number | null
+  operateIncome: number | null
+  cost: number | null
+  parentNetprofit: number | null
+  netprofit: number | null
+  netcashOperate: number | null
+  // 单季（年内差分，缺上一期时为 null）
+  qRevenue: number | null
+  qParentNetprofit: number | null
+  qNetcashOperate: number | null
+  // 资产负债表季末时点值（不差分）
+  totalAssets: number | null
+  totalCurrentAssets: number | null
+  inventory: number | null
+  totalCurrentLiab: number | null
+  totalEquity: number | null
+  // 派生指标（金融业为 null）
+  grossMargin: number | null
+  netMargin: number | null
+  quickRatio: number | null
+  currentRatio: number | null
+  debtRatio: number | null
+  // 股东户数（季度内最后一个统计截止日）
+  holderNum: number | null
+  holderEndDate: string | null
+  hasIncome: boolean
+  hasBalance: boolean
+  hasCashflow: boolean
+  noticeDate: string | null
+  updateDate: string | null
+}
+
+export interface StockFinancialsResult {
+  found: boolean
+  code: string
+  orgType: string | null
+  /** 银行/证券/保险：毛利率、速动比、流动比率口径不适用 */
+  isFinancial: boolean
+  latestReportDate: string | null
+  /** 员工数只有当前值 + 年度快照，不伪装成逐季度数据 */
+  employee: { year: number | null; empNum: number | null; collectedAt: string | null } | null
+  rows: StockFinancialRow[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+// ── 逐科目三表（雪球式） ──────────────────────────────────────────────
+export type StmtType = 'BALANCE' | 'INCOME' | 'CASHFLOW'
+export type StmtFilter = 'all' | 'annual' | 'h1' | 'q1' | 'q3'
+
+export interface StmtLineRow {
+  key: string
+  label: string
+  /** section 为前端合成的分组标题行，item/sub/total 来自后端字典 */
+  kind: 'item' | 'sub' | 'total' | 'section'
+  /** plain = 每股收益这类，不做亿/万换算 */
+  fmt: 'money' | 'plain'
+  /** 与 periods 一一对应，单位元；null = 该期未披露 */
+  values: (number | null)[]
+}
+
+export interface StockStatementResult {
+  found: boolean
+  code: string
+  type: StmtType
+  typeLabel: string
+  filter: StmtFilter
+  page: number
+  pageSize: number
+  totalPeriods: number
+  orgType: string | null
+  currency: string | null
+  periods: {
+    reportDate: string
+    reportYear: number | null
+    quarterNum: number | null
+    reportType: string | null
+    label: string
+  }[]
+  sections: { title: string | null; rows: StmtLineRow[] }[]
+  unit: string
 }

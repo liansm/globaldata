@@ -182,6 +182,16 @@ OPT_IN_SCRIPTS = {
         "私募整轮更新（备案增量 + 三源净值，约 35~45 分钟）",
         [], {},
     ),
+    # 财报三表（2026-11-09）：**季度频，不进 FETCH_SCRIPTS**。
+    # ⚠ 但也不是「只在发季报时跑」——源侧追溯更正全年发生（2026-11-09 当天
+    #   仍有 2024 年报的 UPDATE_DATE 修订），默认增量按 UPDATE_DATE 回看 14 天，
+    #   约 1~2 分钟，适合挂周频定时任务；披露窗口（1~4 / 7~8 / 10 月）可提到每日。
+    #   ⚠ 不要加进 CLEAR_TABLES：清空后不会自动补回，全量要重跑约 8 分钟。
+    "financials": (
+        "fetch_stock_financials.py",
+        "A股财报三表 + 股东户数 + 员工数（季度频，默认按 UPDATE_DATE 增量约 1~2 分钟）",
+        [], {},
+    ),
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -658,13 +668,14 @@ STATUS_QUERIES = [
                    COUNT(industry_csrc) AS with_industry,
                    COUNT(latest_price_date) AS with_prices,
                    COUNT(name_pinyin) AS with_pinyin,
+                   COUNT(name_pinyin_full) AS with_pinyin_full,
                    COUNT(quote_time) AS with_quote_time,
                    MAX(latest_price_date)::text AS price_date
             FROM stocks
         """,
         "cols": ["total", "with_intro", "with_shares", "with_region",
                  "with_industry", "with_prices", "with_pinyin",
-                 "with_quote_time", "price_date"],
+                 "with_pinyin_full", "with_quote_time", "price_date"],
         "optional": True,
     },
     {
@@ -725,6 +736,52 @@ STATUS_QUERIES = [
             FROM stock_reports
         """,
         "cols": ["rows", "stocks", "earliest", "latest", "sse", "szse"],
+        "optional": True,
+    },
+    {
+        # 财报三表：一行 = 一只股票 × 一个报告期（三表合并）。2016 起（用户拍板近 10 年）。
+        # with_np / with_assets / with_cfo 三列不齐是**源侧缺口**（早期季报有的公司
+        # 只披露利润表），不是抓漏；单季值由 v_stock_financials_quarterly 视图差分，不落表。
+        "title": "stock_financials  (财报三表 2016 起；单季由视图差分)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT code) AS stocks,
+                   MIN(report_date)::text AS earliest,
+                   MAX(report_date)::text AS latest,
+                   MAX(update_date)::text AS last_update,
+                   COUNT(parent_netprofit) AS with_np,
+                   COUNT(total_assets) AS with_assets,
+                   COUNT(netcash_operate) AS with_cfo
+            FROM stock_financials
+        """,
+        "cols": ["rows", "stocks", "earliest", "latest", "last_update",
+                 "with_np", "with_assets", "with_cfo"],
+        "optional": True,
+    },
+    {
+        # 股东户数 END_DATE 是统计截止日，不必等于季末；源侧 2013 起，本库 2016 起。
+        "title": "stock_holder_counts  (股东户数，按统计截止日)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT code) AS stocks,
+                   MIN(end_date)::text AS earliest,
+                   MAX(end_date)::text AS latest
+            FROM stock_holder_counts
+        """,
+        "cols": ["rows", "stocks", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        # 员工数只有年报口径的当前快照，一年一条；行数 ≈ 覆盖股票数 × 年份数
+        "title": "stock_employee_snapshots  (员工数年度快照)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT code) AS stocks,
+                   MIN(snapshot_year)::text AS earliest,
+                   MAX(snapshot_year)::text AS latest
+            FROM stock_employee_snapshots
+        """,
+        "cols": ["rows", "stocks", "earliest", "latest"],
         "optional": True,
     },
 ]
@@ -924,6 +981,9 @@ def main():
     parser.add_argument("--with-private", action="store_true",
                         help="连私募整轮更新一起刷（备案增量 + 三源净值，约 35~45 分钟；"
                              "已含格上，勿与 --with-licai 同开）")
+    parser.add_argument("--with-financials", action="store_true",
+                        help="连 A 股财报三表一起刷（季度频，默认按 UPDATE_DATE 增量；"
+                             "不进每日整轮，适合周频 / 披露季手动触发）")
     parser.add_argument("--clear",       action="store_true", help="清空所有表数据（需二次确认）")
     parser.add_argument("--force_clear", action="store_true", help="强制清空所有表数据（无需确认）")
     args = parser.parse_args()

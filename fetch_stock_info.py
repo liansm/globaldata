@@ -65,10 +65,25 @@ A 股股票基本信息（名录 + 静态属性 + 多值行业标签）
      正确做法 = 不加市场过滤，按返回里的 ``Code`` 精确匹配 + 名称闸门。
    ⚠ **名称闸门**：NFKC（全角Ａ→A）+ 去空白 + 去 '-' 后与库内 name 比对，
      「三 力 士」/「深振业Ａ」/「泰诺麦博-U」都能对上；对不上一律不写（宁缺勿错）。
-   ⚠ 只存**简称首字母缩写**，不存全拼。特殊前缀以源侧为准：``*ST天茂 → STTM``
-     （去星号）、``S佳通 → SJT``、``PT金田A → PTJTA``、``万科A → WKA``。
-   ⚠ 多音字必须用源侧值，不能本地生成：重庆啤酒 = CQPJ、长安汽车 = CAQC，
-     pypinyin 这类库会错成 ZQPJ / ZAQC（系统 Python 也没装，不引这个依赖）。
+   ⚠ 只存**简称首字母缩写**（全拼见源 6，本地生成）。特殊前缀以源侧为准：
+     ``*ST天茂 → STTM``（去星号）、``S佳通 → SJT``、``PT金田A → PTJTA``、``万科A → WKA``。
+   ⚠ 多音字以源侧为准：重庆啤酒 = CQPJ、长安汽车 = CAQC、长源电力 = CYDL、
+     世联行 = SLH。**订正**：pypinyin 0.55 自带词组库，常见词（重庆/长安）读音其实正确，
+     以前记的「会错成 ZQPJ / ZAQC」是没实测的推测；全量比对 5501/5562（98.90%）一致，
+     但仍有 61 只股票名的多音字会偏（长→zhang、重→zhong、行→xing、藏→cang 等），
+     所以生成全拼时必须用本字段逐字约束读音。
+
+6) 名称全拼（**本地生成**，无网络请求）→ ``stocks.name_pinyin_full``
+   用 pypinyin 把简称逐字转读音，**以东财 PinYin 首字母序列逐字约束**：
+   每个汉字从 ``heteronym`` 候选里挑首字母等于权威值的读音，再拼成全拼。
+       招商轮船(ZSLC) → ZHAOSHANGLUNCHUAN   长源电力(CYDL) → CHANGYUANDIANLI
+       重药控股(CYKG) → CHONGYAOKONGGU     世联行(SLH)  → SHILIANHANG
+   ⚠ 东财 suggest **不吃全拼**（实测 zhaos / zhaoshang / chongqing 全 0 条），
+     也没有全拼字段；akshare 股票名录同样只有 code/name → 只能本地生成。
+   ⚠ 实测 5561/5562 可直接用权威首字母匹配；唯一例外 603605 珀莱雅（东财 BLY，
+     pypinyin 只有 po、无 bo），用显式映射 ``珀 → BO`` 补齐。
+   ⚠ 生成后自校验「结果首字母序列 == 东财值」，对不上 / 超长 / 含汉字一律留 NULL；
+     未安装 pypinyin 时打印 WARN 跳过（不判失败），补装后重跑即可。
 
 深度 / 覆盖 / 死路
 ------------------
@@ -94,6 +109,9 @@ A 股股票基本信息（名录 + 静态属性 + 多值行业标签）
   ``pagesize`` 全部**无效**（返回首条不变，不报错），无法翻页；``classify=AStock``
   又会漏掉科创板。⇒ 按代码逐只查是唯一能全覆盖的入口，实测 10 线程 132 只 1.0 秒、
   0 失败、0 名称错配（含科创板与 -U/-W 后缀）。
+  ④ **pypinyin 不能无约束直接用**：全量比对 5501/5562（98.90%）首字母与东财一致，
+    61 只多音字偏差（长/重/藏/行/晟/泊/鹄），生成全拼必须逐字用东财首字母修正；
+    另外东财 suggest 对全拼前缀查询返回 0 条，别想靠它反查全拼。
 
 增量语义
 --------
@@ -108,6 +126,9 @@ A 股股票基本信息（名录 + 静态属性 + 多值行业标签）
   **改名时名录 UPSERT 会把该列置回 NULL** 让它重算；按 CHUNK 分批提交，
   失败的行不写、保持 NULL → 下次自动重试，**没有进度文件、失败绝不记成进度**。
   日常增量因此只有新股 / 改名股会发请求，首次全量回填手动 ``--pinyin-only`` 单跑。
+* 全拼由 ``backfill_pinyin_full()`` 在首字母补完之后本地生成：只处理
+  ``name_pinyin_full IS NULL`` 的行，改名时同样置 NULL；纯计算、无网络、批量提交，
+  失败留 NULL 下次自动补。首次全量可单独跑 ``--pinyin-full-only``（秒级）。
 
 合规
 ----
@@ -123,6 +144,7 @@ A 股股票基本信息（名录 + 静态属性 + 多值行业标签）
     python fetch_stock_info.py --dry-run       # 只抓不写库
     python fetch_stock_info.py --pinyin-only   # 只补缺失的拼音首字母（可中断续跑）
     python fetch_stock_info.py --pinyin-only --pinyin-all   # 全量重算（校验/纠错用）
+    python fetch_stock_info.py --pinyin-full-only  # 只补名称全拼（本地生成，秒级）
 """
 
 import argparse
@@ -141,6 +163,12 @@ import requests
 import psycopg2
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
+
+# pypinyin 只用于本地生成全拼（源 6）；缺库时优雅降级，不影响名录 / 首字母抓取
+try:
+    from pypinyin import pinyin as _pinyin, Style as _PinyinStyle
+except ImportError:                                   # pragma: no cover
+    _pinyin, _PinyinStyle = None, None
 
 load_dotenv()
 
@@ -162,6 +190,10 @@ F10 = "https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/PageAjax"
 # ⚠ 必须 http://：HTTPS 的 gzip 缓存会串成 2023 年的 JSONP（见 docstring 源 5）
 SUGGEST = "http://searchapi.eastmoney.com/api/suggest/get"
 SUGGEST_TOKEN = "D43BF722C8E33BDC906FB84D85E326E8"
+# 东财权威首字母与 pypinyin 候选读音冲突时的显式读音：
+# 603605 珀莱雅 → 东财 BLY（品牌读 bo），pypinyin 只有 po，无 bo。
+# 全量实测仅此 1 只需要例外（5561/5562 可直接匹配）。
+PINYIN_OVERRIDES = {"珀": "BO"}
 FS_A = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
 BOARD_FS = {
     "region":   "m:90+t:1+f:!50",
@@ -262,6 +294,9 @@ ALTER TABLE stocks ADD COLUMN IF NOT EXISTS price_checked_date date;
 -- 名称拼音首字母（东财 searchapi 权威值，非本地生成）；NULL = 未取到，下次自动补
 ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_pinyin varchar(32);
 CREATE INDEX IF NOT EXISTS idx_stocks_name_pinyin ON stocks(name_pinyin);
+-- 名称全拼（本地生成，逐字用东财首字母约束多音字）；NULL = 未生成，下次自动补
+ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_pinyin_full varchar(64);
+CREATE INDEX IF NOT EXISTS idx_stocks_name_pinyin_full ON stocks(name_pinyin_full);
 -- 源侧行情时刻（东财 clist f124，北京时间）；与 updated_at 是两个口径，见 docstring
 ALTER TABLE stocks ADD COLUMN IF NOT EXISTS quote_time timestamptz;
 """
@@ -365,6 +400,46 @@ def suggest_pinyin(code: str, name: str) -> tuple[str | None, str]:
     if not re.fullmatch(r"[A-Z0-9]{1,32}", py):
         return None, f"bad-pinyin:{py!r}"
     return py, "ok"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 源 6：名称全拼（本地 pypinyin + 东财权威首字母逐字约束，无网络请求）
+# ─────────────────────────────────────────────────────────────────────────────
+def full_pinyin(name: str, initials: str | None) -> tuple[str | None, str]:
+    """返回 ``(全拼, 原因)``。逐字挑读音，使首字母序列等于东财 ``name_pinyin``。
+
+    例：长源电力(CYDL) → CHANGYUANDIANLI（pypinyin 默认会给 zhang → Z）。
+    失败一律留 NULL + 原因，下次自动重试，不静默吞。
+    """
+    if _pinyin is None:
+        return None, "pypinyin-missing(执行 pip install pypinyin 后重跑)"
+    target = (initials or "").strip().upper()
+    slots: list[list[tuple[str, str]]] = []
+    for ch in norm_name(name):
+        if "\u4e00" <= ch <= "\u9fff":
+            if ch in PINYIN_OVERRIDES:
+                cands = [PINYIN_OVERRIDES[ch]]
+            else:
+                cands = [str(c).upper() for c in
+                         _pinyin(ch, heteronym=True, style=_PinyinStyle.NORMAL)[0]]
+            slots.append([(py, py[0]) for py in dict.fromkeys(cands) if py])
+        elif ch.isascii() and ch.isalnum():
+            slots.append([(ch, ch)])           # TCL / ST / A / 7 等逐字符计入
+        # 其余符号（* / - 等）源侧不计入，跳过
+    if len(slots) != len(target):
+        return None, f"slot-len:{len(slots)}!={len(target)}"
+    parts: list[str] = []
+    for slot, want in zip(slots, target):
+        hit = [py for py, ini in slot if ini == want]
+        if not hit:
+            return None, f"no-cand:{want}:{slot}"
+        parts.append(hit[0])
+    full = "".join(parts)
+    if not full or len(full) > 64 or not re.fullmatch(r"[A-Z0-9]+", full):
+        return None, f"bad-full:{full!r}"
+    if "".join(p[0] for p in parts) != target:   # 自校验，别把不一致的值写进库
+        return None, "initials-mismatch"
+    return full, "ok"
 
 
 def parse_date(v):
@@ -608,6 +683,8 @@ ON CONFLICT (code) DO UPDATE SET
     -- 改简称后旧拼音作废：置 NULL 让 backfill_pinyin 重算（失败留 NULL 下次再补）
     name_pinyin       = CASE WHEN stocks.name IS DISTINCT FROM EXCLUDED.name
                              THEN NULL ELSE stocks.name_pinyin END,
+    name_pinyin_full  = CASE WHEN stocks.name IS DISTINCT FROM EXCLUDED.name
+                             THEN NULL ELSE stocks.name_pinyin_full END,
     exchange          = EXCLUDED.exchange,
     board             = EXCLUDED.board,
     latest_price      = EXCLUDED.latest_price,
@@ -860,6 +937,58 @@ def backfill_pinyin(conn, args, t0: float) -> dict:
     return stats
 
 
+PINYIN_FULL_UPSERT = """
+UPDATE stocks s SET name_pinyin_full = v.py_full
+FROM (
+    SELECT t.code::varchar(10) AS code, t.py_full::varchar(64) AS py_full
+    FROM (VALUES %s) AS t(code, py_full)
+) v
+WHERE s.code = v.code
+"""
+
+
+def backfill_pinyin_full(conn, args, t0: float) -> dict:
+    """本地生成全拼并回填。只处理 name_pinyin_full IS NULL（--pinyin-all 时全量重算）。
+
+    纯计算、无网络；失败行保持 NULL，下次自动重试，无进度文件。
+    """
+    if _pinyin is None:
+        print("      [WARN] 未安装 pypinyin，跳过全拼生成（pip install pypinyin 后重跑）",
+              flush=True)
+        return {"ok": 0, "fail": 0, "reasons": {}}
+    where = "" if args.pinyin_all else "WHERE name_pinyin_full IS NULL"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT code, name, name_pinyin FROM stocks {where} ORDER BY code")
+        items = cur.fetchall()
+    print(f"      待处理 {len(items)} 只（本地生成，无网络请求）", flush=True)
+    stats: dict = {"ok": 0, "fail": 0, "reasons": {}}
+    if args.dry_run:
+        return stats
+    for start in range(0, len(items), CHUNK):
+        chunk = items[start:start + CHUNK]
+        vals, fails = [], []
+        for code, name, py in chunk:
+            full, why = full_pinyin(name, py)
+            if full:
+                vals.append((code, full))
+            else:
+                fails.append((code, why))
+                kind = why.split(":", 1)[0].split("(", 1)[0]
+                stats["reasons"][kind] = stats["reasons"].get(kind, 0) + 1
+        if vals:
+            with conn:
+                with conn.cursor() as cur:
+                    execute_values(cur, PINYIN_FULL_UPSERT, vals, page_size=200)
+        stats["ok"] += len(vals)
+        stats["fail"] += len(fails)
+        for c, w in fails[:5]:
+            print(f"      [WARN] {c} 全拼未入库: {w}", flush=True)
+    print(f"      全拼：入库 {stats['ok']} / 失败 {stats['fail']}，"
+          f"累计耗时 {time.time()-t0:.1f}s"
+          + (f"，原因 {stats['reasons']}" if stats["reasons"] else ""), flush=True)
+    return stats
+
+
 def pinyin_summary(conn) -> tuple[int, int]:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) AS total, COUNT(name_pinyin) AS with_py FROM stocks")
@@ -884,6 +1013,8 @@ def main():
                     help="不抓名录/详情，只补名称拼音首字母（可中断续跑）")
     ap.add_argument("--pinyin-all", action="store_true",
                     help="配合 --pinyin-only：全量重算拼音，而非只补 NULL")
+    ap.add_argument("--pinyin-full-only", action="store_true",
+                    help="不抓名录/详情，只本地补名称全拼（pypinyin，秒级）")
     args = ap.parse_args()
 
     global LIMITER
@@ -905,6 +1036,25 @@ def main():
             print(f"[2/2] 库内：股票 {total} / 有拼音 {with_py} / 缺 {total - with_py}；"
                   f"本次写入 {stats['ok']} / 失败 {stats['fail']}"
                   f"{'（dry-run 未写库）' if args.dry_run else ''}")
+            print(f"完成，总耗时 {time.time()-t0:.1f}s")
+        finally:
+            conn.close()
+        return 0
+
+    # 全拼首次回填 / 重算：纯本地计算，不碰名录与详情，不依赖网络
+    if args.pinyin_full_only:
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(SQL_ENSURE)
+            print("[1/2] DDL 就绪；本地生成名称全拼", flush=True)
+            backfill_pinyin_full(conn, args, t0)
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS total, "
+                            "COUNT(name_pinyin_full) AS with_full FROM stocks")
+                total, with_full = cur.fetchone()
+            print(f"[2/2] 库内：股票 {total} / 有全拼 {with_full} / 缺 {total - with_full}")
             print(f"完成，总耗时 {time.time()-t0:.1f}s")
         finally:
             conn.close()
@@ -941,8 +1091,9 @@ def main():
                 n = write_roster(cur, rows)
         print(f"      名录 UPSERT {n} 行", flush=True)
 
-        print("[3/5] 补名称拼音首字母（东财搜索建议，逐只按代码查）…", flush=True)
+        print("[3/5] 补名称拼音（首字母走东财搜索建议，全拼本地生成）…", flush=True)
         backfill_pinyin(conn, args, t0)
+        backfill_pinyin_full(conn, args, t0)
 
         pending = select_pending(conn, all_codes, args)
         print(f"[4/5] 待抓详情 {len(pending)} 只"
@@ -1022,8 +1173,12 @@ def main():
             """)
             t = cur.fetchone()
         total, with_py = pinyin_summary(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(name_pinyin_full) FROM stocks")
+            with_full = cur.fetchone()[0]
         print(f"[5/5] 库内：股票 {t[0]} / 有简介 {t[4]} / 有总股本 {t[3]} / "
-              f"有地域 {t[5]} / 有标签时间戳 {t[2]} / 有拼音 {with_py}/{total}")
+              f"有地域 {t[5]} / 有标签时间戳 {t[2]} / 有首字母 {with_py}/{total} / "
+              f"有全拼 {with_full}/{total}")
         print(f"      失败端点 {stats['errors']} 只（不计进度，下次自动补）")
         print(f"完成，总耗时 {time.time()-t0:.1f}s")
     finally:

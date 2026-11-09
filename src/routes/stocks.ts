@@ -21,6 +21,14 @@ const PERIODS: Record<string, string> = {
 
 type StockRow = Record<string, unknown>
 
+// 合计持股（万股）× 1e4 = 股，再除以股本（股）得百分比。
+// ⚠ 只用**最新股本快照**，未按历史报告期回溯；stocks.total_shares 缺失时返回 null，
+//   前端不渲染占比（不要用 0 充数，那会显示成「占总股本 0%」）。
+const pctOfShares = (sharesWan: number | null, baseShares: number | null): number | null =>
+  sharesWan != null && baseShares != null && baseShares > 0
+    ? Number(((sharesWan * 1e4) / baseShares * 100).toFixed(4))
+    : null
+
 function mapStock(r: StockRow) {
   return {
     code:             r.code,
@@ -143,8 +151,10 @@ export async function stocksRoutes(app: FastifyInstance) {
     const codeQ    = q ? escLike(q) : null
     const likeQ    = q ? `%${escLike(q)}%` : null
     const likeN    = q ? `%${escLike(normName(q))}%` : null
-    // 拼音首字母：源侧只给缩写（ZSLC），不支持全拼。仅纯字母/数字输入启用，
-    // 中文/符号查询不白扫拼音列，也不会带进 % / _ 通配符。
+    // 拼音搜索两列：name_pinyin = 东财首字母缩写（ZSLC），
+    // name_pinyin_full = 本地生成的全拼（ZHAOSHANGLUNCHUAN，逐字用东财权威首字母
+    // 约束多音字）。两者都按**前缀**匹配，所以 zs / zhaos / zhaoshang 都能命中招商系。
+    // 仅纯字母数字输入启用，中文/符号查询不白扫拼音列，也带不进 % / _ 通配符。
     const pinyinQ  = q && /^[A-Za-z0-9]+$/.test(q) ? q.toUpperCase() : null
 
     const cond: SQL = sql`
@@ -152,7 +162,8 @@ export async function stocksRoutes(app: FastifyInstance) {
               OR s.name ILIKE ${likeQ}::text ESCAPE '!'
               OR s.name_search LIKE ${likeN}::text ESCAPE '!'
               OR (${pinyinQ}::text IS NOT NULL
-                  AND s.name_pinyin LIKE ${pinyinQ}::text || '%'))
+                  AND (s.name_pinyin LIKE ${pinyinQ}::text || '%'
+                       OR s.name_pinyin_full LIKE ${pinyinQ}::text || '%')))
     AND (${exchange}::text IS NULL OR s.exchange = ${exchange})
     AND (${board}::text    IS NULL OR s.board    = ${board})
     AND (${region}::text   IS NULL OR s.region   = ${region})
@@ -172,10 +183,11 @@ export async function stocksRoutes(app: FastifyInstance) {
         FROM ${stocks} s
         LEFT JOIN stock_fundamentals f ON f.code = s.code
         WHERE ${cond}
-        -- 首字母完整命中（输入 ZSLC 恰好等于某只票的简拼）优先置顶；
-        -- 其余仍按选定排序。拼音未回填的行 name_pinyin 为 NULL，不影响其位置。
+        -- 拼音完整命中（简拼 ZSLC 或全拼 ZHAOSHANGLUNCHUAN）优先置顶；
+        -- 其余仍按选定排序。未回填的行两列均为 NULL，不影响其位置。
         ORDER BY CASE WHEN ${pinyinQ}::text IS NOT NULL
-                           AND s.name_pinyin = ${pinyinQ}::text THEN 0 ELSE 1 END,
+                           AND (s.name_pinyin = ${pinyinQ}::text
+                                OR s.name_pinyin_full = ${pinyinQ}::text) THEN 0 ELSE 1 END,
                  CASE WHEN ${sort} = 'marketCap' THEN s.market_cap END DESC NULLS LAST,
                  CASE WHEN ${sort} = 'changePct' THEN s.change_pct END DESC NULLS LAST,
                  s.code ASC
@@ -353,14 +365,21 @@ export async function stocksRoutes(app: FastifyInstance) {
   //     已交叉验证：2026-09-30 招商轮船 market_value/shares = 20.15 = 当日收盘价。
   //   * funds 名录是**份额口径**（A/C 类分开），所以同一产品的 A/C 份额会各占一行；
   //     汇总里的 funds 是「基金份额只数」，不是基金产品只数。
-  //   * 全库 99.82% 的持仓行落在季末，另有少量基金在非季末零星披露。默认报告期取
-  //     **最新季末**而不是 MAX(report_date)，否则某些股票会默认只剩 1~2 行。
+  //   * **只统计季度末**（03-31 / 06-30 / 09-30 / 12-31）。源侧 F10 另有 2630 行
+  //     （267 只基金 / 141 个日期、占全库 0.18%）带的是**具体日期标签**而非季度标签，
+  //     96.2% 来自指数型-股票基金（新建 ETF 的建仓/上市组合快照），
+  //     fetch_funds.py::get_holdings 优先取标签里的 YYYY-MM-DD 就会落进库。
+  //     它们与季报口径不同，混进报告期下拉会让人误以为是季度数据 ⇒ 全部排除，
+  //     被忽略的行数由 ignoredNonQuarter 返回，前端明示，不静默吞。
   //   * **名称闸门**：东财把港股代码补零成 6 位，与深市 A 股撞号 —— 实测 251 个
   //     A 股代码在 fund_holdings 里同时挂着港股名称（000020 深华发A 仅 2 条，
   //     同代码「商汤-W」163 条；000670 盈方微底下 163 条全是「中国东方航空股份」）。
   //     只按 security_code 反查会把港股持仓算到 A 股头上。⇒ 只保留 security_name
   //     与 stocks.name 归一化后一致的行。代价是改名前的旧名（*ST柳化 ← 柳化股份）
   //     也会被排除，宁缺勿错；被排除的名称与行数一并返回，不静默吞。
+  //     ⚠ 例外：带 -U/-W/-UW/-WD 后缀的简称（全库 47 只）季报用去后缀名，
+  //       闸门额外接受「去后缀别名」（九号公司-WD ← 九号公司），matchedAlias 标注。
+  //       实测这些代码下只有 1 个 security_name，放宽后 0 个多命中，不会串入港股。
   // ⚠ 详情类接口一律 200 + {found:false}（别返 404，axios 会抛异常），
   //   并补齐 rows/total/page/pageSize，前端必须显式分支。
   app.get<{
@@ -373,29 +392,61 @@ export async function stocksRoutes(app: FastifyInstance) {
     const offset   = (page - 1) * pageSize
 
     // 先定「这个代码下哪些 security_name 才是本股票」，后面报告期 / 列表 / 汇总
-    // 全部套用同一闸门，避免报告期列表也被港股记录主导。
-    const [nameRes, stockRes] = await Promise.all([
+    // 全部套用同一闸门，避免报告期列表也被港股记录主导。名称候选本身也只看季末，
+    // 免得某只股票只有非季末的旧名记录时被误判成可查。
+    const quarterMd = sql`'03-31','06-30','09-30','12-31'`
+    const [nameRes, stockRes, ignoredRes] = await Promise.all([
       db.execute(sql`
         SELECT security_name, COUNT(*)::int AS n
         FROM fund_holdings
         WHERE security_code = ${code} AND holding_type = 'stock'
           AND security_name IS NOT NULL
+          AND to_char(report_date, 'MM-DD') IN (${quarterMd})
         GROUP BY 1 ORDER BY 2 DESC
       `),
-      db.execute(sql`SELECT name FROM ${stocks} WHERE code = ${code} LIMIT 1`),
+      db.execute(sql`SELECT name, total_shares, float_shares FROM ${stocks} WHERE code = ${code} LIMIT 1`),
+      // 被排除的非季末记录数（含源侧 ETF 建仓 / 临时披露），仅用于透明展示
+      db.execute(sql`
+        SELECT COUNT(*)::int AS n FROM fund_holdings
+        WHERE security_code = ${code} AND holding_type = 'stock'
+          AND to_char(report_date, 'MM-DD') NOT IN (${quarterMd})
+      `),
     ])
-    const stockName = (stockRes.rows as StockRow[])[0]?.name
+    const ignoredNonQuarter = Number((ignoredRes.rows as StockRow[])[0]?.n ?? 0)
+    const stockRow = (stockRes.rows as StockRow[])[0]
+    const stockName = stockRow?.name
+    // stocks.total_shares / float_shares 单位 = 股（东财 f84/f85）
+    const totalShares = toNum(stockRow?.total_shares)
+    const floatShares = toNum(stockRow?.float_shares)
     const nameKey = (s: unknown) => normName(String(s ?? '')).replace(/[*-]/g, '')
-    const target  = stockName == null ? null : nameKey(stockName)
+    const rawName = stockName == null ? '' : String(stockName)
+    const target  = stockName == null ? null : nameKey(rawName)
+    // ⚠ 科创板 / 创业板简称带 -U / -W / -UW / -WD 等后缀（未盈利、特殊表决权标记），
+    //   基金季报里用的是**不带后缀**的简称：九号公司-WD → 九号公司、
+    //   星环科技-U → 星环科技。全库 47 只带此类后缀，实测它们同代码下都只有
+    //   1 个 security_name，放宽后 0 个多命中 ⇒ 不会串入港股。
+    //   生成「去后缀别名」一并参与名称闸门，matchedAlias 返回给前端透明标注。
+    const stripped = rawName.replace(/-[A-Z]{1,3}$/, '')
+    const alias = stripped !== rawName ? nameKey(stripped) : null
+    const targets = new Set<string>()
+    if (target) targets.add(target)
+    if (alias) targets.add(alias)
     const allNames = (nameRes.rows as StockRow[]).map(r => ({
       name: String(r.security_name), count: Number(r.n),
     }))
-    const accepted = target ? allNames.filter(x => nameKey(x.name) === target).map(x => x.name) : []
-    const excluded = target ? allNames.filter(x => nameKey(x.name) !== target) : allNames
+    const accepted = targets.size
+      ? allNames.filter(x => targets.has(nameKey(x.name))).map(x => x.name) : []
+    const excluded = targets.size
+      ? allNames.filter(x => !targets.has(nameKey(x.name))) : allNames
+    const matchedAlias = alias && accepted.some(x => nameKey(x) === alias && nameKey(x) !== target)
+      ? stripped : null
 
     const base = {
-      code, securityName: stockName ?? null, excluded,
-      summary: { funds: 0, shares: null, marketValue: null },
+      code, securityName: stockName ?? null, excluded, ignoredNonQuarter, matchedAlias,
+      summary: {
+        funds: 0, shares: null, marketValue: null,
+        totalShares, floatShares, shareRatio: null, floatShareRatio: null,
+      },
       rows: [], total: 0, page, pageSize,
     }
     if (!accepted.length) {
@@ -409,7 +460,8 @@ export async function stocksRoutes(app: FastifyInstance) {
       SELECT value FROM json_array_elements_text(${JSON.stringify(accepted)}::json)
     )`
     const whereCode = sql`h.security_code = ${code} AND h.holding_type = 'stock'
-                          AND ${nameCond}`
+                          AND ${nameCond}
+                          AND to_char(h.report_date, 'MM-DD') IN (${quarterMd})`
 
     const datesRes = await db.execute(sql`
       SELECT h.report_date::text AS d, COUNT(*)::int AS n
@@ -421,8 +473,8 @@ export async function stocksRoutes(app: FastifyInstance) {
       date:  String(r.d).slice(0, 10),
       count: Number(r.n),
     }))
-    const quarterEnds = ['03-31', '06-30', '09-30', '12-31']
-    const latestQuarter = dateRows.find(r => quarterEnds.includes(r.date.slice(5)))?.date ?? null
+    // 报告期列表已只含季末，第一个就是最新季度（不需要再挑季末）
+    const latestQuarter = dateRows[0]?.date ?? null
     const requested = (req.query.reportDate || '').trim() || null
     // 非法/不存在的报告期静默回退到默认，不报错也不返回空页
     const reportDate = (requested && dateRows.some(r => r.date === requested))
@@ -450,13 +502,19 @@ export async function stocksRoutes(app: FastifyInstance) {
       `),
     ])
     const a = (agg.rows as StockRow[])[0] ?? {}
+    const sumShares = toNum(a.shares)
     return {
       found: true, code, reportDate, reportDates: dateRows,
-      securityName: stockName ?? null, excluded,
+      securityName: stockName ?? null, excluded, ignoredNonQuarter, matchedAlias,
       summary: {
         funds:       Number(a.n ?? 0),
-        shares:      toNum(a.shares),
+        shares:      sumShares,
         marketValue: toNum(a.market_value),
+        totalShares,
+        floatShares,
+        // 占比口径：季报披露的公募基金合计持股（万股）÷ 最新股本（股）
+        shareRatio:      pctOfShares(sumShares, totalShares),
+        floatShareRatio: pctOfShares(sumShares, floatShares),
       },
       rows: (list.rows as StockRow[]).map(r => ({
         fundCode:    String(r.fund_code),
