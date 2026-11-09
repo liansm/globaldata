@@ -168,6 +168,8 @@ export interface StockHoldingsResult {
   excluded: { name: string; count: number }[]
   /** 被「只统计季度末」规则忽略的非季末披露行数（新建 ETF 建仓 / 临时组合快照） */
   ignoredNonQuarter: number
+  /** 命中时使用的「去后缀别名」（九号公司-WD → 九号公司），未使用则为 null */
+  matchedAlias: string | null
   summary: {
     funds: number               // 基金份额只数（A/C 类分开计），不是产品只数
     shares: number | null

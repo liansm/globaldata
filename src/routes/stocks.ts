@@ -369,6 +369,9 @@ export async function stocksRoutes(app: FastifyInstance) {
   //     只按 security_code 反查会把港股持仓算到 A 股头上。⇒ 只保留 security_name
   //     与 stocks.name 归一化后一致的行。代价是改名前的旧名（*ST柳化 ← 柳化股份）
   //     也会被排除，宁缺勿错；被排除的名称与行数一并返回，不静默吞。
+  //     ⚠ 例外：带 -U/-W/-UW/-WD 后缀的简称（全库 47 只）季报用去后缀名，
+  //       闸门额外接受「去后缀别名」（九号公司-WD ← 九号公司），matchedAlias 标注。
+  //       实测这些代码下只有 1 个 security_name，放宽后 0 个多命中，不会串入港股。
   // ⚠ 详情类接口一律 200 + {found:false}（别返 404，axios 会抛异常），
   //   并补齐 rows/total/page/pageSize，前端必须显式分支。
   app.get<{
@@ -404,15 +407,30 @@ export async function stocksRoutes(app: FastifyInstance) {
     const ignoredNonQuarter = Number((ignoredRes.rows as StockRow[])[0]?.n ?? 0)
     const stockName = (stockRes.rows as StockRow[])[0]?.name
     const nameKey = (s: unknown) => normName(String(s ?? '')).replace(/[*-]/g, '')
-    const target  = stockName == null ? null : nameKey(stockName)
+    const rawName = stockName == null ? '' : String(stockName)
+    const target  = stockName == null ? null : nameKey(rawName)
+    // ⚠ 科创板 / 创业板简称带 -U / -W / -UW / -WD 等后缀（未盈利、特殊表决权标记），
+    //   基金季报里用的是**不带后缀**的简称：九号公司-WD → 九号公司、
+    //   星环科技-U → 星环科技。全库 47 只带此类后缀，实测它们同代码下都只有
+    //   1 个 security_name，放宽后 0 个多命中 ⇒ 不会串入港股。
+    //   生成「去后缀别名」一并参与名称闸门，matchedAlias 返回给前端透明标注。
+    const stripped = rawName.replace(/-[A-Z]{1,3}$/, '')
+    const alias = stripped !== rawName ? nameKey(stripped) : null
+    const targets = new Set<string>()
+    if (target) targets.add(target)
+    if (alias) targets.add(alias)
     const allNames = (nameRes.rows as StockRow[]).map(r => ({
       name: String(r.security_name), count: Number(r.n),
     }))
-    const accepted = target ? allNames.filter(x => nameKey(x.name) === target).map(x => x.name) : []
-    const excluded = target ? allNames.filter(x => nameKey(x.name) !== target) : allNames
+    const accepted = targets.size
+      ? allNames.filter(x => targets.has(nameKey(x.name))).map(x => x.name) : []
+    const excluded = targets.size
+      ? allNames.filter(x => !targets.has(nameKey(x.name))) : allNames
+    const matchedAlias = alias && accepted.some(x => nameKey(x) === alias && nameKey(x) !== target)
+      ? stripped : null
 
     const base = {
-      code, securityName: stockName ?? null, excluded, ignoredNonQuarter,
+      code, securityName: stockName ?? null, excluded, ignoredNonQuarter, matchedAlias,
       summary: { funds: 0, shares: null, marketValue: null },
       rows: [], total: 0, page, pageSize,
     }
@@ -471,7 +489,7 @@ export async function stocksRoutes(app: FastifyInstance) {
     const a = (agg.rows as StockRow[])[0] ?? {}
     return {
       found: true, code, reportDate, reportDates: dateRows,
-      securityName: stockName ?? null, excluded, ignoredNonQuarter,
+      securityName: stockName ?? null, excluded, ignoredNonQuarter, matchedAlias,
       summary: {
         funds:       Number(a.n ?? 0),
         shares:      toNum(a.shares),

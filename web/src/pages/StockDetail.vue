@@ -115,6 +115,7 @@ const holdingsFound = ref(false)
 const holdingsSecurityName = ref<string | null>(null)
 const holdingsExcluded = ref<{ name: string; count: number }[]>([])
 const ignoredNonQuarter = ref(0)
+const matchedAlias = ref<string | null>(null)
 const holdingsPage = ref(1)
 const holdingsPageSize = ref(20)
 const holdingReportDate = ref('')
@@ -149,6 +150,7 @@ async function loadHoldings() {
     holdingsSecurityName.value = r.securityName
     holdingsExcluded.value = r.excluded
     ignoredNonQuarter.value = r.ignoredNonQuarter
+    matchedAlias.value = r.matchedAlias
     holdingReportDates.value = r.reportDates
     // 后端会把非法 / 不存在的报告期回退到默认，前端一律以返回值为准
     holdingReportDate.value = r.reportDate ?? ''
@@ -220,6 +222,7 @@ watch(code, () => {
   holdingsExcluded.value = []
   holdingsSecurityName.value = null
   ignoredNonQuarter.value = 0
+  matchedAlias.value = null
   holdingReportDate.value = ''
   holdingReportDates.value = []
   holdingsPage.value = 1
@@ -682,6 +685,10 @@ const chartOption = computed(() => {
               <span v-if="ignoredNonQuarter" class="excluded-note">
                 已忽略 {{ ignoredNonQuarter }} 条非季末披露：源侧 F10 对部分新建 ETF 等给出带具体日期的
                 建仓 / 临时组合快照（如 2026-03-26），与季报口径不同，不计入统计。
+              </span>
+              <span v-if="matchedAlias" class="excluded-note">
+                该股简称带科创板 / 创业板后缀标记，基金季报使用去后缀简称「{{ matchedAlias }}」，
+                已按该别名匹配持仓记录（同代码下无其他证券名称，不会混入港股）。
               </span>
               <span v-if="holdingsFound && excludedText" class="excluded-note">{{ excludedText }}</span>
             </p>
