@@ -77,6 +77,7 @@ A 股财报三表 + 股东户数 + 员工数（2026-11-09 落地）
     python fetch_stock_financials.py --dry-run --full --limit-periods 1
     python fetch_stock_financials.py --full --codes 600519,000001   # 联调
     python fetch_stock_financials.py --full --force-holders    # 只补股东户数全量（跳过已完成报告期）
+    python fetch_stock_financials.py --backfill                # 从 raw 回填 other_income（加列后跑一次）
     python fetch_stock_financials.py --status
 """
 
@@ -141,6 +142,9 @@ FIELDS = {
         ("manage_expense", "MANAGE_EXPENSE"),
         ("finance_expense", "FINANCE_EXPENSE"),
         ("research_expense", "RESEARCH_EXPENSE"),
+        # 「其他收益」不是费用，但和费用同一段位置（研发费用之后），
+        # 2026-11-09 追加：季度对比表要用单季值。加列前跑过全量的老行需 --backfill。
+        ("other_income", "OTHER_INCOME"),
         ("basic_eps", "BASIC_EPS"),
         ("diluted_eps", "DILUTED_EPS"),
     ],
@@ -205,6 +209,7 @@ CREATE TABLE IF NOT EXISTS stock_financials (
     manage_expense          numeric(24,2),
     finance_expense         numeric(24,2),
     research_expense        numeric(24,2),
+    other_income            numeric(24,2),
     basic_eps               numeric(16,4),
     diluted_eps             numeric(16,4),
     total_assets            numeric(24,2),
@@ -242,6 +247,10 @@ CREATE TABLE IF NOT EXISTS stock_financials (
 );
 CREATE INDEX IF NOT EXISTS idx_stock_financials_date   ON stock_financials(report_date);
 CREATE INDEX IF NOT EXISTS idx_stock_financials_update ON stock_financials(update_date);
+-- ⚠ 幂等加列：2026-11-09 之前建的表没有 other_income（当时只从 raw 读「其他收益」）。
+--   加列后必须跑一次 `python fetch_stock_financials.py --backfill`，
+--   否则历史行该列为 NULL → 单季差分整列显示「—」。
+ALTER TABLE stock_financials ADD COLUMN IF NOT EXISTS other_income numeric(24,2);
 
 CREATE TABLE IF NOT EXISTS stock_holder_counts (
     code              varchar(10) NOT NULL,
@@ -303,7 +312,10 @@ WITH q AS (
            LAG(research_expense)     OVER w AS prev_research,
            LAG(operate_profit)       OVER w AS prev_opprofit,
            LAG(income_tax)           OVER w AS prev_tax,
-           LAG(netprofit)            OVER w AS prev_netprofit
+           LAG(netprofit)            OVER w AS prev_netprofit,
+           -- 2026-11-09 追加第二轮：财务费用 / 其他收益（列在研发费用之后）
+           LAG(finance_expense)      OVER w AS prev_finance,
+           LAG(other_income)         OVER w AS prev_other_income
     FROM stock_financials f
     WINDOW w AS (PARTITION BY code, report_year ORDER BY quarter_num)
 )
@@ -366,7 +378,15 @@ SELECT q.*,
        CASE WHEN quarter_num = 1 THEN operate_income - operate_cost
             WHEN prev_q = quarter_num - 1
               THEN (operate_income - operate_cost) - (prev_oi - prev_cost)
-            ELSE NULL END AS q_gross_profit
+            ELSE NULL END AS q_gross_profit,
+       -- 财务费用 / 其他收益（2026-11-09 追加，只能追加在视图末尾）
+       -- 两者都可能为负：财务费用为负 = 利息收入大于支出；其他收益为负 = 净损失。
+       CASE WHEN quarter_num = 1 THEN finance_expense
+            WHEN prev_q = quarter_num - 1 THEN finance_expense - prev_finance
+            ELSE NULL END AS q_finance_expense,
+       CASE WHEN quarter_num = 1 THEN other_income
+            WHEN prev_q = quarter_num - 1 THEN other_income - prev_other_income
+            ELSE NULL END AS q_other_income
 FROM q;
 """
 
@@ -867,6 +887,37 @@ def run_employees(conn, args, codes: set[str], today: date, *, force: bool) -> i
     return len(vals)
 
 
+def backfill_other_income(conn, dry_run: bool = False) -> int:
+    """从 raw 回填历史行的 other_income。
+
+    ⚠ 背景：other_income 是 2026-11-09 才加的列（在此之前「其他收益」只存在 raw 里）。
+      加列的 DDL 对老行只写 NULL，而增量按 UPDATE_DATE 回看，**永远不会重抓这些老行**，
+      所以必须单独回填一次，否则季度对比表的「其他收益」整列是「—」。
+
+    只回填 raw 里确实有 OTHER_INCOME 且是纯数字的行：raw 为 NULL（--no-raw 跑过）
+    或源侧没披露的行保持 NULL —— 单季差分显示「—」，不用 0 充数。
+    幂等：只动 other_income IS NULL 的行，重复跑得到 0 行。
+    """
+    cond = r"""other_income IS NULL
+            AND (raw->'INCOME'->>'OTHER_INCOME') ~ '^-?[0-9]+(\.[0-9]+)?$'"""
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*)::int FROM stock_financials WHERE {cond}")
+        pending = cur.fetchone()[0]
+    if dry_run:
+        print(f"[backfill] other_income 待回填 {pending} 行（dry-run 不写库）", flush=True)
+        return pending
+    with conn:                          # 不 with conn 会被静默 rollback（本项目踩过）
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                UPDATE stock_financials
+                   SET other_income = (raw->'INCOME'->>'OTHER_INCOME')::numeric
+                 WHERE {cond}
+            """)
+            n = cur.rowcount
+    print(f"[backfill] other_income 回填 {n} 行（待回填 {pending} 行）", flush=True)
+    return n
+
+
 def show_status(conn) -> None:
     with conn.cursor() as cur:
         cur.execute("""
@@ -876,6 +927,7 @@ def show_status(conn) -> None:
                    COUNT(parent_netprofit) AS with_np,
                    COUNT(total_assets) AS with_assets,
                    COUNT(netcash_operate) AS with_cfo,
+                   COUNT(other_income) AS with_other,
                    pg_size_pretty(pg_total_relation_size('stock_financials')) AS size
             FROM stock_financials
         """)
@@ -890,8 +942,9 @@ def show_status(conn) -> None:
                        FROM stock_employee_snapshots""")
         e = cur.fetchone()
     print("stock_financials:")
-    print(f"  {f[0]} 行 / {f[1]} 只 / {f[2]} ~ {f[3]} / 源侧最后修订 {f[4]} / 表大小 {f[8]}")
-    print(f"  有归母净利 {f[5]} / 有总资产 {f[6]} / 有经营现金流 {f[7]}")
+    print(f"  {f[0]} 行 / {f[1]} 只 / {f[2]} ~ {f[3]} / 源侧最后修订 {f[4]} / 表大小 {f[9]}")
+    print(f"  有归母净利 {f[5]} / 有总资产 {f[6]} / 有经营现金流 {f[7]} / "
+          f"有其他收益 {f[8]}（老行需 --backfill 回填）")
     print("stock_holder_counts:")
     print(f"  {h[0]} 行 / {h[1]} 只 / {h[2]} ~ {h[3]}")
     print("stock_employee_snapshots:")
@@ -904,6 +957,8 @@ def main() -> int:
     ap.add_argument("--since", default=DEFAULT_SINCE, help=f"报告期起点，默认 {DEFAULT_SINCE}")
     ap.add_argument("--dry-run", action="store_true", help="只抓不写库")
     ap.add_argument("--status", action="store_true", help="只打印库内状态")
+    ap.add_argument("--backfill", action="store_true",
+                    help="从 raw 回填 other_income（2026-11-09 加列后跑一次，幂等）")
     ap.add_argument("--workers", type=int, default=WORKERS)
     ap.add_argument("--incremental-days", type=int, default=INCREMENTAL_DAYS)
     ap.add_argument("--limit-periods", type=int, default=0, help="全量只跑前 N 个报告期（联调）")
@@ -932,6 +987,9 @@ def main() -> int:
                 cur.execute(sql_view())
         if args.dry_run:
             print("[dry-run] 已确保 DDL / 视图存在；只抓不写业务数据")
+        if args.backfill:
+            backfill_other_income(conn, args.dry_run)
+            return 0
         codes = load_codes(conn, args.codes)
         print(f"名录 {len(codes)} 只（过滤基准）", flush=True)
         today = date.today()

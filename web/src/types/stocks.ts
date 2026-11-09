@@ -213,6 +213,10 @@ export interface StockFinancialRow {
   qSaleExpense: number | null
   qManageExpense: number | null
   qResearchExpense: number | null
+  /** 单季财务费用；为负表示利息收入大于支出 */
+  qFinanceExpense: number | null
+  /** 单季其他收益；为负表示净损失 */
+  qOtherIncome: number | null
   qOperateProfit: number | null
   qIncomeTax: number | null
   /** 单季净利润，**合并口径（含少数股东损益）**，不是归母 */

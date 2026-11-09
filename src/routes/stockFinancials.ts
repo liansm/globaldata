@@ -119,6 +119,9 @@ export function stockFinancialsRoutes(app: FastifyInstance) {
         qSaleExpense:      toNum(r.q_sale_expense),
         qManageExpense:    toNum(r.q_manage_expense),
         qResearchExpense:  toNum(r.q_research_expense),
+        // 财务费用为负 = 利息收入大于支出；其他收益为负 = 净损失。源侧原样，不取绝对值。
+        qFinanceExpense:   toNum(r.q_finance_expense),
+        qOtherIncome:      toNum(r.q_other_income),
         qOperateProfit:    toNum(r.q_operate_profit),
         qIncomeTax:        toNum(r.q_income_tax),
         // 「净利润」= 合并口径（含少数股东损益），不是归母；归母看 parentNetprofit / qParentNetprofit
