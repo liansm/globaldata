@@ -206,6 +206,21 @@ export interface StockFinancialRow {
   qRevenue: number | null
   qParentNetprofit: number | null
   qNetcashOperate: number | null
+  /** 单季毛利润 = 单季营业收入 − 单季营业成本 */
+  qGrossProfit: number | null
+  /** 单季毛利率 %（分子分母都是单季值；金融业为 null） */
+  qGrossMargin: number | null
+  qSaleExpense: number | null
+  qManageExpense: number | null
+  qResearchExpense: number | null
+  /** 单季财务费用；为负表示利息收入大于支出 */
+  qFinanceExpense: number | null
+  /** 单季其他收益；为负表示净损失 */
+  qOtherIncome: number | null
+  qOperateProfit: number | null
+  qIncomeTax: number | null
+  /** 单季净利润，**合并口径（含少数股东损益）**，不是归母 */
+  qNetprofit: number | null
   // 资产负债表季末时点值（不差分）
   totalAssets: number | null
   totalCurrentAssets: number | null
