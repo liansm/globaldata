@@ -4,6 +4,15 @@ Index Spot Data Fetcher (A股 + 港股)
 A股: akshare.stock_zh_index_spot_sina()
   Columns: 代码, 名称, 最新价, 涨跌额, 涨跌幅, 成交量, 成交额, 振幅, 最高, 最低, 今开, 昨收
   成交额 unit: 元，直接存储；matched by 代码 (e.g. "sh000001")
+  ⚠ 这个批量接口**不含北交所**（实测 562 行里 bj* 为 0 行），北证50 走下面的
+    hq.sinajs.cn 单只行情兜底。
+
+北证50兜底: hq.sinajs.cn/list=bj899050（需 Referer，GBK）
+  字段: 0名称 1今开 2昨收 3最新价 4最高 5最低 6/7买卖 8成交量 9成交额(元) 30日期 31时间
+  同一入口也可取 sh/sz，故任何"批量接口里找不到"的指数都能靠这个补。
+  2026-11-09 起接入：此前注释写着"不在覆盖范围内，跳过"，结果列表页北证50
+  只能回退到 index_prices 最新一行 —— 盘中别人都显示今天 10:35 的实时价，
+  它显示上一交易日收盘（11-06 888.48 / -2.37%），看着就像"今天没更新"。
 
 港股: akshare.stock_hk_index_spot_sina()
   Columns: 指数(code), 名称, 最新价, 涨跌额, 涨跌幅, 昨收, 今开, 最高, 最低
@@ -22,6 +31,7 @@ from datetime import date, datetime, time as dtime
 import akshare as ak
 import pandas as pd
 import psycopg2
+import requests
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 
@@ -30,13 +40,16 @@ load_dotenv()
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/globaldata")
 
 # A股: index_key → sina code (e.g. "sh000001")
+#   "sinajs": True 表示批量接口不覆盖，改用 hq.sinajs.cn 单只行情
 AH_SPOT_CONFIGS = [
     {"key": "idx_sh",    "symbol": "sh000001", "name": "上证指数"},
     {"key": "idx_sz",    "symbol": "sz399001", "name": "深证成指"},
     {"key": "idx_hs300", "symbol": "sh000300", "name": "沪深300"},
     {"key": "idx_cyb",   "symbol": "sz399006", "name": "创业板指"},
     {"key": "idx_kc50",  "symbol": "sh000688", "name": "科创50"},
-    # 北证50 (bj899050) 不在 stock_zh_index_spot_sina 覆盖范围内，跳过
+    # 北证50 不在 stock_zh_index_spot_sina 覆盖范围内（562 行里 bj* 为 0），
+    # 但 hq.sinajs.cn 单只行情有 → 走 sinajs 兜底
+    {"key": "idx_bz50",  "symbol": "bj899050", "name": "北证50", "sinajs": True},
 ]
 
 # 港股: index_key → 指数 code (matched by 指数 column in stock_hk_index_spot_sina)
@@ -198,6 +211,57 @@ def fetch_a_spot() -> dict | None:
     return result
 
 
+SINAJS_URL = "https://hq.sinajs.cn/list={symbol}"
+SINAJS_HEADERS = {
+    "Referer": "https://finance.sina.com.cn",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+}
+
+
+def fetch_sinajs_quote(symbol: str) -> dict | None:
+    """hq.sinajs.cn 单只指数行情（GBK）。返回与 akshare 快照同 key 的 dict。
+
+    字段布局（2026-11-09 实测 bj899050 / sh000001 一致）:
+      0 名称 1 今开 2 昨收 3 最新价 4 最高 5 最低 6/7 买卖价(0)
+      8 成交量 9 成交额(元) … 30 日期 31 时间
+    ⚠ 成交量单位不可信（sh 是「手」、bj 更像「股」）→ index_spot 本来就没有 vol 列，
+      这里只取价 / 昨收 / 成交额，别把成交量写进任何表。
+    """
+    try:
+        resp = requests.get(
+            SINAJS_URL.format(symbol=symbol), headers=SINAJS_HEADERS, timeout=10)
+        resp.encoding = "gbk"
+        text = resp.text
+    except Exception as exc:
+        print(f"[ERROR] sinajs {symbol}: {exc}")
+        return None
+    if '="' not in text:
+        print(f"[ERROR] sinajs {symbol}: unexpected body {text[:80]!r}")
+        return None
+    body = text.split('="', 1)[1].rsplit('"', 1)[0]
+    parts = body.split(",")
+    if len(parts) < 10 or not parts[0].strip():
+        print(f"[WARN] sinajs {symbol}: 无数据（停牌或代码失效）")
+        return None
+    price = _safe_float(parts[3])
+    prev_close = _safe_float(parts[2])
+    if price is None or prev_close is None or price <= 0:
+        print(f"[WARN] sinajs {symbol}: 最新价不可用 price={parts[3]} 昨收={parts[2]}")
+        return None
+    change_pct = (price - prev_close) / prev_close * 100 if prev_close else None
+    src_dt = f"{parts[30]} {parts[31]}" if len(parts) > 31 else "?"
+    print(f"    sinajs {symbol}: 最新={price} 昨收={prev_close} 源时间={src_dt}")
+    return {
+        "最新价":   price,
+        "昨收":     prev_close,
+        "涨跌幅":   change_pct,
+        "成交额":   _safe_float(parts[9]),
+        "今开":     _safe_float(parts[1]),
+        "最高":     _safe_float(parts[4]),
+        "最低":     _safe_float(parts[5]),
+    }
+
+
 def fetch_hk_spot() -> dict | None:
     """Call stock_hk_index_spot_sina → dict keyed by 指数 code (e.g. 'HSI')."""
     try:
@@ -249,6 +313,10 @@ def main() -> int:
         symbol = cfg["symbol"]
         name   = cfg["name"]
         row = a_map.get(symbol)
+        if row is None and cfg.get("sinajs"):
+            # 批量接口不覆盖（北证50）→ 单只行情兜底
+            print(f"  [{name}] 批量接口无 {symbol}，改用 hq.sinajs.cn")
+            row = fetch_sinajs_quote(symbol)
         if row is None:
             print(f"  [{name}] NOT FOUND (symbol={symbol})")
             failed.append(key)
