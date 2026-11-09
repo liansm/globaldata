@@ -255,6 +255,9 @@ export const fundHoldings = pgTable('fund_holdings', {
 }, (t) => [
   unique('fund_holdings_uniq').on(t.fundCode, t.reportDate, t.holdingType, t.securityCode),
   index('idx_fund_holdings_fund_date').on(t.fundCode, t.reportDate),
+  // 按个股反查「哪些基金持有它」：147 万行表若无此索引会全表扫描。
+  // 2026-11-09 实测加了之后 601872 的查询从 0.106s → 0.0055s。
+  index('idx_fund_holdings_security_date').on(t.securityCode, t.reportDate, t.holdingType),
 ])
 
 // --------------------------------------------------------------------------

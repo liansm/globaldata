@@ -141,3 +141,38 @@ export interface StockReportsResult {
   page: number
   pageSize: number
 }
+
+/** 持有该股的公募基金份额（由 fund_holdings 反查，按持股数降序）*/
+export interface StockFundHolding {
+  fundCode: string
+  fundName: string | null
+  fundType: string | null
+  fundCompany: string | null
+  ratio: number | null          // 占净值比例 %
+  shares: number | null         // 万股
+  marketValue: number | null    // 万元
+}
+
+export interface HoldingReportDate {
+  date: string
+  count: number
+}
+
+export interface StockHoldingsResult {
+  found: boolean
+  code: string
+  reportDate: string | null
+  reportDates: HoldingReportDate[]
+  securityName: string | null
+  /** 同 security_code 下被名称闸门排除的其他证券 / 旧名记录（透明展示，不静默吞） */
+  excluded: { name: string; count: number }[]
+  summary: {
+    funds: number               // 基金份额只数（A/C 类分开计），不是产品只数
+    shares: number | null
+    marketValue: number | null
+  }
+  rows: StockFundHolding[]
+  total: number
+  page: number
+  pageSize: number
+}

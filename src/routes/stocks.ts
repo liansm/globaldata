@@ -342,4 +342,133 @@ export async function stocksRoutes(app: FastifyInstance) {
       page: 1, pageSize: limit,
     }
   })
+
+  // ── GET /api/stocks/:code/holdings ────────────────────────────────────────
+  // 反查「哪些公募基金持有这只股票」，按**持股数（万股）降序**。数据来自
+  // fetch_funds.py 的 fund_holdings（东财 F10 季报披露的重仓股）。
+  //
+  // ⚠ 口径（前端也要如实标注，别粉饰）：
+  //   * 季报只披露**前十大重仓股**，半年报/年报才可能给完整持仓 → 不是全部持仓。
+  //   * shares 单位是**万股**、market_value 是**万元**、ratio 是占净值比例 %。
+  //     已交叉验证：2026-09-30 招商轮船 market_value/shares = 20.15 = 当日收盘价。
+  //   * funds 名录是**份额口径**（A/C 类分开），所以同一产品的 A/C 份额会各占一行；
+  //     汇总里的 funds 是「基金份额只数」，不是基金产品只数。
+  //   * 全库 99.82% 的持仓行落在季末，另有少量基金在非季末零星披露。默认报告期取
+  //     **最新季末**而不是 MAX(report_date)，否则某些股票会默认只剩 1~2 行。
+  //   * **名称闸门**：东财把港股代码补零成 6 位，与深市 A 股撞号 —— 实测 251 个
+  //     A 股代码在 fund_holdings 里同时挂着港股名称（000020 深华发A 仅 2 条，
+  //     同代码「商汤-W」163 条；000670 盈方微底下 163 条全是「中国东方航空股份」）。
+  //     只按 security_code 反查会把港股持仓算到 A 股头上。⇒ 只保留 security_name
+  //     与 stocks.name 归一化后一致的行。代价是改名前的旧名（*ST柳化 ← 柳化股份）
+  //     也会被排除，宁缺勿错；被排除的名称与行数一并返回，不静默吞。
+  // ⚠ 详情类接口一律 200 + {found:false}（别返 404，axios 会抛异常），
+  //   并补齐 rows/total/page/pageSize，前端必须显式分支。
+  app.get<{
+    Params: { code: string }
+    Querystring: { reportDate?: string; page?: string; pageSize?: string }
+  }>('/api/stocks/:code/holdings', async (req) => {
+    const code     = req.params.code.trim()
+    const page     = Math.max(1, parseInt(req.query.page ?? '1', 10) || 1)
+    const pageSize = Math.min(200, Math.max(1, parseInt(req.query.pageSize ?? '20', 10) || 20))
+    const offset   = (page - 1) * pageSize
+
+    // 先定「这个代码下哪些 security_name 才是本股票」，后面报告期 / 列表 / 汇总
+    // 全部套用同一闸门，避免报告期列表也被港股记录主导。
+    const [nameRes, stockRes] = await Promise.all([
+      db.execute(sql`
+        SELECT security_name, COUNT(*)::int AS n
+        FROM fund_holdings
+        WHERE security_code = ${code} AND holding_type = 'stock'
+          AND security_name IS NOT NULL
+        GROUP BY 1 ORDER BY 2 DESC
+      `),
+      db.execute(sql`SELECT name FROM ${stocks} WHERE code = ${code} LIMIT 1`),
+    ])
+    const stockName = (stockRes.rows as StockRow[])[0]?.name
+    const nameKey = (s: unknown) => normName(String(s ?? '')).replace(/[*-]/g, '')
+    const target  = stockName == null ? null : nameKey(stockName)
+    const allNames = (nameRes.rows as StockRow[]).map(r => ({
+      name: String(r.security_name), count: Number(r.n),
+    }))
+    const accepted = target ? allNames.filter(x => nameKey(x.name) === target).map(x => x.name) : []
+    const excluded = target ? allNames.filter(x => nameKey(x.name) !== target) : allNames
+
+    const base = {
+      code, securityName: stockName ?? null, excluded,
+      summary: { funds: 0, shares: null, marketValue: null },
+      rows: [], total: 0, page, pageSize,
+    }
+    if (!accepted.length) {
+      return { found: false, ...base, reportDate: null, reportDates: [] }
+    }
+
+    // ⚠ 别把 JS 数组直接塞进 ANY(${...}::text[])：pg 驱动会把它序列化成
+    //   "招商轮船" 这种畸形数组常量，报 22P02（2026-11-09 实测）。
+    //   改成传 JSON 字符串，SQL 侧用 json_array_elements_text 展开成参数化 IN。
+    const nameCond = sql`h.security_name IN (
+      SELECT value FROM json_array_elements_text(${JSON.stringify(accepted)}::json)
+    )`
+    const whereCode = sql`h.security_code = ${code} AND h.holding_type = 'stock'
+                          AND ${nameCond}`
+
+    const datesRes = await db.execute(sql`
+      SELECT h.report_date::text AS d, COUNT(*)::int AS n
+      FROM fund_holdings h
+      WHERE ${whereCode}
+      GROUP BY 1 ORDER BY 1 DESC
+    `)
+    const dateRows = (datesRes.rows as StockRow[]).map(r => ({
+      date:  String(r.d).slice(0, 10),
+      count: Number(r.n),
+    }))
+    const quarterEnds = ['03-31', '06-30', '09-30', '12-31']
+    const latestQuarter = dateRows.find(r => quarterEnds.includes(r.date.slice(5)))?.date ?? null
+    const requested = (req.query.reportDate || '').trim() || null
+    // 非法/不存在的报告期静默回退到默认，不报错也不返回空页
+    const reportDate = (requested && dateRows.some(r => r.date === requested))
+      ? requested
+      : (latestQuarter ?? dateRows[0]?.date ?? null)
+
+    if (!reportDate) {
+      return { found: false, ...base, reportDate: null, reportDates: dateRows }
+    }
+
+    const cond = sql`${whereCode} AND h.report_date = ${reportDate}::date`
+    const [list, agg] = await Promise.all([
+      db.execute(sql`
+        SELECT h.fund_code, f.fund_name, f.fund_type, f.fund_company,
+               h.ratio, h.shares, h.market_value
+        FROM fund_holdings h
+        LEFT JOIN funds f ON f.fund_code = h.fund_code
+        WHERE ${cond}
+        ORDER BY h.shares DESC NULLS LAST, h.fund_code ASC
+        LIMIT ${pageSize} OFFSET ${offset}
+      `),
+      db.execute(sql`
+        SELECT COUNT(*)::int AS n, SUM(h.shares) AS shares, SUM(h.market_value) AS market_value
+        FROM fund_holdings h WHERE ${cond}
+      `),
+    ])
+    const a = (agg.rows as StockRow[])[0] ?? {}
+    return {
+      found: true, code, reportDate, reportDates: dateRows,
+      securityName: stockName ?? null, excluded,
+      summary: {
+        funds:       Number(a.n ?? 0),
+        shares:      toNum(a.shares),
+        marketValue: toNum(a.market_value),
+      },
+      rows: (list.rows as StockRow[]).map(r => ({
+        fundCode:    String(r.fund_code),
+        fundName:    r.fund_name ?? null,
+        fundType:    r.fund_type ?? null,
+        fundCompany: r.fund_company ?? null,
+        ratio:       toNum(r.ratio),
+        shares:      toNum(r.shares),
+        marketValue: toNum(r.market_value),
+      })),
+      total: Number(a.n ?? 0),
+      page, pageSize,
+    }
+  })
 }
