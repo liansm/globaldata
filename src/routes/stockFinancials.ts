@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { sql } from 'drizzle-orm'
 import { db } from '../db'
+import { LAYOUT, STMT_LABEL, IS_STMT, type Stmt } from '../lib/statementLayout'
 
 // ⚠ numeric 列在 pg 驱动里返回字符串，必须转 number（本项目踩过多次）
 const toNum = (v: unknown): number | null => (v == null ? null : Number(v))
@@ -132,6 +133,142 @@ export function stockFinancialsRoutes(app: FastifyInstance) {
       total,
       page: 1,
       pageSize: limit,
+    }
+  })
+
+  /**
+   * GET /api/stocks/:code/statement
+   *
+   * 雪球式的**逐科目**三表：行 = 报表科目（带层级/顺序），列 = 报告期。
+   * 数据直接来自 `raw`（三张表各 200~319 个字段全在库里），科目名与顺序由
+   * `src/lib/statementLayout.ts` 的字典给出，**不需要重抓**。
+   *
+   * 口径：
+   *   ① 三表都是**累计值**（一季报 = Q1、中报 = H1、三季报 = Q1~Q3、年报 = FY），
+   *      与雪球/东财网页一致，这里不做单季差分（单季看另一个接口的 q* 字段）。
+   *   ② 金融业（银行/证券/保险）用各自模板，字典里通用科目为空 → 整行隐藏，
+   *      所以同一个字典能同时喂四类主体，前端不用分支。
+   *   ③ 资产减值损失/信用减值损失源侧存「带符号的收益」，字典 sign=-1 转成报表习惯的正损失额。
+   *   ④ 单位统一返回**元**，亿/万换算交给前端（每股收益是元/股，标 fmt='plain'）。
+   */
+  app.get<{
+    Params: { code: string }
+    Querystring: {
+      type?: string; filter?: string; page?: string; pageSize?: string
+    }
+  }>('/api/stocks/:code/statement', async (req) => {
+    const code = req.params.code.trim()
+    const q = req.query
+    const type: Stmt = q.type && IS_STMT(q.type) ? q.type : 'BALANCE'
+    // 全部 / 年报 / 中报 / 一季报 / 三季报 —— 按 quarter_num 过滤
+    const FILTERS: Record<string, number[] | null> = {
+      all: null, annual: [4], h1: [2], q1: [1], q3: [3],
+    }
+    const filter = q.filter && q.filter in FILTERS ? q.filter : 'all'
+    const quarters = FILTERS[filter]
+    const pageSize = Math.min(8, Math.max(1, parseInt(q.pageSize ?? '5', 10) || 5))
+    const page = Math.max(1, parseInt(q.page ?? '1', 10) || 1)
+
+    const empty = {
+      found: false, code, type, typeLabel: STMT_LABEL[type], filter,
+      page, pageSize, totalPeriods: 0, orgType: null as string | null,
+      currency: null as string | null, periods: [] as unknown[],
+      sections: [] as unknown[], unit: '元',
+    }
+
+    // 过滤条件只有 1/2/3/4 这几个白名单整数，用 sql.raw 拼安全
+    const cond = quarters
+      ? sql`AND quarter_num IN (${sql.raw(quarters.map(n => Number(n)).join(','))})`
+      : sql``
+
+    const [cntRes, listRes] = await Promise.all([
+      db.execute(sql`
+        SELECT COUNT(*)::int AS n FROM stock_financials
+        WHERE code = ${code} ${cond}
+      `),
+      db.execute(sql`
+        SELECT report_date::text AS report_date, report_year, quarter_num, report_type,
+               org_type, currency, raw
+        FROM stock_financials
+        WHERE code = ${code} ${cond}
+        ORDER BY report_date DESC
+        LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+      `),
+    ])
+
+    const totalPeriods = Number((cntRes.rows as Row[])[0]?.n ?? 0)
+    const list = listRes.rows as Row[]
+    if (!totalPeriods || !list.length) return { ...empty, totalPeriods }
+
+    const periods = list.map(r => ({
+      reportDate: day(r.report_date),
+      reportYear: toInt(r.report_year),
+      quarterNum: toInt(r.quarter_num),
+      reportType: r.report_type ?? null,
+      // 雪球式列头：2026三季报 / 2025年报
+      label: `${r.report_year ?? ''}${r.report_type ?? ''}`,
+    }))
+
+    // 逐科目取数：直接读 raw；整行为空（该模板没有这个科目）就不展示
+    const built = LAYOUT[type]
+      .map(sec => ({
+        title: sec.title,
+        rows: sec.lines
+          .map(line => {
+            const values = list.map(r => {
+              const d = ((r.raw as Record<string, Record<string, unknown>>) ?? {})[type] ?? {}
+              let v = d[line.key]
+              if (v == null || v === '' || v === '-') v = line.alt ? d[line.alt] : null
+              if (v == null || v === '' || v === '-') return null
+              const n = Number(v)
+              if (!Number.isFinite(n)) return null
+              // 减值损失：源侧是带符号收益，报表显示正的损失额
+              return line.sign === -1 ? -n : n
+            })
+            return {
+              key: line.key,
+              label: line.label,
+              kind: line.kind ?? 'item',
+              fmt: line.fmt ?? 'money',
+              values,
+            }
+          })
+          .filter(r => r.values.some(v => v != null)),
+      }))
+      .filter(s => s.rows.length)
+
+    // 银行 / 证券 / 保险不按「流动 / 非流动」划分（源侧那两组合计全是空），
+    // 把同名分组标题合并成「资产」「负债」，否则会留下几个只剩一行的小标题。
+    const orgTypeRaw = list[0].org_type == null ? '' : String(list[0].org_type)
+    const sections = (() => {
+      if (!orgTypeRaw || orgTypeRaw === '通用') return built
+      const merged: typeof built = []
+      for (const s of built) {
+        const t = s.title === '流动资产' || s.title === '非流动资产' ? '资产'
+          : s.title === '流动负债' || s.title === '非流动负债' ? '负债'
+          : s.title
+        const last = merged[merged.length - 1]
+        if (last && last.title === t) last.rows.push(...s.rows)
+        else merged.push({ title: t, rows: [...s.rows] })
+      }
+      return merged
+    })()
+
+    const head = list[0]
+    return {
+      found: sections.length > 0,
+      code,
+      type,
+      typeLabel: STMT_LABEL[type],
+      filter,
+      page,
+      pageSize,
+      totalPeriods,
+      orgType: head.org_type == null ? null : String(head.org_type),
+      currency: head.currency == null ? null : String(head.currency),
+      periods,
+      sections,
+      unit: '元',
     }
   })
 }

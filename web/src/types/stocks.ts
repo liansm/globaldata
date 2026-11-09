@@ -234,3 +234,40 @@ export interface StockFinancialsResult {
   page: number
   pageSize: number
 }
+
+// ── 逐科目三表（雪球式） ──────────────────────────────────────────────
+export type StmtType = 'BALANCE' | 'INCOME' | 'CASHFLOW'
+export type StmtFilter = 'all' | 'annual' | 'h1' | 'q1' | 'q3'
+
+export interface StmtLineRow {
+  key: string
+  label: string
+  /** section 为前端合成的分组标题行，item/sub/total 来自后端字典 */
+  kind: 'item' | 'sub' | 'total' | 'section'
+  /** plain = 每股收益这类，不做亿/万换算 */
+  fmt: 'money' | 'plain'
+  /** 与 periods 一一对应，单位元；null = 该期未披露 */
+  values: (number | null)[]
+}
+
+export interface StockStatementResult {
+  found: boolean
+  code: string
+  type: StmtType
+  typeLabel: string
+  filter: StmtFilter
+  page: number
+  pageSize: number
+  totalPeriods: number
+  orgType: string | null
+  currency: string | null
+  periods: {
+    reportDate: string
+    reportYear: number | null
+    quarterNum: number | null
+    reportType: string | null
+    label: string
+  }[]
+  sections: { title: string | null; rows: StmtLineRow[] }[]
+  unit: string
+}
