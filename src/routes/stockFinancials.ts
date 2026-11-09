@@ -108,6 +108,21 @@ export function stockFinancialsRoutes(app: FastifyInstance) {
         qRevenue:          toNum(r.q_revenue),
         qParentNetprofit:  toNum(r.q_parent_netprofit),
         qNetcashOperate:   toNum(r.q_netcash_operate),
+        // 单季利润表明细（季度对比表前 9 列：总收入→净利润）
+        qGrossProfit:      toNum(r.q_gross_profit),
+        // 单季毛利率：分子分母都用单季值，金融业不适用（与累计口径的 grossMargin 分开）
+        qGrossMargin:      r.org_type != null && String(r.org_type) !== '通用' ? null
+                           : (toNum(r.q_operate_income) != null && toNum(r.q_operate_income)! > 0
+                              && toNum(r.q_gross_profit) != null
+                                ? (toNum(r.q_gross_profit)! / toNum(r.q_operate_income)! * 100)
+                                : null),
+        qSaleExpense:      toNum(r.q_sale_expense),
+        qManageExpense:    toNum(r.q_manage_expense),
+        qResearchExpense:  toNum(r.q_research_expense),
+        qOperateProfit:    toNum(r.q_operate_profit),
+        qIncomeTax:        toNum(r.q_income_tax),
+        // 「净利润」= 合并口径（含少数股东损益），不是归母；归母看 parentNetprofit / qParentNetprofit
+        qNetprofit:        toNum(r.q_netprofit),
         // 资产负债表（季末时点值，禁止差分）
         totalAssets:       toNum(r.total_assets),
         totalCurrentAssets:toNum(r.total_current_assets),

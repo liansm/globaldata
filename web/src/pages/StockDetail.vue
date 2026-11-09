@@ -169,7 +169,23 @@ const financialsResult = ref<StockFinancialsResult | null>(null)
 const financialsLoading = ref(false)
 const financialsError = ref('')
 const financialsFound = ref(false)
-const finMetric = ref<'qNetprofit' | 'qRevenue' | 'cumNetprofit'>('qNetprofit')
+// 季度对比的指标清单 = 表格列顺序：前 9 项单季、后 2 项累计。
+// unit 决定图表 Y 轴是「亿元」还是「%」——毛利率是比率，不能再除 1e8。
+const FIN_METRICS = [
+  { label: '总收入',         value: 'qRevenue',        unit: 'money' },
+  { label: '毛利润',         value: 'qGrossProfit',    unit: 'money' },
+  { label: '毛利率',         value: 'qGrossMargin',    unit: 'percent' },
+  { label: '销售费用',       value: 'qSaleExpense',    unit: 'money' },
+  { label: '管理费用',       value: 'qManageExpense',  unit: 'money' },
+  { label: '研发费用',       value: 'qResearchExpense', unit: 'money' },
+  { label: '营业利润',       value: 'qOperateProfit',  unit: 'money' },
+  { label: '所得税',         value: 'qIncomeTax',      unit: 'money' },
+  { label: '净利润',         value: 'qNetprofit',      unit: 'money' },
+  { label: '累计营业总收入', value: 'revenue',         unit: 'money' },
+  { label: '累计归母净利',   value: 'parentNetprofit', unit: 'money' },
+] as const
+type FinMetricKey = typeof FIN_METRICS[number]['value']
+const finMetric = ref<FinMetricKey>('qNetprofit')
 let financialsLoaded = false
 
 async function loadFinancials() {
@@ -316,19 +332,15 @@ function periodText(r: StockFinancialRow): string {
   return `${r.reportYear ?? '—'} Q${r.quarterNum ?? '—'}`
 }
 
-const FIN_METRICS = [
-  { label: '单季归母净利', value: 'qNetprofit' },
-  { label: '单季营业总收入', value: 'qRevenue' },
-  { label: '累计归母净利', value: 'cumNetprofit' },
-] as const
-
 const finChartOption = computed(() => {
   const rows = financials.value.slice(0, 20).slice().reverse()
   const labels = rows.map(periodText)
+  const metric = FIN_METRICS.find(m => m.value === finMetric.value) ?? FIN_METRICS[0]
+  const pct = metric.unit === 'percent'
   const values = rows.map(r => {
-    const raw = finMetric.value === 'qNetprofit' ? r.qParentNetprofit
-      : finMetric.value === 'qRevenue' ? r.qRevenue : r.parentNetprofit
-    return raw == null ? null : raw / 1e8
+    const raw = r[finMetric.value]
+    if (raw == null) return null
+    return pct ? raw : raw / 1e8
   })
   const rotated = labels.length > 12
   return {
@@ -338,7 +350,8 @@ const finChartOption = computed(() => {
     grid: { left: 64, right: 24, top: 36, bottom: rotated ? 62 : 36 },
     tooltip: {
       trigger: 'axis',
-      valueFormatter: (v: unknown) => v == null ? '—' : `${Number(v).toFixed(2)} 亿元`,
+      valueFormatter: (v: unknown) => v == null ? '—'
+        : pct ? `${Number(v).toFixed(2)}%` : `${Number(v).toFixed(2)} 亿元`,
     },
     xAxis: {
       type: 'category', data: labels,
@@ -347,7 +360,7 @@ const finChartOption = computed(() => {
       axisLine: { lineStyle: { color: '#dfe3ea' } },
     },
     yAxis: {
-      type: 'value', name: '亿元',
+      type: 'value', name: pct ? '%' : '亿元',
       // nameGap 太小会让「亿元」压在容器顶边被切掉（截图验收踩过），配 top:36
       nameGap: 12,
       axisLabel: { color: '#888', fontSize: 11 },
@@ -954,47 +967,51 @@ const chartOption = computed(() => {
                   <el-table-column label="报告期" width="112" fixed>
                     <template #default="{ row }"><b>{{ periodText(row) }}</b></template>
                   </el-table-column>
-                  <el-table-column label="单季归母净利" width="126" align="right">
-                    <template #default="{ row }">{{ fmtYi(row.qParentNetprofit) }}</template>
+                  <!-- 前 9 列为单季值，后 2 列为累计值（顺序 = 用户指定，勿随意调整） -->
+                  <el-table-column label="总收入" width="96" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.qRevenue) }}</template>
                   </el-table-column>
-                  <el-table-column label="累计营业总收入" width="132" align="right">
+                  <el-table-column label="毛利润" width="96" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.qGrossProfit) }}</template>
+                  </el-table-column>
+                  <el-table-column label="毛利率" width="84" align="right">
+                    <template #default="{ row }">{{ fmtRatio(row.qGrossMargin) }}</template>
+                  </el-table-column>
+                  <el-table-column label="销售费用" width="96" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.qSaleExpense) }}</template>
+                  </el-table-column>
+                  <el-table-column label="管理费用" width="96" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.qManageExpense) }}</template>
+                  </el-table-column>
+                  <el-table-column label="研发费用" width="96" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.qResearchExpense) }}</template>
+                  </el-table-column>
+                  <el-table-column label="营业利润" width="96" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.qOperateProfit) }}</template>
+                  </el-table-column>
+                  <el-table-column label="所得税" width="96" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.qIncomeTax) }}</template>
+                  </el-table-column>
+                  <el-table-column label="净利润" width="96" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.qNetprofit) }}</template>
+                  </el-table-column>
+                  <el-table-column label="累计营业总收入" width="124" align="right">
                     <template #default="{ row }">{{ fmtYi(row.revenue) }}</template>
                   </el-table-column>
-                  <el-table-column label="累计归母净利" width="126" align="right">
+                  <el-table-column label="累计归母净利" width="118" align="right">
                     <template #default="{ row }">{{ fmtYi(row.parentNetprofit) }}</template>
-                  </el-table-column>
-                  <el-table-column label="毛利率" width="100" align="right">
-                    <template #default="{ row }">{{ fmtRatio(row.grossMargin) }}</template>
-                  </el-table-column>
-                  <el-table-column label="速动比" width="96" align="right">
-                    <template #default="{ row }">{{ fmtNum(row.quickRatio, 2) }}</template>
-                  </el-table-column>
-                  <el-table-column label="资产负债率" width="108" align="right">
-                    <template #default="{ row }">{{ fmtRatio(row.debtRatio) }}</template>
-                  </el-table-column>
-                  <el-table-column label="经营现金流(累计)" width="140" align="right">
-                    <template #default="{ row }">{{ fmtYi(row.netcashOperate) }}</template>
-                  </el-table-column>
-                  <el-table-column label="股东户数" width="116" align="right">
-                    <template #default="{ row }">
-                      <span :title="row.holderEndDate ? `统计截止日 ${row.holderEndDate}` : ''">
-                        {{ fmtCount(row.holderNum) }}
-                      </span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="源侧修订日" width="116" align="right">
-                    <template #default="{ row }">{{ row.updateDate || '—' }}</template>
                   </el-table-column>
                 </el-table>
                 <p class="src-note report-note">
                   数据来源：东方财富 datacenter 结构化财报接口（无需解析 PDF），报告期从 2016 年起。
-                  利润表与现金流量表是<b>年初至今累计值</b>，「单季」由相邻报告期年内差分得到，
-                  缺上一期时显示「—」；资产负债表是<b>季末时点值，不差分</b>。
-                  毛利率 =（营业收入 − 营业成本）/ 营业收入（分母不是营业总收入），
-                  速动比 =（流动资产 − 存货）/ 流动负债；银行 / 证券 / 保险科目口径不同，这两项与流动比率不适用，显示「—」。
-                  股东户数按报告期所在季度内最后一个统计截止日匹配（悬停可看日期）；
-                  员工数只有<b>年度快照（{{ financialsResult?.employee?.year || '—' }} 年采集）</b>，季报不披露，不随季度变化。
-                  源侧追溯更正会持续更新历史报告期，表内「源侧修订日」为最后修订时间。
+                  表格<b>前 9 列为单季值</b>：一季报直接取累计值，二 / 三 / 四季报由年内相邻报告期差分，
+                  缺上一期时显示「—」；<b>后 2 列为年初至今累计值</b>。
+                  「净利润」是<b>合并口径（含少数股东损益）</b>，与「累计归母净利」不同口径，
+                  两者差额即少数股东损益。
+                  毛利润 = 单季营业收入 − 单季营业成本；毛利率 = 毛利润 / 单季营业收入
+                  （分母是营业收入，不是营业总收入）。
+                  银行 / 证券 / 保险不披露营业成本与毛利，相关列显示「—」。
+                  速动比、资产负债率、经营现金流、股东户数等其他指标暂未在本表展示。
                 </p>
               </template>
             </template>

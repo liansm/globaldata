@@ -278,9 +278,17 @@ CREATE TABLE IF NOT EXISTS stock_employee_snapshots (
 
 
 def sql_view() -> str:
-    """单季差分视图。LAG 只在同年内、且上一期季度号恰好差 1 时才做减法。"""
+    """单季差分视图。LAG 只在同年内、且上一期季度号恰好差 1 时才做减法。
+
+    ⚠ 用 DROP + CREATE 而不是 CREATE OR REPLACE：视图体是 `SELECT q.*`，
+      而 q 是 `f.* + 若干 LAG 列` —— 新加的 LAG 落在 f.* 之后、派生列之前，
+      `q.*` 展开的列位置会变，PG 会报「不能把视图字段名从 q_parent_netprofit
+      改成 prev_sale」。新增列只能追加在视图末尾，所以整段重建。
+      视图没有依赖对象、也没有 GRANT/COMMENT，DROP+CREATE 在同一事务内原子生效。
+    """
     return """
-CREATE OR REPLACE VIEW v_stock_financials_quarterly AS
+DROP VIEW IF EXISTS v_stock_financials_quarterly;
+CREATE VIEW v_stock_financials_quarterly AS
 WITH q AS (
     SELECT f.*,
            LAG(quarter_num)          OVER w AS prev_q,
@@ -288,7 +296,14 @@ WITH q AS (
            LAG(total_operate_income) OVER w AS prev_rev,
            LAG(operate_income)       OVER w AS prev_oi,
            LAG(operate_cost)         OVER w AS prev_cost,
-           LAG(netcash_operate)      OVER w AS prev_cfo
+           LAG(netcash_operate)      OVER w AS prev_cfo,
+           -- 季度对比表用的单季科目（2026-11-09 追加）
+           LAG(sale_expense)         OVER w AS prev_sale,
+           LAG(manage_expense)       OVER w AS prev_manage,
+           LAG(research_expense)     OVER w AS prev_research,
+           LAG(operate_profit)       OVER w AS prev_opprofit,
+           LAG(income_tax)           OVER w AS prev_tax,
+           LAG(netprofit)            OVER w AS prev_netprofit
     FROM stock_financials f
     WINDOW w AS (PARTITION BY code, report_year ORDER BY quarter_num)
 )
@@ -324,7 +339,34 @@ SELECT q.*,
               THEN total_current_assets / total_current_liab
             ELSE NULL END AS current_ratio,
        CASE WHEN total_assets > 0 THEN total_liabilities / total_assets * 100
-            ELSE NULL END AS debt_ratio
+            ELSE NULL END AS debt_ratio,
+       -- ── 2026-11-09 追加：季度对比表用到的单季科目 ──────────────────────
+       -- 一律「年内差分」：Q1 直接取累计值；只有 prev_q 恰好 = 当前-1 才相减，
+       -- 缺上一期 / 跨年首期无 base 时返回 NULL，**绝不用 0 充数**。
+       -- ⚠ 必须追加在已有列之后：CREATE OR REPLACE VIEW 不允许改变原有列的顺序。
+       CASE WHEN quarter_num = 1 THEN sale_expense
+            WHEN prev_q = quarter_num - 1 THEN sale_expense - prev_sale
+            ELSE NULL END AS q_sale_expense,
+       CASE WHEN quarter_num = 1 THEN manage_expense
+            WHEN prev_q = quarter_num - 1 THEN manage_expense - prev_manage
+            ELSE NULL END AS q_manage_expense,
+       CASE WHEN quarter_num = 1 THEN research_expense
+            WHEN prev_q = quarter_num - 1 THEN research_expense - prev_research
+            ELSE NULL END AS q_research_expense,
+       CASE WHEN quarter_num = 1 THEN operate_profit
+            WHEN prev_q = quarter_num - 1 THEN operate_profit - prev_opprofit
+            ELSE NULL END AS q_operate_profit,
+       CASE WHEN quarter_num = 1 THEN income_tax
+            WHEN prev_q = quarter_num - 1 THEN income_tax - prev_tax
+            ELSE NULL END AS q_income_tax,
+       CASE WHEN quarter_num = 1 THEN netprofit
+            WHEN prev_q = quarter_num - 1 THEN netprofit - prev_netprofit
+            ELSE NULL END AS q_netprofit,
+       -- 单季毛利润 = 单季营业收入 − 单季营业成本（分母是 operate_income，不是营业总收入）
+       CASE WHEN quarter_num = 1 THEN operate_income - operate_cost
+            WHEN prev_q = quarter_num - 1
+              THEN (operate_income - operate_cost) - (prev_oi - prev_cost)
+            ELSE NULL END AS q_gross_profit
 FROM q;
 """
 
