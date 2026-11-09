@@ -38,6 +38,14 @@ Data sources
 * 持仓占比为「占净值比例」，股票型基金前十大约 40-60%，不代表全部仓位
 * 基金规模为雪球「最新规模」（亿元），随季报更新
 * 名录含已清盘/终止上市的基金，规模请求会失败，跳过即可
+* ⚠ **港股代码补零撞号**：F10 持仓接口把港股代码补成 6 位，与深市 A 股代码重叠。
+  实测 251 个 A 股代码在 fund_holdings 里同时挂着港股名称：
+  000020「深华发A」只有 2 条、同代码「商汤-W」163 条；
+  000670「盈方微」底下 163 条全是「中国东方航空股份」；000001「平安银行」vs「长和」。
+  ⇒ **按 security_code 反查「哪些基金持有某只 A 股」时必须加名称闸门**
+  （security_name 与 stocks.name 归一化后一致），否则港股持仓会算到 A 股头上。
+  代价：改名前的旧名（*ST柳化 ← 柳化股份）也会被排除，宁缺勿错。
+  详见 .workbuddy/memory/DATASOURCES.md「A 股被哪些公募基金持仓反查」一节。
 
 Incremental updates
 -------------------
@@ -155,6 +163,15 @@ ON CONFLICT (fund_code, report_date, holding_type, security_code) DO UPDATE SET
 SQL_LOG_FETCH = """
 INSERT INTO fetch_log (commodity_key, latest_date, latest_price, change_day)
 VALUES ('funds', %s, NULL, NULL)
+"""
+
+# 本仓库无 migrations，DDL 内联在脚本里，全部幂等。
+# ⚠ fund_holdings 原本只有 (fund_code, report_date) 索引，按 security_code 反查
+#   「哪些基金持有这只股票」会全表扫 147 万行；2026-11-09 实测加索引后
+#   查询 0.106s → 0.0055s。重建表后此索引必须自动补回。
+SQL_ENSURE = """
+CREATE INDEX IF NOT EXISTS idx_fund_holdings_security_date
+    ON fund_holdings(security_code, report_date, holding_type);
 """
 
 
@@ -1119,6 +1136,11 @@ def main() -> int:
     except psycopg2.OperationalError as exc:
         print(f"  [FATAL] 无法连接: {exc}")
         return 1
+
+    # 反查索引与表结构就绪（幂等，重复跑无副作用）
+    with conn:
+        with conn.cursor() as ddl_cur:
+            ddl_cur.execute(SQL_ENSURE)
 
     stat = {"名录": 0, "规模": 0, "规模跳过": 0, "规模失败": 0,
             "持仓行": 0, "持仓跳过基金": 0, "持仓失败": 0}

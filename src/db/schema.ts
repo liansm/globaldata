@@ -255,6 +255,9 @@ export const fundHoldings = pgTable('fund_holdings', {
 }, (t) => [
   unique('fund_holdings_uniq').on(t.fundCode, t.reportDate, t.holdingType, t.securityCode),
   index('idx_fund_holdings_fund_date').on(t.fundCode, t.reportDate),
+  // 按个股反查「哪些基金持有它」：147 万行表若无此索引会全表扫描。
+  // 2026-11-09 实测加了之后 601872 的查询从 0.106s → 0.0055s。
+  index('idx_fund_holdings_security_date').on(t.securityCode, t.reportDate, t.holdingType),
 ])
 
 // --------------------------------------------------------------------------
@@ -737,6 +740,13 @@ export const stocks = pgTable('stocks', {
   name:              varchar('name', { length: 120 }).notNull(),
   // NFKC + 去空白 + 大写的检索键：「万  科Ａ」→「万科A」，供名称搜索用
   nameSearch:        text('name_search'),
+  // 名称拼音首字母缩写，东财 searchapi 权威值（非本地生成）：招商轮船 → ZSLC。
+  // NULL = 源侧未取到，由 fetch_stock_info.py --pinyin-only 下次自动补。
+  namePinyin:        varchar('name_pinyin', { length: 32 }),
+  // 源侧行情时刻（东财 clist f124，Unix 秒→UTC+8），≠ updated_at 的库内写入时刻。
+  // ⚠ 339 只停牌/退市/ST 股源侧给当日 08:00:00 占位，不是最后成交时刻，
+  //   别拿它判断「最后交易日」。
+  quoteTime:         timestamp('quote_time', { withTimezone: true }),
   companyName:       text('company_name'),
   nameEn:            text('name_en'),
   formerName:        text('former_name'),
@@ -780,6 +790,7 @@ export const stocks = pgTable('stocks', {
 }, (t) => [
   index('idx_stocks_name').on(t.name),
   index('idx_stocks_name_search').on(t.nameSearch),
+  index('idx_stocks_name_pinyin').on(t.namePinyin),
   index('idx_stocks_exchange_board').on(t.exchange, t.board),
   index('idx_stocks_region').on(t.region),
   index('idx_stocks_industry').on(t.industry),
@@ -860,4 +871,40 @@ export const stockFundamentals = pgTable('stock_fundamentals', {
 }, (t) => [
   index('idx_stock_fundamentals_quote').on(t.quoteDate),
   index('idx_stock_fundamentals_pe').on(t.peTtm),
+])
+
+// --------------------------------------------------------------------------
+// stock_reports — 每只股票每个报告期（Q1 / 中报 / Q3 / 年报）的**财报 PDF 链接**
+//   ← fetch_stock_reports.py（只存链接，不下载 PDF 内容）
+//
+// ⚠ 口径与来源（改这里前读脚本 docstring）：
+//   ① 沪市 = 上交所 queryCompanyBulletin.do（**没有 New**），全市场按 keyWord+日期窗口
+//      批量查；深市 = 深交所 annList，bigCategoryId 四个值分别对应四类定期报告。
+//   ② `report_year` = 报告期年份（从标题「20XX年...报告」提取），**不是披露年份**：
+//      「2025年年度报告」通常 2026 年才披露。quarter_num 1/2/3/4 用于倒序排序。
+//   ③ 同一 (code, year, quarter) 只留一条**正文**报告：排除摘要 / 英文版 / 更正公告 /
+//      问询函 / 专项报告 / 持续督导；有「（更正后）」正文时优先取更正版。
+//   ④ pdf_url：沪市 https://static.sse.com.cn + URL 字段（脚本 HEAD 会撞 WAF 挑战页，
+//      但浏览器可正常打开，别据此判链接失效）；深市 https://disc.static.szse.cn
+//      + attachPath（直出 application/pdf）。⚠ 深市**不要**加 /download 路径段：
+//      那个变体带 Content-Disposition: attachment，浏览器会下载而不是查看；
+//      两版 PDF 字节完全一致，库内统一存内联版。
+// --------------------------------------------------------------------------
+export const stockReports = pgTable('stock_reports', {
+  id:           bigserial('id', { mode: 'number' }).primaryKey(),
+  code:         varchar('code',        { length: 10  }).notNull(),
+  exchange:     varchar('exchange',    { length: 20  }).notNull(),
+  reportYear:   integer('report_year').notNull(),
+  quarter:      varchar('quarter',     { length: 4   }).notNull(),  // Q1 | H1 | Q3 | FY
+  quarterNum:   integer('quarter_num').notNull(),                   // 1 | 2 | 3 | 4
+  title:        text('title'),
+  pdfUrl:       text('pdf_url').notNull(),
+  publishDate:  date('publish_date'),
+  source:       varchar('source', { length: 12 }).notNull(),        // sse | szse
+  updatedAt:    timestamp('updated_at', { withTimezone: true })
+                  .default(sql`NOW()`).notNull(),
+}, (t) => [
+  unique('stock_reports_uniq').on(t.code, t.reportYear, t.quarter),
+  index('idx_stock_reports_code_period').on(t.code, t.reportYear, t.quarterNum),
+  index('idx_stock_reports_publish').on(t.publishDate),
 ])

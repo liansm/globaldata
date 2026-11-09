@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { use } from 'echarts/core'
 import { CandlestickChart, BarChart, LineChart } from 'echarts/charts'
@@ -10,8 +10,11 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import dayjs from 'dayjs'
-import { fetchStockDetail, fetchStockPrices } from '@/api/stocks'
-import type { StockDetailResult, PricePeriod, PriceBar } from '@/types/stocks'
+import { fetchStockDetail, fetchStockPrices, fetchStockReports, fetchStockHoldings } from '@/api/stocks'
+import type {
+  StockDetailResult, PricePeriod, PriceBar, StockReport,
+  StockFundHolding, HoldingReportDate, StockHoldingsResult,
+} from '@/types/stocks'
 
 use([CanvasRenderer, CandlestickChart, BarChart, LineChart, GridComponent,
      TooltipComponent, DataZoomComponent, LegendComponent, AxisPointerComponent])
@@ -87,8 +90,139 @@ async function loadPrices() {
   }
 }
 
-onMounted(loadDetail)
-watch(code, () => { period.value = 'day'; range.value = '1y'; loadDetail() })
+// ── 财报链接 tab（只展示交易所公告 PDF 链接，不下载正文）────────────────────
+const QUARTER_LABEL: Record<string, string> = {
+  Q1: '第一季度', H1: '中报', Q3: '第三季度', FY: '年报',
+}
+const QUARTER_OPTIONS = [
+  { label: '第一季度', value: 'Q1' }, { label: '中报', value: 'H1' },
+  { label: '第三季度', value: 'Q3' }, { label: '年报', value: 'FY' },
+]
+const activeTab = ref<'profile' | 'reports' | 'holdings'>('profile')
+const reports = ref<StockReport[]>([])
+const reportsTotal = ref(0)
+const reportsLoading = ref(false)
+const reportsError = ref('')
+const reportQuarter = ref('')
+let reportsLoaded = false
+
+// ── 基金持仓 tab：反查 fund_holdings，按持股数（万股）降序，切到 tab 才加载 ──
+const holdings = ref<StockFundHolding[]>([])
+const holdingsTotal = ref(0)
+const holdingsLoading = ref(false)
+const holdingsError = ref('')
+const holdingsFound = ref(false)
+const holdingsSecurityName = ref<string | null>(null)
+const holdingsExcluded = ref<{ name: string; count: number }[]>([])
+const holdingsPage = ref(1)
+const holdingsPageSize = ref(20)
+const holdingReportDate = ref('')
+const holdingReportDates = ref<HoldingReportDate[]>([])
+// 同代码撞号（东财港股补零）或改名前旧名，被名称闸门排除的记录要透明展示
+const excludedText = computed(() => {
+  const xs = holdingsExcluded.value
+  const total = xs.reduce((s, x) => s + x.count, 0)
+  if (!total) return ''
+  const names = xs.slice(0, 3).map(x => `${x.name} ${x.count} 条`).join('、')
+  const more = xs.length > 3 ? ` 等 ${xs.length} 个名称` : ''
+  return `已按当前简称「${holdingsSecurityName.value || '—'}」过滤掉同代码的其他名称记录 ${total} 条（${names}${more}）：东财港股代码补零成 6 位会与 A 股撞号，基金季报也可能沿用改名前的旧简称；这些记录无法确认属于本股票，故不计入。`
+})
+const holdingsSummary = ref<StockHoldingsResult['summary']>({
+  funds: 0, shares: null, marketValue: null,
+})
+let holdingsLoaded = false
+
+async function loadHoldings() {
+  holdingsLoading.value = true
+  holdingsError.value = ''
+  try {
+    const r = await fetchStockHoldings(code.value, {
+      reportDate: holdingReportDate.value || undefined,
+      page: holdingsPage.value,
+      pageSize: holdingsPageSize.value,
+    })
+    holdings.value = r.rows
+    holdingsTotal.value = r.total
+    holdingsSummary.value = r.summary
+    holdingsFound.value = r.found
+    holdingsSecurityName.value = r.securityName
+    holdingsExcluded.value = r.excluded
+    holdingReportDates.value = r.reportDates
+    // 后端会把非法 / 不存在的报告期回退到默认，前端一律以返回值为准
+    holdingReportDate.value = r.reportDate ?? ''
+    holdingsLoaded = true
+  } catch {
+    holdingsError.value = '加载失败，请检查后端服务是否启动'
+    holdings.value = []
+    holdingsTotal.value = 0
+    holdingsFound.value = false
+  } finally {
+    holdingsLoading.value = false
+  }
+}
+function onHoldingDateChange() { holdingsPage.value = 1; loadHoldings() }
+function onHoldingsPage(p: number) { holdingsPage.value = p; loadHoldings() }
+function fmtWan(v: number | null | undefined): string {
+  return v == null ? '—' : v.toLocaleString('zh-CN', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  })
+}
+function fmtRatio(v: number | null): string {
+  return v == null ? '—' : `${v.toFixed(2)}%`
+}
+
+async function loadReports() {
+  reportsLoading.value = true
+  reportsError.value = ''
+  try {
+    const r = await fetchStockReports(code.value, {
+      quarter: reportQuarter.value || undefined, limit: 200,
+    })
+    reports.value = r.rows
+    reportsTotal.value = r.total
+    reportsLoaded = true
+  } catch {
+    reportsError.value = '加载失败，请检查后端服务是否启动'
+  } finally {
+    reportsLoading.value = false
+  }
+}
+
+function periodLabel(r: StockReport) {
+  return `${r.reportYear ?? '—'} ${QUARTER_LABEL[r.quarter] ?? r.quarter}`
+}
+
+// 财报列表按需加载；切回行情 tab 时逼 ECharts 重算宽度（隐藏 pane 里宽度会变 0）
+watch(activeTab, async v => {
+  if (v === 'reports' && !reportsLoaded) await loadReports()
+  if (v === 'holdings' && !holdingsLoaded) await loadHoldings()
+  if (v === 'profile') {
+    await nextTick()
+    window.dispatchEvent(new Event('resize'))
+  }
+})
+
+onMounted(() => {
+  loadDetail()
+  if (route.query.tab === 'reports') activeTab.value = 'reports'
+  if (route.query.tab === 'holdings') activeTab.value = 'holdings'
+})
+watch(code, () => {
+  period.value = 'day'
+  range.value = '1y'
+  reportsLoaded = false
+  reports.value = []
+  holdingsLoaded = false
+  holdings.value = []
+  holdingsFound.value = false
+  holdingsExcluded.value = []
+  holdingsSecurityName.value = null
+  holdingReportDate.value = ''
+  holdingReportDates.value = []
+  holdingsPage.value = 1
+  loadDetail()
+  if (activeTab.value === 'holdings') loadHoldings()
+})
 // 年线一根就是一年，选「1年」只会剩一根 K 线 —— 切到年线时把区间同步成「全部」，
 // 避免 radio 高亮「1年」而图里其实是全历史（标签与数据不能自相矛盾）。
 watch([period, range], () => {
@@ -125,6 +259,16 @@ function fmtNum(v: number | null | undefined, digits = 2) {
 }
 
 const stock = computed(() => detail.value?.stock ?? null)
+
+// 两个时间口径不同：updatedAt = 我们几点抓的，quoteTime = 源侧行情走到几点。
+// 页面严格只显示一行「数据更新」，行情时刻与口径说明放悬停提示，避免日期重复。
+const timeTitle = computed(() => {
+  const s = stock.value
+  if (!s) return ''
+  return `源侧行情时刻 ${s.quoteTime || '—'}（东财 f124）｜ 库内快照写入 ${s.updatedAt || '—'}。`
+    + '「数据更新」是名录刷新时刻，非交易所实时行情时间；'
+    + '停牌 / 退市股的源侧时刻可能是当日 08:00 占位，不是最后成交时刻。'
+})
 const fin = computed(() => detail.value?.fundamentals ?? null)
 const lastBar = computed(() => bars.value.length ? bars.value[bars.value.length - 1] : null)
 
@@ -277,10 +421,12 @@ const chartOption = computed(() => {
         <div class="head-price">
           <div class="big-price" :class="pctClass(stock.changePct)">{{ fmtNum(stock.latestPrice) }}</div>
           <div class="price-sub" :class="pctClass(stock.changePct)">{{ fmtPct(stock.changePct) }}</div>
-          <div class="price-note">行情快照 {{ stock.quoteDate || '—' }}</div>
+          <div class="price-note" :title="timeTitle">数据更新 {{ stock.updatedAt || '—' }}</div>
         </div>
       </div>
 
+      <el-tabs v-model="activeTab" class="stock-tabs">
+        <el-tab-pane label="行情与资料" name="profile">
       <div class="metric-row">
         <div class="metric"><span>总股本</span><b>{{ fmtShares(stock.totalShares) }}</b></div>
         <div class="metric"><span>总市值</span><b>{{ fmtCap(stock.marketCap) }}</b></div>
@@ -420,12 +566,153 @@ const chartOption = computed(() => {
           公司资料来自 F10。行情快照为最近交易日，日线为不复权价。
         </p>
       </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="财报链接" name="reports">
+          <div class="card">
+            <div class="card-head">
+              <h2>定期报告 PDF <small>第一季度 / 中报 / 第三季度 / 年报，按报告期倒序</small></h2>
+              <el-select v-model="reportQuarter" placeholder="全部报告期" clearable
+                         style="width: 150px" @change="loadReports">
+                <el-option v-for="q in QUARTER_OPTIONS" :key="q.value" :label="q.label" :value="q.value" />
+              </el-select>
+            </div>
+            <div v-if="reportsError" class="error-box">{{ reportsError }}</div>
+            <el-table v-else :data="reports" v-loading="reportsLoading" empty-text="暂无财报链接">
+              <el-table-column label="报告期" width="140">
+                <template #default="{ row }"><b>{{ periodLabel(row) }}</b></template>
+              </el-table-column>
+              <el-table-column label="报告名称" min-width="280">
+                <template #default="{ row }">{{ row.title || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="披露日期" width="130">
+                <template #default="{ row }">{{ row.publishDate || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="来源" width="100">
+                <template #default="{ row }">{{ row.source === 'sse' ? '上交所' : '深交所' }}</template>
+              </el-table-column>
+              <el-table-column label="链接" width="130">
+                <template #default="{ row }">
+                  <a :href="row.pdfUrl" target="_blank" rel="noopener noreferrer" class="pdf-link">
+                    查看 PDF ↗
+                  </a>
+                </template>
+              </el-table-column>
+            </el-table>
+            <p class="src-note report-note">
+              共 {{ reportsTotal }} 条 · 只提供交易所公告的 PDF 链接，不下载财报内容。
+              沪市链接来自上交所公告、深市来自深交所公告；「报告期」是财报所属年度/季度，
+              与披露日期不同（例如 2025 年年报通常在 2026 年披露）。
+            </p>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="基金持仓" name="holdings">
+          <div class="card">
+            <div class="card-head">
+              <h2>持有该股的公募基金 <small>按持股数降序 · 报告期 {{ holdingReportDate || '—' }}</small></h2>
+              <el-select v-model="holdingReportDate" placeholder="报告期" style="width: 190px"
+                         @change="onHoldingDateChange">
+                <el-option v-for="d in holdingReportDates" :key="d.date"
+                           :label="d.date + ' (' + d.count + ')'" :value="d.date" />
+              </el-select>
+            </div>
+
+            <div v-if="holdingsError" class="error-box">{{ holdingsError }}</div>
+            <template v-else-if="holdingsFound">
+              <div class="holding-summary">
+                <div><span>持有基金份额</span><b>{{ holdingsSummary.funds.toLocaleString('zh-CN') }} 只</b></div>
+                <div><span>合计持股</span><b>{{ fmtWan(holdingsSummary.shares) }} 万股</b></div>
+                <div><span>合计持仓市值</span><b>{{ fmtWan(holdingsSummary.marketValue) }} 万元</b></div>
+              </div>
+
+              <el-table :data="holdings" v-loading="holdingsLoading"
+                        empty-text="该报告期暂无公募基金持仓披露">
+                <el-table-column label="基金代码" width="110">
+                  <template #default="{ row }">
+                    <router-link :to="{ name: 'fund-detail', params: { code: row.fundCode } }"
+                                 class="fund-link">{{ row.fundCode }}</router-link>
+                  </template>
+                </el-table-column>
+                <el-table-column label="基金名称" min-width="220">
+                  <template #default="{ row }">{{ row.fundName || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="类型" width="160">
+                  <template #default="{ row }">{{ row.fundType || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="基金公司" min-width="180">
+                  <template #default="{ row }">{{ row.fundCompany || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="持股数（万股）" width="150" align="right">
+                  <template #default="{ row }"><b>{{ fmtWan(row.shares) }}</b></template>
+                </el-table-column>
+                <el-table-column label="持仓市值（万元）" width="160" align="right">
+                  <template #default="{ row }">{{ fmtWan(row.marketValue) }}</template>
+                </el-table-column>
+                <el-table-column label="占净值比" width="110" align="right">
+                  <template #default="{ row }">{{ fmtRatio(row.ratio) }}</template>
+                </el-table-column>
+              </el-table>
+
+              <div v-if="holdingsTotal > holdingsPageSize" class="pager">
+                <el-pagination background layout="total, prev, pager, next, jumper"
+                               :total="holdingsTotal" :page-size="holdingsPageSize"
+                               :current-page="holdingsPage" @current-change="onHoldingsPage" />
+              </div>
+            </template>
+            <div v-else class="empty-note">
+              <template v-if="holdingsLoading">加载中…</template>
+              <template v-else>
+                该股暂无与当前简称匹配的公募基金持仓披露
+                （可能未被任何基金列入前十大重仓，或记录来自改名前的旧名）。
+                <span v-if="excludedText" class="excluded-note">{{ excludedText }}</span>
+              </template>
+            </div>
+
+            <p class="src-note report-note">
+              口径：东财 F10 季报披露的<strong>前十大重仓股</strong>（不是全部持仓），
+              持股数单位为<strong>万股</strong>、持仓市值为<strong>万元</strong>、占比为占基金净值比例。
+              按<strong>基金份额</strong>统计，同一产品 A / C 类分开计（如鹏华双债加利 A、C 各占一行），
+              因此「持有基金份额」不等于基金产品只数。默认展示最新季度报告期，
+              非季末的零星披露可在下拉中切换。共 {{ holdingsTotal }} 条记录。
+              <span v-if="holdingsFound && excludedText" class="excluded-note">{{ excludedText }}</span>
+            </p>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </template>
   </div>
 </template>
 
 <style scoped>
 .detail-page { padding: 20px 28px 48px; max-width: 1400px; }
+.stock-tabs { margin-top: 4px; }
+.stock-tabs :deep(.el-tabs__content) { overflow: visible; }
+.pdf-link { color: #409eff; font-weight: 600; }
+.pdf-link:hover { text-decoration: underline; }
+.report-note { margin-top: 12px; font-size: 11.5px; color: #aaa; line-height: 1.7; }
+
+/* 基金持仓 tab */
+.holding-summary {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px;
+}
+.holding-summary > div {
+  background: #f8fafc; border: 1px solid #eef1f6; border-radius: 8px;
+  padding: 10px 14px; display: flex; flex-direction: column; gap: 4px;
+}
+.holding-summary span { font-size: 12px; color: #999; }
+.holding-summary b { font-size: 16px; color: #1a1a2e; font-weight: 650; }
+.fund-link {
+  color: #409eff; font-family: ui-monospace, Consolas, monospace;
+  font-weight: 600; text-decoration: none;
+}
+.fund-link:hover { text-decoration: underline; }
+.empty-note {
+  padding: 24px; text-align: center; color: #999; font-size: 13px;
+  background: #fafbfc; border-radius: 8px;
+}
+.excluded-note { display: block; margin-top: 8px; color: #a67c13; text-align: left; line-height: 1.7; }
+.pager { display: flex; justify-content: flex-end; margin-top: 14px; }
 .top-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
 .crumb { font-size: 12px; color: #9aa0ac; }
 .error-box { padding: 14px 18px; background: #fff2f0; color: #c0392b; border-radius: 8px; }
@@ -445,7 +732,7 @@ const chartOption = computed(() => {
 .head-price { text-align: right; min-width: 140px; }
 .big-price { font-size: 30px; font-weight: 700; line-height: 1.1; }
 .price-sub { font-size: 15px; font-weight: 600; margin-top: 4px; }
-.price-note { font-size: 11px; color: #aaa; margin-top: 6px; }
+.price-note { font-size: 11px; color: #aaa; margin-top: 6px; cursor: help; }
 .up { color: #e04b4b; } .down { color: #17a673; } .flat { color: #333; }
 
 .metric-row {

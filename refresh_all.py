@@ -108,6 +108,11 @@ FETCH_SCRIPTS = [
     #   每次覆盖写同一批 code、不产生新行；股息率由「近12月已实施分红 / 最新价」自算，
     #   ⚠ 不采用东财 f133（口径不统一，见脚本 docstring）。
     ("fetch_stock_fundamentals.py", "A股每股财务指标（EPS/PE/股息/股息率/每股净资产/市净率）"),
+    # ④ 季度财报 PDF 链接：上交所 queryCompanyBulletin.do + 深交所 annList，只存链接不下载正文。
+    #   默认增量只查最近 20 天新披露公告（约 1~2 分钟）；首次全量手动跑：
+    #     python fetch_stock_reports.py --no-recent --years 10   （近 10 年，可续跑）
+    #     python fetch_stock_reports.py --no-recent --full       （2001 起全历史）
+    ("fetch_stock_reports.py",      "A股季度财报链接（上交所/深交所公告 PDF，增量）"),
     ("fetch_vlcc_fleet.py",        "中国船东 VLCC 名录（招商轮船在役船队 + 中远海能 2021-06 官方快照）"),
     # ⚠ VLCC 船位（fetch_vlcc_position_hifleet.py）**2026-10-30 起不接入默认刷新**，
     #   而是放进 OPT_IN_SCRIPTS（见下方定义），原因是耗时：一轮约 90 秒、
@@ -652,11 +657,14 @@ STATUS_QUERIES = [
                    COUNT(region) AS with_region,
                    COUNT(industry_csrc) AS with_industry,
                    COUNT(latest_price_date) AS with_prices,
+                   COUNT(name_pinyin) AS with_pinyin,
+                   COUNT(quote_time) AS with_quote_time,
                    MAX(latest_price_date)::text AS price_date
             FROM stocks
         """,
         "cols": ["total", "with_intro", "with_shares", "with_region",
-                 "with_industry", "with_prices", "price_date"],
+                 "with_industry", "with_prices", "with_pinyin",
+                 "with_quote_time", "price_date"],
         "optional": True,
     },
     {
@@ -701,6 +709,22 @@ STATUS_QUERIES = [
         """,
         "cols": ["rows", "with_eps", "with_pe", "with_bvps", "with_div",
                  "quote_date", "report_date"],
+        "optional": True,
+    },
+    {
+        # 财报链接：按 code+报告期年份+季度唯一，一季报/中报/三季报/年报各一条。
+        # 报告期年份不是披露年份（2025 年年报通常 2026 年披露）。
+        "title": "stock_reports  (季度财报 PDF 链接，不下载正文)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT code) AS stocks,
+                   MIN(report_year)::text AS earliest,
+                   MAX(report_year)::text AS latest,
+                   COUNT(*) FILTER (WHERE source='sse') AS sse,
+                   COUNT(*) FILTER (WHERE source='szse') AS szse
+            FROM stock_reports
+        """,
+        "cols": ["rows", "stocks", "earliest", "latest", "sse", "szse"],
         "optional": True,
     },
 ]
@@ -830,6 +854,7 @@ CLEAR_TABLES = [
     "stock_prices",
     "stock_industries",
     "stock_fundamentals",
+    "stock_reports",
     "stocks",
     "vlcc_positions",
     "vlcc_vessels",
