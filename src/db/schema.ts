@@ -743,6 +743,9 @@ export const stocks = pgTable('stocks', {
   // 名称拼音首字母缩写，东财 searchapi 权威值（非本地生成）：招商轮船 → ZSLC。
   // NULL = 源侧未取到，由 fetch_stock_info.py --pinyin-only 下次自动补。
   namePinyin:        varchar('name_pinyin', { length: 32 }),
+  // 名称全拼（本地 pypinyin 生成，逐字用东财权威首字母约束多音字）：
+  // 招商轮船 → ZHAOSHANGLUNCHUAN，支持 zhaos 这类全拼前缀搜索。
+  namePinyinFull:    varchar('name_pinyin_full', { length: 64 }),
   // 源侧行情时刻（东财 clist f124，Unix 秒→UTC+8），≠ updated_at 的库内写入时刻。
   // ⚠ 339 只停牌/退市/ST 股源侧给当日 08:00:00 占位，不是最后成交时刻，
   //   别拿它判断「最后交易日」。
@@ -791,6 +794,7 @@ export const stocks = pgTable('stocks', {
   index('idx_stocks_name').on(t.name),
   index('idx_stocks_name_search').on(t.nameSearch),
   index('idx_stocks_name_pinyin').on(t.namePinyin),
+  index('idx_stocks_name_pinyin_full').on(t.namePinyinFull),
   index('idx_stocks_exchange_board').on(t.exchange, t.board),
   index('idx_stocks_region').on(t.region),
   index('idx_stocks_industry').on(t.industry),

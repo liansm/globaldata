@@ -131,8 +131,8 @@ const activeCount = computed(() =>
 
     <div class="filter-bar">
       <el-input
-        v-model="q" placeholder="搜索代码 / 名称 / 拼音首字母，如 600519、茅台、ZSLC" clearable
-        style="width: 330px" @input="onSearchInput" @keyup.enter="immediateSearch"
+        v-model="q" placeholder="搜索代码 / 名称 / 拼音，如 600519、茅台、ZSLC、zhaos" clearable
+        style="width: 370px" @input="onSearchInput" @keyup.enter="immediateSearch"
         @clear="immediateSearch"
       />
       <el-select v-model="exchange" placeholder="交易所" clearable style="width: 120px">

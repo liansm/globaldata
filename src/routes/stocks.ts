@@ -143,8 +143,10 @@ export async function stocksRoutes(app: FastifyInstance) {
     const codeQ    = q ? escLike(q) : null
     const likeQ    = q ? `%${escLike(q)}%` : null
     const likeN    = q ? `%${escLike(normName(q))}%` : null
-    // 拼音首字母：源侧只给缩写（ZSLC），不支持全拼。仅纯字母/数字输入启用，
-    // 中文/符号查询不白扫拼音列，也不会带进 % / _ 通配符。
+    // 拼音搜索两列：name_pinyin = 东财首字母缩写（ZSLC），
+    // name_pinyin_full = 本地生成的全拼（ZHAOSHANGLUNCHUAN，逐字用东财权威首字母
+    // 约束多音字）。两者都按**前缀**匹配，所以 zs / zhaos / zhaoshang 都能命中招商系。
+    // 仅纯字母数字输入启用，中文/符号查询不白扫拼音列，也带不进 % / _ 通配符。
     const pinyinQ  = q && /^[A-Za-z0-9]+$/.test(q) ? q.toUpperCase() : null
 
     const cond: SQL = sql`
@@ -152,7 +154,8 @@ export async function stocksRoutes(app: FastifyInstance) {
               OR s.name ILIKE ${likeQ}::text ESCAPE '!'
               OR s.name_search LIKE ${likeN}::text ESCAPE '!'
               OR (${pinyinQ}::text IS NOT NULL
-                  AND s.name_pinyin LIKE ${pinyinQ}::text || '%'))
+                  AND (s.name_pinyin LIKE ${pinyinQ}::text || '%'
+                       OR s.name_pinyin_full LIKE ${pinyinQ}::text || '%')))
     AND (${exchange}::text IS NULL OR s.exchange = ${exchange})
     AND (${board}::text    IS NULL OR s.board    = ${board})
     AND (${region}::text   IS NULL OR s.region   = ${region})
@@ -172,10 +175,11 @@ export async function stocksRoutes(app: FastifyInstance) {
         FROM ${stocks} s
         LEFT JOIN stock_fundamentals f ON f.code = s.code
         WHERE ${cond}
-        -- 首字母完整命中（输入 ZSLC 恰好等于某只票的简拼）优先置顶；
-        -- 其余仍按选定排序。拼音未回填的行 name_pinyin 为 NULL，不影响其位置。
+        -- 拼音完整命中（简拼 ZSLC 或全拼 ZHAOSHANGLUNCHUAN）优先置顶；
+        -- 其余仍按选定排序。未回填的行两列均为 NULL，不影响其位置。
         ORDER BY CASE WHEN ${pinyinQ}::text IS NOT NULL
-                           AND s.name_pinyin = ${pinyinQ}::text THEN 0 ELSE 1 END,
+                           AND (s.name_pinyin = ${pinyinQ}::text
+                                OR s.name_pinyin_full = ${pinyinQ}::text) THEN 0 ELSE 1 END,
                  CASE WHEN ${sort} = 'marketCap' THEN s.market_cap END DESC NULLS LAST,
                  CASE WHEN ${sort} = 'changePct' THEN s.change_pct END DESC NULLS LAST,
                  s.code ASC
