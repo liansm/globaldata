@@ -21,6 +21,14 @@ const PERIODS: Record<string, string> = {
 
 type StockRow = Record<string, unknown>
 
+// 合计持股（万股）× 1e4 = 股，再除以股本（股）得百分比。
+// ⚠ 只用**最新股本快照**，未按历史报告期回溯；stocks.total_shares 缺失时返回 null，
+//   前端不渲染占比（不要用 0 充数，那会显示成「占总股本 0%」）。
+const pctOfShares = (sharesWan: number | null, baseShares: number | null): number | null =>
+  sharesWan != null && baseShares != null && baseShares > 0
+    ? Number(((sharesWan * 1e4) / baseShares * 100).toFixed(4))
+    : null
+
 function mapStock(r: StockRow) {
   return {
     code:             r.code,
@@ -396,7 +404,7 @@ export async function stocksRoutes(app: FastifyInstance) {
           AND to_char(report_date, 'MM-DD') IN (${quarterMd})
         GROUP BY 1 ORDER BY 2 DESC
       `),
-      db.execute(sql`SELECT name FROM ${stocks} WHERE code = ${code} LIMIT 1`),
+      db.execute(sql`SELECT name, total_shares, float_shares FROM ${stocks} WHERE code = ${code} LIMIT 1`),
       // 被排除的非季末记录数（含源侧 ETF 建仓 / 临时披露），仅用于透明展示
       db.execute(sql`
         SELECT COUNT(*)::int AS n FROM fund_holdings
@@ -405,7 +413,11 @@ export async function stocksRoutes(app: FastifyInstance) {
       `),
     ])
     const ignoredNonQuarter = Number((ignoredRes.rows as StockRow[])[0]?.n ?? 0)
-    const stockName = (stockRes.rows as StockRow[])[0]?.name
+    const stockRow = (stockRes.rows as StockRow[])[0]
+    const stockName = stockRow?.name
+    // stocks.total_shares / float_shares 单位 = 股（东财 f84/f85）
+    const totalShares = toNum(stockRow?.total_shares)
+    const floatShares = toNum(stockRow?.float_shares)
     const nameKey = (s: unknown) => normName(String(s ?? '')).replace(/[*-]/g, '')
     const rawName = stockName == null ? '' : String(stockName)
     const target  = stockName == null ? null : nameKey(rawName)
@@ -431,7 +443,10 @@ export async function stocksRoutes(app: FastifyInstance) {
 
     const base = {
       code, securityName: stockName ?? null, excluded, ignoredNonQuarter, matchedAlias,
-      summary: { funds: 0, shares: null, marketValue: null },
+      summary: {
+        funds: 0, shares: null, marketValue: null,
+        totalShares, floatShares, shareRatio: null, floatShareRatio: null,
+      },
       rows: [], total: 0, page, pageSize,
     }
     if (!accepted.length) {
@@ -487,13 +502,19 @@ export async function stocksRoutes(app: FastifyInstance) {
       `),
     ])
     const a = (agg.rows as StockRow[])[0] ?? {}
+    const sumShares = toNum(a.shares)
     return {
       found: true, code, reportDate, reportDates: dateRows,
       securityName: stockName ?? null, excluded, ignoredNonQuarter, matchedAlias,
       summary: {
         funds:       Number(a.n ?? 0),
-        shares:      toNum(a.shares),
+        shares:      sumShares,
         marketValue: toNum(a.market_value),
+        totalShares,
+        floatShares,
+        // 占比口径：季报披露的公募基金合计持股（万股）÷ 最新股本（股）
+        shareRatio:      pctOfShares(sumShares, totalShares),
+        floatShareRatio: pctOfShares(sumShares, floatShares),
       },
       rows: (list.rows as StockRow[]).map(r => ({
         fundCode:    String(r.fund_code),

@@ -134,6 +134,30 @@ const excludedText = computed(() => {
 })
 const holdingsSummary = ref<StockHoldingsResult['summary']>({
   funds: 0, shares: null, marketValue: null,
+  totalShares: null, floatShares: null, shareRatio: null, floatShareRatio: null,
+})
+
+// 股本用亿股 / 万股自适应，比一律「万股」好读（807,453.85 万股 → 80.75 亿股）
+function fmtShareCount(v: number | null): string {
+  if (v == null) return '—'
+  return Math.abs(v) >= 1e8
+    ? `${(v / 1e8).toFixed(2)} 亿股`
+    : `${(v / 1e4).toFixed(2)} 万股`
+}
+
+// 占比悬浮说明：把分子分母和口径一次讲清，避免被当成「全部公募持仓」或「报告期时点股本」
+const holdingsRatioTitle = computed(() => {
+  const s = holdingsSummary.value
+  if (s.shareRatio == null) return ''
+  const parts = [
+    `合计持股 ${fmtWan(s.shares)} 万股 ÷ 最新总股本 ${fmtShareCount(s.totalShares)}`,
+  ]
+  // 总股本 = 流通股时（全流通）再说「占流通股」是重复信息
+  if (s.floatShareRatio != null && Math.abs(s.floatShareRatio - s.shareRatio) >= 0.01) {
+    parts.push(`相当于占流通股 ${s.floatShareRatio.toFixed(2)}%`)
+  }
+  parts.push('股本取当前快照，历史报告期的占比未按当时股本回溯；分子仅为季报披露的公募基金前十大重仓合计')
+  return parts.join('；')
 })
 let holdingsLoaded = false
 
@@ -992,7 +1016,17 @@ const chartOption = computed(() => {
             <template v-else-if="holdingsFound">
               <div class="holding-summary">
                 <div><span>持有基金份额</span><b>{{ holdingsSummary.funds.toLocaleString('zh-CN') }} 只</b></div>
-                <div><span>合计持股</span><b>{{ fmtWan(holdingsSummary.shares) }} 万股</b></div>
+                <div>
+                  <span>合计持股</span>
+                  <b>{{ fmtWan(holdingsSummary.shares) }} 万股</b>
+                  <i v-if="holdingsSummary.shareRatio != null" class="holding-ratio"
+                     :title="holdingsRatioTitle">
+                    占总股本 {{ holdingsSummary.shareRatio.toFixed(2) }}%
+                  </i>
+                  <i v-else class="holding-ratio muted" title="源侧未取到该股总股本，无法计算占比">
+                    占总股本 —
+                  </i>
+                </div>
                 <div><span>合计持仓市值</span><b>{{ fmtWan(holdingsSummary.marketValue) }} 万元</b></div>
               </div>
 
@@ -1044,6 +1078,9 @@ const chartOption = computed(() => {
               持股数单位为<strong>万股</strong>、持仓市值为<strong>万元</strong>、占比为占基金净值比例。
               按<strong>基金份额</strong>统计，同一产品 A / C 类分开计（如鹏华双债加利 A、C 各占一行），
               因此「持有基金份额」不等于基金产品只数。
+              <strong>占总股本</strong> = 合计持股 ÷ <strong>最新总股本</strong>
+              （stocks 当前快照，<strong>未</strong>按报告期回溯送转 / 增发前后股本），
+              分子同样只含上述披露口径的合计持股，不等于公募基金对该股的全部持仓。
               <strong>只统计季度末报告期</strong>（03-31 / 06-30 / 09-30 / 12-31），
               共 {{ holdingsTotal }} 条记录。
               <span v-if="ignoredNonQuarter" class="excluded-note">
@@ -1146,6 +1183,12 @@ const chartOption = computed(() => {
 }
 .holding-summary span { font-size: 12px; color: #999; }
 .holding-summary b { font-size: 16px; color: #1a1a2e; font-weight: 650; }
+/* 合计持股占总股本：与股数同格，小字灰蓝，鼠标悬浮给出分子分母与口径 */
+.holding-ratio {
+  font-size: 12px; font-style: normal; color: #3f5568; font-weight: 500;
+  font-variant-numeric: tabular-nums; cursor: help;
+}
+.holding-ratio.muted { color: #bbb; cursor: default; }
 .fund-link {
   color: #409eff; font-family: ui-monospace, Consolas, monospace;
   font-weight: 600; text-decoration: none;

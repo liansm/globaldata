@@ -172,8 +172,16 @@ export interface StockHoldingsResult {
   matchedAlias: string | null
   summary: {
     funds: number               // 基金份额只数（A/C 类分开计），不是产品只数
-    shares: number | null
-    marketValue: number | null
+    shares: number | null       // 合计持股，万股
+    marketValue: number | null  // 合计持仓市值，万元
+    /** 最新总股本（股），stocks.total_shares；缺失为 null */
+    totalShares: number | null
+    /** 最新流通股本（股），stocks.float_shares；缺失为 null */
+    floatShares: number | null
+    /** 合计持股占总股本 %（已 ×100，如 6.6411 表示 6.6411%）；股本缺失时为 null */
+    shareRatio: number | null
+    /** 合计持股占流通股 %；缺失时为 null */
+    floatShareRatio: number | null
   }
   rows: StockFundHolding[]
   total: number
