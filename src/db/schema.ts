@@ -10,6 +10,8 @@ import {
   bigserial,
   bigint,
   boolean,
+  jsonb,
+  primaryKey,
   unique,
   index,
 } from 'drizzle-orm/pg-core'
@@ -911,4 +913,146 @@ export const stockReports = pgTable('stock_reports', {
   unique('stock_reports_uniq').on(t.code, t.reportYear, t.quarter),
   index('idx_stock_reports_code_period').on(t.code, t.reportYear, t.quarterNum),
   index('idx_stock_reports_publish').on(t.publishDate),
+])
+
+// --------------------------------------------------------------------------
+// A 股财报三表（2026-11-09 落地，fetch_stock_financials.py）
+//
+// ⚠ 八条口径，改表 / 改 API / 改 UI 之前必须读（全部实跑验证过）：
+//   ① 一行 = 一只股票 × 一个**报告期**，三张表**合并成一行**（不是三张表三行）。
+//      主键 (code, report_date)。三张表由脚本分三次 UPSERT，每次只 UPDATE 自己的列，
+//      raw 用 jsonb `||` 按键合并 —— 任一表缺报不会清空其它两张表已入库的值。
+//   ② 流量表（利润表 / 现金流量表）是**年初至今累计值**，不是单季！
+//      单季一律由视图 `v_stock_financials_quarterly` 用 LAG 年内差分算，**不落表**
+//      （照 stock_prices 周/月线不落派生表的先例）。资产负债表是**季末时点值，不差分**。
+//      差分要求上一期 quarter_num 恰好 = 当前−1，缺季返回 NULL，不用 0 充数。
+//   ③ 毛利率分母必须是 `operate_income`（营业收入），**不是** `total_operate_income`
+//      （营业总收入含利息 / 手续费等）。茅台 2026Q3：前者 89.581094% 与东财 XSMLL
+//      完全一致，后者 89.761896% 差 0.18pp。速动比 (流动资产−存货)/流动负债
+//      实测 5.5505 = 东财 SD 5.550459。
+//   ④ 金融业（银行 / 证券 / 保险）**毛利率、速动比不适用**（科目口径不同），UI 显示「—」。
+//      源侧四套模板：G=通用 B=银行 S=证券 I=保险。利润表 G 覆盖全部四类；
+//      但 G 的资产负债表 / 现金流表对金融股**返回空**，必须走 B/S/I。
+//      inc_source / bal_source / cf_source 记各自实际的 reportName，便于排查。
+//   ⑤ 全市场按报告期返回混着 .BJ / .NQ / A25xxx 等**非目标主体**（2015 年报 count
+//      高达 19082），脚本一律按 `stocks` 名录 5562 只过滤后才入库。
+//   ⑥ notice_date / update_date = 三张表里**最晚**的那个（GREATEST）。
+//      ⚠ 源侧追溯更正全年都会发生（2026-11-09 仍有 2024 年报的 UPDATE），
+//      所以增量按 `UPDATE_DATE` 回看，而不是「只在披露季跑」。
+//   ⑦ raw = {"BALANCE":{...},"INCOME":{...},"CASHFLOW":{...}}，保有值全部原始字段
+//      （319 / 203 / 254 个），将来加科目不用重抓。金额单位**元**，currency=CNY。
+//   ⑧ 报告期**起点 2016-01-01**（用户 2026-11-09 拍板「近 10 年」）。
+//      源侧 1990 年报 / 2002 季报起就有，需要更早时 `--since 1990-01-01 --full`。
+//
+// 相关表：stock_holder_counts（股东户数，END_DATE 是统计截止日，不必等于季末）、
+//         stock_employee_snapshots（员工数，只有年报口径的当前快照，一年一条）。
+// --------------------------------------------------------------------------
+export const stockFinancials = pgTable('stock_financials', {
+  code:                 varchar('code', { length: 10 }).notNull(),
+  reportDate:           date('report_date').notNull(),
+  reportYear:           integer('report_year').notNull(),
+  quarterNum:           integer('quarter_num').notNull(),        // 1 | 2 | 3 | 4
+  reportType:           varchar('report_type', { length: 12 }), // 一季报|中报|三季报|年报
+  orgType:              varchar('org_type', { length: 12 }),    // 通用|银行|证券|保险
+  noticeDate:           date('notice_date'),
+  updateDate:           date('update_date'),
+  currency:             varchar('currency', { length: 8 }),
+
+  // ── 利润表（累计） ──────────────────────────────────────────────────────
+  totalOperateIncome:   numeric('total_operate_income',  { precision: 24, scale: 2 }),
+  operateIncome:        numeric('operate_income',         { precision: 24, scale: 2 }),
+  operateCost:          numeric('operate_cost',           { precision: 24, scale: 2 }),
+  totalOperateCost:     numeric('total_operate_cost',     { precision: 24, scale: 2 }),
+  operateProfit:        numeric('operate_profit',         { precision: 24, scale: 2 }),
+  totalProfit:          numeric('total_profit',           { precision: 24, scale: 2 }),
+  parentNetprofit:      numeric('parent_netprofit',       { precision: 24, scale: 2 }),
+  netprofit:            numeric('netprofit',              { precision: 24, scale: 2 }),
+  incomeTax:            numeric('income_tax',             { precision: 24, scale: 2 }),
+  saleExpense:          numeric('sale_expense',           { precision: 24, scale: 2 }),
+  manageExpense:        numeric('manage_expense',         { precision: 24, scale: 2 }),
+  financeExpense:       numeric('finance_expense',        { precision: 24, scale: 2 }),
+  researchExpense:      numeric('research_expense',       { precision: 24, scale: 2 }),
+  basicEps:             numeric('basic_eps',              { precision: 16, scale: 4 }),
+  dilutedEps:           numeric('diluted_eps',            { precision: 16, scale: 4 }),
+
+  // ── 资产负债表（季末时点，禁止差分） ────────────────────────────────────
+  totalAssets:          numeric('total_assets',          { precision: 24, scale: 2 }),
+  totalCurrentAssets:   numeric('total_current_assets',  { precision: 24, scale: 2 }),
+  totalLiabilities:     numeric('total_liabilities',     { precision: 24, scale: 2 }),
+  totalCurrentLiab:     numeric('total_current_liab',    { precision: 24, scale: 2 }),
+  totalEquity:          numeric('total_equity',          { precision: 24, scale: 2 }),
+  totalParentEquity:    numeric('total_parent_equity',   { precision: 24, scale: 2 }),
+  minorityEquity:       numeric('minority_equity',       { precision: 24, scale: 2 }),
+  monetaryfunds:        numeric('monetaryfunds',         { precision: 24, scale: 2 }),
+  accountsRece:         numeric('accounts_rece',         { precision: 24, scale: 2 }),
+  inventory:            numeric('inventory',             { precision: 24, scale: 2 }),
+  fixedAsset:           numeric('fixed_asset',           { precision: 24, scale: 2 }),
+  cip:                  numeric('cip',                   { precision: 24, scale: 2 }),
+  goodwill:             numeric('goodwill',              { precision: 24, scale: 2 }),
+  shortLoan:            numeric('short_loan',            { precision: 24, scale: 2 }),
+  longLoan:             numeric('long_loan',             { precision: 24, scale: 2 }),
+  accountsPayable:      numeric('accounts_payable',      { precision: 24, scale: 2 }),
+
+  // ── 现金流量表（累计） ──────────────────────────────────────────────────
+  netcashOperate:       numeric('netcash_operate',       { precision: 24, scale: 2 }),
+  netcashInvest:        numeric('netcash_invest',        { precision: 24, scale: 2 }),
+  netcashFinance:       numeric('netcash_finance',       { precision: 24, scale: 2 }),
+  salesServices:        numeric('sales_services',        { precision: 24, scale: 2 }),
+  payStaffCash:         numeric('pay_staff_cash',        { precision: 24, scale: 2 }),
+  constructLongAsset:   numeric('construct_long_asset',  { precision: 24, scale: 2 }),
+  cceAdd:               numeric('cce_add',               { precision: 24, scale: 2 }),
+  beginCce:             numeric('begin_cce',             { precision: 24, scale: 2 }),
+  endCce:               numeric('end_cce',               { precision: 24, scale: 2 }),
+
+  incSource:            varchar('inc_source', { length: 40 }),
+  balSource:            varchar('bal_source', { length: 40 }),
+  cfSource:             varchar('cf_source',  { length: 40 }),
+  raw:                  jsonb('raw'),
+  source:               varchar('source', { length: 200 }),
+  updatedAt:            timestamp('updated_at', { withTimezone: true })
+                          .default(sql`NOW()`).notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.code, t.reportDate] }),
+  index('idx_stock_financials_date').on(t.reportDate),
+  index('idx_stock_financials_update').on(t.updateDate),
+])
+
+// 股东户数：end_date 是**统计截止日**，茅台 64 期里有 02 月 6 期 / 04 月 1 期，
+// 不必等于季末。映射到季度时取「该季内最后一个 end_date」，不硬凑成季末。
+export const stockHolderCounts = pgTable('stock_holder_counts', {
+  code:             varchar('code', { length: 10 }).notNull(),
+  endDate:          date('end_date').notNull(),
+  holderNum:        bigint('holder_num', { mode: 'number' }),
+  preHolderNum:     bigint('pre_holder_num', { mode: 'number' }),
+  holderNumChange:  bigint('holder_num_change', { mode: 'number' }),
+  // ⚠ 存的是**百分比数值**（-6.0863 表示 −6.09%），不是小数比例。
+  //   新股上市首期 PRE_HOLDER_NUM 基数极小（个位数），涨幅可达 1.6e8%，
+  //   精度 12 装不下 → 2026-11-09 全量在 34 万行处 overflow 回滚，改 24。
+  holderNumRatio:   numeric('holder_num_ratio', { precision: 24, scale: 4 }),
+  avgHoldNum:       numeric('avg_hold_num',    { precision: 20, scale: 4 }),
+  avgMarketCap:     numeric('avg_market_cap',  { precision: 24, scale: 2 }),
+  totalMarketCap:   numeric('total_market_cap',{ precision: 24, scale: 2 }),
+  totalAShares:     numeric('total_a_shares',  { precision: 24, scale: 2 }),
+  noticeDate:       date('notice_date'),
+  changeReason:     text('change_reason'),
+  source:           varchar('source', { length: 200 }),
+  updatedAt:        timestamp('updated_at', { withTimezone: true })
+                      .default(sql`NOW()`).notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.code, t.endDate] }),
+  index('idx_stock_holder_counts_notice').on(t.noticeDate),
+])
+
+// 员工数：季报不披露，源侧只有**当前快照**（RPT_F10_BASIC_ORGINFO.EMP_NUM，
+// 无报告期字段）。一年存一条，逐年累积成历史；不要宣称「逐季度员工数」。
+export const stockEmployeeSnapshots = pgTable('stock_employee_snapshots', {
+  code:          varchar('code', { length: 10 }).notNull(),
+  snapshotYear:  integer('snapshot_year').notNull(),
+  empNum:        integer('emp_num'),
+  collectedAt:   date('collected_at'),
+  source:        varchar('source', { length: 200 }),
+  updatedAt:     timestamp('updated_at', { withTimezone: true })
+                   .default(sql`NOW()`).notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.code, t.snapshotYear] }),
 ])

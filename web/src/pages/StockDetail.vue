@@ -10,10 +10,12 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import dayjs from 'dayjs'
-import { fetchStockDetail, fetchStockPrices, fetchStockReports, fetchStockHoldings } from '@/api/stocks'
+import { fetchStockDetail, fetchStockPrices, fetchStockReports, fetchStockHoldings,
+         fetchStockFinancials } from '@/api/stocks'
 import type {
   StockDetailResult, PricePeriod, PriceBar, StockReport,
   StockFundHolding, HoldingReportDate, StockHoldingsResult,
+  StockFinancialRow, StockFinancialsResult,
 } from '@/types/stocks'
 
 use([CanvasRenderer, CandlestickChart, BarChart, LineChart, GridComponent,
@@ -98,7 +100,7 @@ const QUARTER_OPTIONS = [
   { label: '第一季度', value: 'Q1' }, { label: '中报', value: 'H1' },
   { label: '第三季度', value: 'Q3' }, { label: '年报', value: 'FY' },
 ]
-const activeTab = ref<'profile' | 'reports' | 'holdings'>('profile')
+const activeTab = ref<'profile' | 'reports' | 'holdings' | 'financials'>('profile')
 const reports = ref<StockReport[]>([])
 const reportsTotal = ref(0)
 const reportsLoading = ref(false)
@@ -133,6 +135,96 @@ const holdingsSummary = ref<StockHoldingsResult['summary']>({
   funds: 0, shares: null, marketValue: null,
 })
 let holdingsLoaded = false
+
+// ── 财报三表 tab：逐季度对比（累计值 / 单季差分 + 派生指标）──────────────────
+// 口径：利润表与现金流量表是「年初至今累计」，单季由后端视图 LAG 差分；
+// 资产负债表是季末时点值，不差分；金融业毛利率 / 速动比不适用（后端置 null）。
+const financials = ref<StockFinancialRow[]>([])
+const financialsResult = ref<StockFinancialsResult | null>(null)
+const financialsLoading = ref(false)
+const financialsError = ref('')
+const financialsFound = ref(false)
+const finMetric = ref<'qNetprofit' | 'qRevenue' | 'cumNetprofit'>('qNetprofit')
+let financialsLoaded = false
+
+async function loadFinancials() {
+  financialsLoading.value = true
+  financialsError.value = ''
+  try {
+    const r = await fetchStockFinancials(code.value, { limit: 60 })
+    financialsResult.value = r
+    financials.value = r.rows
+    financialsFound.value = r.found
+    financialsLoaded = true
+    await nextTick()
+    window.dispatchEvent(new Event('resize'))  // 隐藏 pane 里 ECharts 宽度会算成 0
+  } catch {
+    financialsError.value = '加载失败，请检查后端服务是否启动'
+    financials.value = []
+    financialsFound.value = false
+  } finally {
+    financialsLoading.value = false
+  }
+}
+
+function fmtYi(v: number | null | undefined): string {
+  return v == null ? '—' : (v / 1e8).toFixed(2)
+}
+function fmtCount(v: number | null | undefined): string {
+  return v == null ? '—' : v.toLocaleString('zh-CN')
+}
+function periodText(r: StockFinancialRow): string {
+  return `${r.reportYear ?? '—'} Q${r.quarterNum ?? '—'}`
+}
+
+const FIN_METRICS = [
+  { label: '单季归母净利', value: 'qNetprofit' },
+  { label: '单季营业总收入', value: 'qRevenue' },
+  { label: '累计归母净利', value: 'cumNetprofit' },
+] as const
+
+const finChartOption = computed(() => {
+  const rows = financials.value.slice(0, 20).slice().reverse()
+  const labels = rows.map(periodText)
+  const values = rows.map(r => {
+    const raw = finMetric.value === 'qNetprofit' ? r.qParentNetprofit
+      : finMetric.value === 'qRevenue' ? r.qRevenue : r.parentNetprofit
+    return raw == null ? null : raw / 1e8
+  })
+  const rotated = labels.length > 12
+  return {
+    backgroundColor: 'transparent',
+    // ⚠ 下边距要跟 X 轴标签倾斜一起变：标签转 40° 后纵向占 ~40px，
+    //   bottom:34 会把「2021 Q4」这类标签切掉下半截（2026-11-09 截图验收发现）。
+    grid: { left: 64, right: 24, top: 36, bottom: rotated ? 62 : 36 },
+    tooltip: {
+      trigger: 'axis',
+      valueFormatter: (v: unknown) => v == null ? '—' : `${Number(v).toFixed(2)} 亿元`,
+    },
+    xAxis: {
+      type: 'category', data: labels,
+      axisLabel: { color: '#888', fontSize: 11, interval: 0, rotate: rotated ? 40 : 0,
+                   margin: 10 },
+      axisLine: { lineStyle: { color: '#dfe3ea' } },
+    },
+    yAxis: {
+      type: 'value', name: '亿元',
+      // nameGap 太小会让「亿元」压在容器顶边被切掉（截图验收踩过），配 top:36
+      nameGap: 12,
+      axisLabel: { color: '#888', fontSize: 11 },
+      nameTextStyle: { color: '#999', fontSize: 11, padding: [0, 0, 0, -18] },
+      splitLine: { lineStyle: { color: '#eef1f6' } },
+    },
+    series: [{
+      type: 'bar', barMaxWidth: 28,
+      // A 股习惯：正（盈利 / 增长）红、负绿
+      data: values.map(v => v == null ? null : ({
+        value: v,
+        itemStyle: { color: v >= 0 ? UP : DOWN },
+      })),
+    }],
+  }
+})
 
 async function loadHoldings() {
   holdingsLoading.value = true
@@ -200,6 +292,7 @@ function periodLabel(r: StockReport) {
 watch(activeTab, async v => {
   if (v === 'reports' && !reportsLoaded) await loadReports()
   if (v === 'holdings' && !holdingsLoaded) await loadHoldings()
+  if (v === 'financials' && !financialsLoaded) await loadFinancials()
   if (v === 'profile') {
     await nextTick()
     window.dispatchEvent(new Event('resize'))
@@ -210,6 +303,7 @@ onMounted(() => {
   loadDetail()
   if (route.query.tab === 'reports') activeTab.value = 'reports'
   if (route.query.tab === 'holdings') activeTab.value = 'holdings'
+  if (route.query.tab === 'financials') activeTab.value = 'financials'
 })
 watch(code, () => {
   period.value = 'day'
@@ -226,8 +320,13 @@ watch(code, () => {
   holdingReportDate.value = ''
   holdingReportDates.value = []
   holdingsPage.value = 1
+  financialsLoaded = false
+  financials.value = []
+  financialsResult.value = null
+  financialsFound.value = false
   loadDetail()
   if (activeTab.value === 'holdings') loadHoldings()
+  if (activeTab.value === 'financials') loadFinancials()
 })
 // 年线一根就是一年，选「1年」只会剩一根 K 线 —— 切到年线时把区间同步成「全部」，
 // 避免 radio 高亮「1年」而图里其实是全历史（标签与数据不能自相矛盾）。
@@ -613,6 +712,77 @@ const chartOption = computed(() => {
           </div>
         </el-tab-pane>
 
+        <el-tab-pane label="财务报表" name="financials">
+          <div class="card">
+            <div class="card-head">
+              <h2>财报三表 · 逐季度对比 <small>资产负债表 / 利润表 / 现金流量表 · 金额单位亿元</small></h2>
+              <el-select v-model="finMetric" style="width: 175px" size="small">
+                <el-option v-for="m in FIN_METRICS" :key="m.value" :label="m.label" :value="m.value" />
+              </el-select>
+            </div>
+            <div v-if="financialsError" class="error-box">{{ financialsError }}</div>
+            <template v-else>
+              <div v-if="financialsFound && financials.length" class="fin-summary">
+                <div><span>最新报告期</span><b>{{ financialsResult?.latestReportDate || '—' }}</b></div>
+                <div><span>报表模板</span><b>{{ financialsResult?.orgType || '—' }}</b></div>
+                <div><span>员工人数</span><b>{{ fmtCount(financialsResult?.employee?.empNum) }} 人</b></div>
+                <div><span>最新季股东户数</span><b>{{ fmtCount(financials[0]?.holderNum) }} 户</b></div>
+              </div>
+              <v-chart v-if="financials.length" :option="finChartOption" autoresize class="fin-chart" />
+              <div v-else-if="!financialsLoading && !financialsFound" class="empty-note">
+                该股票暂无财报三表数据（源侧未披露或不在采集范围）。
+              </div>
+              <el-table :data="financials" v-loading="financialsLoading" size="small"
+                        empty-text="暂无财报数据" class="fin-table">
+                <el-table-column label="报告期" width="112" fixed>
+                  <template #default="{ row }"><b>{{ periodText(row) }}</b></template>
+                </el-table-column>
+                <el-table-column label="单季归母净利" width="126" align="right">
+                  <template #default="{ row }">{{ fmtYi(row.qParentNetprofit) }}</template>
+                </el-table-column>
+                <el-table-column label="累计营业总收入" width="132" align="right">
+                  <template #default="{ row }">{{ fmtYi(row.revenue) }}</template>
+                </el-table-column>
+                <el-table-column label="累计归母净利" width="126" align="right">
+                  <template #default="{ row }">{{ fmtYi(row.parentNetprofit) }}</template>
+                </el-table-column>
+                <el-table-column label="毛利率" width="100" align="right">
+                  <template #default="{ row }">{{ fmtRatio(row.grossMargin) }}</template>
+                </el-table-column>
+                <el-table-column label="速动比" width="96" align="right">
+                  <template #default="{ row }">{{ fmtNum(row.quickRatio, 2) }}</template>
+                </el-table-column>
+                <el-table-column label="资产负债率" width="108" align="right">
+                  <template #default="{ row }">{{ fmtRatio(row.debtRatio) }}</template>
+                </el-table-column>
+                <el-table-column label="经营现金流(累计)" width="140" align="right">
+                  <template #default="{ row }">{{ fmtYi(row.netcashOperate) }}</template>
+                </el-table-column>
+                <el-table-column label="股东户数" width="116" align="right">
+                  <template #default="{ row }">
+                    <span :title="row.holderEndDate ? `统计截止日 ${row.holderEndDate}` : ''">
+                      {{ fmtCount(row.holderNum) }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="源侧修订日" width="116" align="right">
+                  <template #default="{ row }">{{ row.updateDate || '—' }}</template>
+                </el-table-column>
+              </el-table>
+              <p class="src-note report-note">
+                数据来源：东方财富 datacenter 结构化财报接口（无需解析 PDF），报告期从 2016 年起。
+                利润表与现金流量表是<b>年初至今累计值</b>，「单季」由相邻报告期年内差分得到，
+                缺上一期时显示「—」；资产负债表是<b>季末时点值，不差分</b>。
+                毛利率 =（营业收入 − 营业成本）/ 营业收入（分母不是营业总收入），
+                速动比 =（流动资产 − 存货）/ 流动负债；银行 / 证券 / 保险科目口径不同，这两项与流动比率不适用，显示「—」。
+                股东户数按报告期所在季度内最后一个统计截止日匹配（悬停可看日期）；
+                员工数只有<b>年度快照（{{ financialsResult?.employee?.year || '—' }} 年采集）</b>，季报不披露，不随季度变化。
+                源侧追溯更正会持续更新历史报告期，表内「源侧修订日」为最后修订时间。
+              </p>
+            </template>
+          </div>
+        </el-tab-pane>
+
         <el-tab-pane label="基金持仓" name="holdings">
           <div class="card">
             <div class="card-head">
@@ -706,6 +876,21 @@ const chartOption = computed(() => {
 .pdf-link { color: #409eff; font-weight: 600; }
 .pdf-link:hover { text-decoration: underline; }
 .report-note { margin-top: 12px; font-size: 11.5px; color: #aaa; line-height: 1.7; }
+.report-note b { color: #888; font-weight: 600; }
+
+/* 财报三表 tab */
+.fin-summary {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px;
+}
+.fin-summary > div {
+  background: #f8fafc; border: 1px solid #eef1f6; border-radius: 8px;
+  padding: 10px 14px; display: flex; flex-direction: column; gap: 4px;
+}
+.fin-summary span { font-size: 12px; color: #999; }
+.fin-summary b { font-size: 16px; color: #1a1a2e; font-weight: 650; }
+.fin-chart { height: 280px; width: 100%; margin-bottom: 14px; }
+.fin-table { width: 100%; }
+.empty-note { padding: 28px; text-align: center; color: #999; font-size: 13px; }
 
 /* 基金持仓 tab */
 .holding-summary {

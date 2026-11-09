@@ -303,6 +303,7 @@ python refresh_all.py --status
 | `fetch_vlcc_position.py` | aisstream 版船位（**区域覆盖塌陷，已降副源**） | `--minutes 10` |
 | `.workbuddy/load_simu_nav.py` | 排排网净值落库（需 `.cdp_session.json`） | 别手动跑，交给 `refresh_private.py` |
 | **`refresh_private.py`** | **私募整轮更新（备案增量 + 三源净值 + 可选管理人）** | 单独跑，或 `refresh_all.py --fetch --with-private`；`--status` 看新鲜度 |
+| **`fetch_stock_financials.py`** | **A 股财报三表 + 股东户数 + 员工数（季度频，2026-11-09 新增）** | 直接跑＝增量；首次 `--full`；或 `refresh_all.py --fetch --with-financials` |
 
 > **2026-11-07 起私募有统一入口了**：以前这一域所有脚本都不在日常刷新里，净值停在
 > 10-30、备案停在 9-16、管理人停在 9-17 都无人察觉。`refresh_private.py` 把四条链路
@@ -316,6 +317,15 @@ python refresh_all.py --status
 > 隔段时间 `python refresh_private.py --only licai` 重跑即可（`--stale-days 3` 接着补）。
 > 另：`--nav-only --full` 已改为「只跳过其他源占用的 fund_no」，防止代销池刷新
 > 撞上 sppw/licai 备案号造成混源（11-07 的 `SAUW09` 事故，已清理）。
+
+> **2026-11-09 起财报三表**：季度频数据，全量约 8 分钟 / 43 个报告期（2016 起），
+> **不进 `FETCH_SCRIPTS`**。⚠ 但也**不是「只在发季报时跑」**：源侧追溯更正全年发生
+> （11-09 当天仍有 2024 年报的 `UPDATE_DATE` 修订），默认增量按 `UPDATE_DATE` 回看
+> 14 天（约 1~2 分钟），建议挂**周频**定时任务，披露窗口（1~4 / 7~8 / 10 月）提到每日。
+> 已进 `OPT_IN_SCRIPTS --with-financials` 与 `STATUS_QUERIES`（三段），
+> **没进 `CLEAR_TABLES`**（清了不会自动补回，得重跑全量）。
+> 单季净利润由 `v_stock_financials_quarterly` 视图 LAG 差分，不落派生表；
+> 口径与死路见脚本 docstring / `DATASOURCES.md`。
 
 **三种「不接入」的方式别搞混：**
 

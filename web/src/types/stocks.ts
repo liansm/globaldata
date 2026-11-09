@@ -180,3 +180,57 @@ export interface StockHoldingsResult {
   page: number
   pageSize: number
 }
+
+/** 财报三表逐季度对比：一行 = 一个报告期（三表合并）*/
+export interface StockFinancialRow {
+  reportDate: string | null
+  reportYear: number | null
+  quarterNum: number | null
+  reportType: string | null
+  // 年初至今累计值
+  revenue: number | null
+  operateIncome: number | null
+  cost: number | null
+  parentNetprofit: number | null
+  netprofit: number | null
+  netcashOperate: number | null
+  // 单季（年内差分，缺上一期时为 null）
+  qRevenue: number | null
+  qParentNetprofit: number | null
+  qNetcashOperate: number | null
+  // 资产负债表季末时点值（不差分）
+  totalAssets: number | null
+  totalCurrentAssets: number | null
+  inventory: number | null
+  totalCurrentLiab: number | null
+  totalEquity: number | null
+  // 派生指标（金融业为 null）
+  grossMargin: number | null
+  netMargin: number | null
+  quickRatio: number | null
+  currentRatio: number | null
+  debtRatio: number | null
+  // 股东户数（季度内最后一个统计截止日）
+  holderNum: number | null
+  holderEndDate: string | null
+  hasIncome: boolean
+  hasBalance: boolean
+  hasCashflow: boolean
+  noticeDate: string | null
+  updateDate: string | null
+}
+
+export interface StockFinancialsResult {
+  found: boolean
+  code: string
+  orgType: string | null
+  /** 银行/证券/保险：毛利率、速动比、流动比率口径不适用 */
+  isFinancial: boolean
+  latestReportDate: string | null
+  /** 员工数只有当前值 + 年度快照，不伪装成逐季度数据 */
+  employee: { year: number | null; empNum: number | null; collectedAt: string | null } | null
+  rows: StockFinancialRow[]
+  total: number
+  page: number
+  pageSize: number
+}
