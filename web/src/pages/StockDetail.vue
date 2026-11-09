@@ -169,8 +169,10 @@ const financialsResult = ref<StockFinancialsResult | null>(null)
 const financialsLoading = ref(false)
 const financialsError = ref('')
 const financialsFound = ref(false)
-// 季度对比的指标清单 = 表格列顺序：前 11 项单季、后 2 项累计。
+// 季度对比的指标清单 = 表格列顺序：前 10 项单季、后 2 项累计。
 // unit 决定图表 Y 轴是「亿元」还是「%」——毛利率是比率，不能再除 1e8。
+// ⚠ 「其他收益」接口仍返回（qOtherIncome），2026-11-09 用户要求先从表格/图表里拿掉，
+//   数据与接口都保留，要显示回来只需在这里加一行 + 表格加一列。
 const FIN_METRICS = [
   { label: '总收入',         value: 'qRevenue',        unit: 'money' },
   { label: '毛利润',         value: 'qGrossProfit',    unit: 'money' },
@@ -179,7 +181,6 @@ const FIN_METRICS = [
   { label: '管理费用',       value: 'qManageExpense',  unit: 'money' },
   { label: '研发费用',       value: 'qResearchExpense', unit: 'money' },
   { label: '财务费用',       value: 'qFinanceExpense', unit: 'money' },
-  { label: '其他收益',       value: 'qOtherIncome',    unit: 'money' },
   { label: '营业利润',       value: 'qOperateProfit',  unit: 'money' },
   { label: '所得税',         value: 'qIncomeTax',      unit: 'money' },
   { label: '净利润',         value: 'qNetprofit',      unit: 'money' },
@@ -332,6 +333,23 @@ function fmtCount(v: number | null | undefined): string {
 }
 function periodText(r: StockFinancialRow): string {
   return `${r.reportYear ?? '—'} Q${r.quarterNum ?? '—'}`
+}
+
+/**
+ * 季度对比表的「年份分组」提示（用户 2026-11-09：每新的一年略有区分）。
+ * ① `fin-row-alt`：按报告期年的**奇偶**交替底色 —— 相邻两年必然不同色，
+ *    扫表时一眼看出年份区块（2026 白 / 2025 淡灰 / 2024 白…）。
+ * ② `fin-row-year-start`：年份切换的那一行加深上边框。表格是报告期**倒序**，
+ *    所以「上一行年份 ≠ 本行年份」正好落在新一年的最上面那行（如 2025 Q4 紧跟 2026 Q1）。
+ * rowIndex 是当前 data 数组下标（= financials 原序），直接取上一行比年份即可。
+ */
+function finRowClass({ row, rowIndex }:
+  { row: StockFinancialRow; rowIndex: number }): string {
+  const prev = rowIndex > 0 ? financials.value[rowIndex - 1] : null
+  const cls = ['fin-row']
+  if (row.reportYear != null && Math.abs(row.reportYear) % 2 === 1) cls.push('fin-row-alt')
+  if (prev && prev.reportYear !== row.reportYear) cls.push('fin-row-year-start')
+  return cls.join(' ')
 }
 
 const finChartOption = computed(() => {
@@ -965,61 +983,59 @@ const chartOption = computed(() => {
                   该股票暂无财报三表数据（源侧未披露或不在采集范围）。
                 </div>
                 <el-table :data="financials" v-loading="financialsLoading" size="small"
-                          empty-text="暂无财报数据" class="fin-table">
-                  <el-table-column label="报告期" width="112" fixed>
+                          empty-text="暂无财报数据" class="fin-table"
+                          :row-class-name="finRowClass">
+                  <el-table-column label="报告期" width="104" fixed>
                     <template #default="{ row }"><b>{{ periodText(row) }}</b></template>
                   </el-table-column>
-                  <!-- 前 11 列为单季值，后 2 列为累计值（顺序 = 用户指定，勿随意调整） -->
-                  <el-table-column label="总收入" width="96" align="right">
+                  <!-- 前 10 列为单季值，后 2 列为累计值（顺序 = 用户指定，勿随意调整） -->
+                  <el-table-column label="总收入" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qRevenue) }}</template>
                   </el-table-column>
-                  <el-table-column label="毛利润" width="96" align="right">
+                  <el-table-column label="毛利润" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qGrossProfit) }}</template>
                   </el-table-column>
-                  <el-table-column label="毛利率" width="84" align="right">
+                  <el-table-column label="毛利率" min-width="76" align="right">
                     <template #default="{ row }">{{ fmtRatio(row.qGrossMargin) }}</template>
                   </el-table-column>
-                  <el-table-column label="销售费用" width="96" align="right">
+                  <el-table-column label="销售费用" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qSaleExpense) }}</template>
                   </el-table-column>
-                  <el-table-column label="管理费用" width="96" align="right">
+                  <el-table-column label="管理费用" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qManageExpense) }}</template>
                   </el-table-column>
-                  <el-table-column label="研发费用" width="96" align="right">
+                  <el-table-column label="研发费用" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qResearchExpense) }}</template>
                   </el-table-column>
-                  <el-table-column label="财务费用" width="96" align="right">
+                  <el-table-column label="财务费用" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qFinanceExpense) }}</template>
                   </el-table-column>
-                  <el-table-column label="其他收益" width="96" align="right">
-                    <template #default="{ row }">{{ fmtYi(row.qOtherIncome) }}</template>
-                  </el-table-column>
-                  <el-table-column label="营业利润" width="96" align="right">
+                  <el-table-column label="营业利润" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qOperateProfit) }}</template>
                   </el-table-column>
-                  <el-table-column label="所得税" width="96" align="right">
+                  <el-table-column label="所得税" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qIncomeTax) }}</template>
                   </el-table-column>
-                  <el-table-column label="净利润" width="96" align="right">
+                  <el-table-column label="净利润" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qNetprofit) }}</template>
                   </el-table-column>
-                  <el-table-column label="累计营业总收入" width="124" align="right">
+                  <el-table-column label="累计营业总收入" min-width="110" align="right">
                     <template #default="{ row }">{{ fmtYi(row.revenue) }}</template>
                   </el-table-column>
-                  <el-table-column label="累计归母净利" width="118" align="right">
+                  <el-table-column label="累计归母净利" min-width="110" align="right">
                     <template #default="{ row }">{{ fmtYi(row.parentNetprofit) }}</template>
                   </el-table-column>
                 </el-table>
                 <p class="src-note report-note">
                   数据来源：东方财富 datacenter 结构化财报接口（无需解析 PDF），报告期从 2016 年起。
-                  表格<b>前 11 列为单季值</b>：一季报直接取累计值，二 / 三 / 四季报由年内相邻报告期差分，
+                  表格<b>前 10 列为单季值</b>：一季报直接取累计值，二 / 三 / 四季报由年内相邻报告期差分，
                   缺上一期时显示「—」；<b>后 2 列为年初至今累计值</b>。
                   「净利润」是<b>合并口径（含少数股东损益）</b>，与「累计归母净利」不同口径，
                   两者差额即少数股东损益。
                   毛利润 = 单季营业收入 − 单季营业成本；毛利率 = 毛利润 / 单季营业收入
                   （分母是营业收入，不是营业总收入）。
-                  「财务费用」为负 = 利息收入大于支出；「其他收益」为负 = 净损失；
-                  两者都按源侧原样显示，不取绝对值。
+                  「财务费用」为负 = 利息收入大于支出，按源侧原样显示，不取绝对值。
+                  行按<b>报告期年</b>分组：奇数年淡底、年份切换处加深上边框。
                   银行 / 证券 / 保险不披露营业成本与毛利，相关列显示「—」。
                   速动比、资产负债率、经营现金流、股东户数等其他指标暂未在本表展示。
                 </p>
@@ -1198,6 +1214,16 @@ const chartOption = computed(() => {
 .stmt-table :deep(.stmt-row-section .stmt-label) { font-weight: 650; color: #1a1a2e; }
 .stmt-table :deep(.stmt-row-total .stmt-label) { font-weight: 650; }
 .stmt-table :deep(.stmt-row-total) { background: #fcfdff; }
+/* 季度对比表：按「报告期年」分组提示（用户 2026-11-09 要求每新的一年略有区分）
+   ① 奇数年淡底、偶数年纯白 —— 相邻两年底色必然不同，扫表时能看出年份区块；
+   ② 年份切换的第一行加深上边框。表格是报告期倒序，所以边框落在新一年的最上面那行。
+   ⚠ 底色必须够淡（#f5f7fb 级）但要肉眼可辨：这是分组提示不是高亮，
+     太深会和「负数/合计」抢注意力，太浅（#fafbfe）在 125% 缩放下等于没有。 */
+.fin-table :deep(.el-table__body tr.fin-row-alt > td.el-table__cell) { background: #f5f7fb; }
+.fin-table :deep(.el-table__body tr.fin-row-year-start > td.el-table__cell) {
+  border-top: 2px solid #dfe4ee;
+}
+.fin-table :deep(.el-table__body tr.fin-row-year-start .cell) { padding-top: 7px; }
 .empty-note { padding: 28px; text-align: center; color: #999; font-size: 13px; }
 
 /* 基金持仓 tab */
