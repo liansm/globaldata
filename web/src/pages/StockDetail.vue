@@ -1163,7 +1163,13 @@ const chartOption = computed(() => {
 .fin-summary span { font-size: 12px; color: #999; }
 .fin-summary b { font-size: 16px; color: #1a1a2e; font-weight: 650; }
 .fin-chart { height: 280px; width: 100%; margin-bottom: 14px; }
-.fin-table { width: 100%; }
+.fin-table {
+  width: 100%;
+  /* 悬停改暖黄（用户 2026-11-09 指定）：Element Plus 默认是 --el-fill-color-light 冷灰，
+     和上面的年份淡底撞色，悬停几乎看不出来。改这一个变量就能让库自带的
+     `.el-table--enable-row-hover tr:hover>td` 跟着变。 */
+  --el-table-row-hover-bg-color: #fff3cd;
+}
 
 /* 逐科目三表（雪球式） */
 .stmt-tabs {
@@ -1200,7 +1206,11 @@ const chartOption = computed(() => {
 .stmt-nav:disabled { cursor: not-allowed; opacity: .45; }
 .stmt-page { color: #4a5160; font-variant-numeric: tabular-nums; }
 
-.stmt-table { width: 100%; }
+.stmt-table {
+  width: 100%;
+  /* 与季度对比表统一悬停色（否则同一个 tab 里两个表两种手感） */
+  --el-table-row-hover-bg-color: #fff3cd;
+}
 .stmt-table :deep(.el-table__cell) { padding: 5px 0; }
 .stmt-label { font-size: 12.5px; color: #333b4a; }
 .stmt-label.lv-sub { padding-left: 20px; color: #5c6470; }
@@ -1224,6 +1234,11 @@ const chartOption = computed(() => {
   border-top: 2px solid #dfe4ee;
 }
 .fin-table :deep(.el-table__body tr.fin-row-year-start .cell) { padding-top: 7px; }
+/* 悬停黄底必须写在 fin-row-alt 之后：两者选择器权重相同（4 类 + 2 元素），
+   只能靠源码顺序胜出，否则奇数年那几行的淡底会把悬停色盖掉（只有隔行会变黄，看着像 bug）。 */
+.fin-table :deep(.el-table__body tr:hover > td.el-table__cell) {
+  background-color: var(--el-table-row-hover-bg-color);
+}
 .empty-note { padding: 28px; text-align: center; color: #999; font-size: 13px; }
 
 /* 基金持仓 tab */
