@@ -114,6 +114,7 @@ const holdingsError = ref('')
 const holdingsFound = ref(false)
 const holdingsSecurityName = ref<string | null>(null)
 const holdingsExcluded = ref<{ name: string; count: number }[]>([])
+const ignoredNonQuarter = ref(0)
 const holdingsPage = ref(1)
 const holdingsPageSize = ref(20)
 const holdingReportDate = ref('')
@@ -147,6 +148,7 @@ async function loadHoldings() {
     holdingsFound.value = r.found
     holdingsSecurityName.value = r.securityName
     holdingsExcluded.value = r.excluded
+    ignoredNonQuarter.value = r.ignoredNonQuarter
     holdingReportDates.value = r.reportDates
     // 后端会把非法 / 不存在的报告期回退到默认，前端一律以返回值为准
     holdingReportDate.value = r.reportDate ?? ''
@@ -217,6 +219,7 @@ watch(code, () => {
   holdingsFound.value = false
   holdingsExcluded.value = []
   holdingsSecurityName.value = null
+  ignoredNonQuarter.value = 0
   holdingReportDate.value = ''
   holdingReportDates.value = []
   holdingsPage.value = 1
@@ -610,7 +613,7 @@ const chartOption = computed(() => {
         <el-tab-pane label="基金持仓" name="holdings">
           <div class="card">
             <div class="card-head">
-              <h2>持有该股的公募基金 <small>按持股数降序 · 报告期 {{ holdingReportDate || '—' }}</small></h2>
+              <h2>持有该股的公募基金 <small>按持股数降序 · 季度末报告期 {{ holdingReportDate || '—' }}</small></h2>
               <el-select v-model="holdingReportDate" placeholder="报告期" style="width: 190px"
                          @change="onHoldingDateChange">
                 <el-option v-for="d in holdingReportDates" :key="d.date"
@@ -663,7 +666,7 @@ const chartOption = computed(() => {
             <div v-else class="empty-note">
               <template v-if="holdingsLoading">加载中…</template>
               <template v-else>
-                该股暂无与当前简称匹配的公募基金持仓披露
+                该股暂无与当前简称匹配的季度末持仓披露
                 （可能未被任何基金列入前十大重仓，或记录来自改名前的旧名）。
                 <span v-if="excludedText" class="excluded-note">{{ excludedText }}</span>
               </template>
@@ -673,8 +676,13 @@ const chartOption = computed(() => {
               口径：东财 F10 季报披露的<strong>前十大重仓股</strong>（不是全部持仓），
               持股数单位为<strong>万股</strong>、持仓市值为<strong>万元</strong>、占比为占基金净值比例。
               按<strong>基金份额</strong>统计，同一产品 A / C 类分开计（如鹏华双债加利 A、C 各占一行），
-              因此「持有基金份额」不等于基金产品只数。默认展示最新季度报告期，
-              非季末的零星披露可在下拉中切换。共 {{ holdingsTotal }} 条记录。
+              因此「持有基金份额」不等于基金产品只数。
+              <strong>只统计季度末报告期</strong>（03-31 / 06-30 / 09-30 / 12-31），
+              共 {{ holdingsTotal }} 条记录。
+              <span v-if="ignoredNonQuarter" class="excluded-note">
+                已忽略 {{ ignoredNonQuarter }} 条非季末披露：源侧 F10 对部分新建 ETF 等给出带具体日期的
+                建仓 / 临时组合快照（如 2026-03-26），与季报口径不同，不计入统计。
+              </span>
               <span v-if="holdingsFound && excludedText" class="excluded-note">{{ excludedText }}</span>
             </p>
           </div>

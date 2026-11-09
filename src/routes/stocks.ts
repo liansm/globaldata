@@ -353,8 +353,12 @@ export async function stocksRoutes(app: FastifyInstance) {
   //     已交叉验证：2026-09-30 招商轮船 market_value/shares = 20.15 = 当日收盘价。
   //   * funds 名录是**份额口径**（A/C 类分开），所以同一产品的 A/C 份额会各占一行；
   //     汇总里的 funds 是「基金份额只数」，不是基金产品只数。
-  //   * 全库 99.82% 的持仓行落在季末，另有少量基金在非季末零星披露。默认报告期取
-  //     **最新季末**而不是 MAX(report_date)，否则某些股票会默认只剩 1~2 行。
+  //   * **只统计季度末**（03-31 / 06-30 / 09-30 / 12-31）。源侧 F10 另有 2630 行
+  //     （267 只基金 / 141 个日期、占全库 0.18%）带的是**具体日期标签**而非季度标签，
+  //     96.2% 来自指数型-股票基金（新建 ETF 的建仓/上市组合快照），
+  //     fetch_funds.py::get_holdings 优先取标签里的 YYYY-MM-DD 就会落进库。
+  //     它们与季报口径不同，混进报告期下拉会让人误以为是季度数据 ⇒ 全部排除，
+  //     被忽略的行数由 ignoredNonQuarter 返回，前端明示，不静默吞。
   //   * **名称闸门**：东财把港股代码补零成 6 位，与深市 A 股撞号 —— 实测 251 个
   //     A 股代码在 fund_holdings 里同时挂着港股名称（000020 深华发A 仅 2 条，
   //     同代码「商汤-W」163 条；000670 盈方微底下 163 条全是「中国东方航空股份」）。
@@ -373,17 +377,27 @@ export async function stocksRoutes(app: FastifyInstance) {
     const offset   = (page - 1) * pageSize
 
     // 先定「这个代码下哪些 security_name 才是本股票」，后面报告期 / 列表 / 汇总
-    // 全部套用同一闸门，避免报告期列表也被港股记录主导。
-    const [nameRes, stockRes] = await Promise.all([
+    // 全部套用同一闸门，避免报告期列表也被港股记录主导。名称候选本身也只看季末，
+    // 免得某只股票只有非季末的旧名记录时被误判成可查。
+    const quarterMd = sql`'03-31','06-30','09-30','12-31'`
+    const [nameRes, stockRes, ignoredRes] = await Promise.all([
       db.execute(sql`
         SELECT security_name, COUNT(*)::int AS n
         FROM fund_holdings
         WHERE security_code = ${code} AND holding_type = 'stock'
           AND security_name IS NOT NULL
+          AND to_char(report_date, 'MM-DD') IN (${quarterMd})
         GROUP BY 1 ORDER BY 2 DESC
       `),
       db.execute(sql`SELECT name FROM ${stocks} WHERE code = ${code} LIMIT 1`),
+      // 被排除的非季末记录数（含源侧 ETF 建仓 / 临时披露），仅用于透明展示
+      db.execute(sql`
+        SELECT COUNT(*)::int AS n FROM fund_holdings
+        WHERE security_code = ${code} AND holding_type = 'stock'
+          AND to_char(report_date, 'MM-DD') NOT IN (${quarterMd})
+      `),
     ])
+    const ignoredNonQuarter = Number((ignoredRes.rows as StockRow[])[0]?.n ?? 0)
     const stockName = (stockRes.rows as StockRow[])[0]?.name
     const nameKey = (s: unknown) => normName(String(s ?? '')).replace(/[*-]/g, '')
     const target  = stockName == null ? null : nameKey(stockName)
@@ -394,7 +408,7 @@ export async function stocksRoutes(app: FastifyInstance) {
     const excluded = target ? allNames.filter(x => nameKey(x.name) !== target) : allNames
 
     const base = {
-      code, securityName: stockName ?? null, excluded,
+      code, securityName: stockName ?? null, excluded, ignoredNonQuarter,
       summary: { funds: 0, shares: null, marketValue: null },
       rows: [], total: 0, page, pageSize,
     }
@@ -409,7 +423,8 @@ export async function stocksRoutes(app: FastifyInstance) {
       SELECT value FROM json_array_elements_text(${JSON.stringify(accepted)}::json)
     )`
     const whereCode = sql`h.security_code = ${code} AND h.holding_type = 'stock'
-                          AND ${nameCond}`
+                          AND ${nameCond}
+                          AND to_char(h.report_date, 'MM-DD') IN (${quarterMd})`
 
     const datesRes = await db.execute(sql`
       SELECT h.report_date::text AS d, COUNT(*)::int AS n
@@ -421,8 +436,8 @@ export async function stocksRoutes(app: FastifyInstance) {
       date:  String(r.d).slice(0, 10),
       count: Number(r.n),
     }))
-    const quarterEnds = ['03-31', '06-30', '09-30', '12-31']
-    const latestQuarter = dateRows.find(r => quarterEnds.includes(r.date.slice(5)))?.date ?? null
+    // 报告期列表已只含季末，第一个就是最新季度（不需要再挑季末）
+    const latestQuarter = dateRows[0]?.date ?? null
     const requested = (req.query.reportDate || '').trim() || null
     // 非法/不存在的报告期静默回退到默认，不报错也不返回空页
     const reportDate = (requested && dateRows.some(r => r.date === requested))
@@ -452,7 +467,7 @@ export async function stocksRoutes(app: FastifyInstance) {
     const a = (agg.rows as StockRow[])[0] ?? {}
     return {
       found: true, code, reportDate, reportDates: dateRows,
-      securityName: stockName ?? null, excluded,
+      securityName: stockName ?? null, excluded, ignoredNonQuarter,
       summary: {
         funds:       Number(a.n ?? 0),
         shares:      toNum(a.shares),

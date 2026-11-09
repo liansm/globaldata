@@ -166,6 +166,8 @@ export interface StockHoldingsResult {
   securityName: string | null
   /** 同 security_code 下被名称闸门排除的其他证券 / 旧名记录（透明展示，不静默吞） */
   excluded: { name: string; count: number }[]
+  /** 被「只统计季度末」规则忽略的非季末披露行数（新建 ETF 建仓 / 临时组合快照） */
+  ignoredNonQuarter: number
   summary: {
     funds: number               // 基金份额只数（A/C 类分开计），不是产品只数
     shares: number | null
