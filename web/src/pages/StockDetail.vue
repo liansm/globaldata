@@ -189,6 +189,9 @@ const FIN_METRICS = [
 ] as const
 type FinMetricKey = typeof FIN_METRICS[number]['value']
 const finMetric = ref<FinMetricKey>('qRevenue')
+// 图表形态：柱状（逐季对比高低）/ 曲线（看趋势与拐点）。
+// 默认柱状 —— 费用、税费这类科目单季波动大，柱更容易读绝对值；趋势判断再切曲线。
+const finChartType = ref<'bar' | 'line'>('bar')
 let financialsLoaded = false
 
 async function loadFinancials() {
@@ -363,6 +366,36 @@ const finChartOption = computed(() => {
     return pct ? raw : raw / 1e8
   })
   const rotated = labels.length > 12
+  // 柱状按正负分色（涨红跌绿），曲线只有一条线 → 统一用红 + 淡红渐隐面积，
+  // 靠 Y 轴 0 线判断正负（负数会自然落到 0 线以下）。两种形态共用同一份网格与坐标轴。
+  const asLine = finChartType.value === 'line'
+  const series = asLine
+    ? [{
+        type: 'line', smooth: true, smoothMonotone: 'x',
+        symbol: 'circle', symbolSize: 7,
+        // 缺期就断开，不要 connectNulls 拉一条假直线
+        connectNulls: false,
+        data: values,
+        itemStyle: { color: UP },
+        lineStyle: { color: UP, width: 2 },
+        areaStyle: {
+          color: {
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(224,75,75,0.26)' },
+              { offset: 1, color: 'rgba(224,75,75,0.02)' },
+            ],
+          },
+        },
+      }]
+    : [{
+        type: 'bar', barMaxWidth: 28,
+        // A 股习惯：正（盈利 / 增长）红、负绿
+        data: values.map(v => v == null ? null : ({
+          value: v,
+          itemStyle: { color: v >= 0 ? UP : DOWN },
+        })),
+      }]
   return {
     backgroundColor: 'transparent',
     // ⚠ 下边距要跟 X 轴标签倾斜一起变：标签转 40° 后纵向占 ~40px，
@@ -387,14 +420,7 @@ const finChartOption = computed(() => {
       nameTextStyle: { color: '#999', fontSize: 11, padding: [0, 0, 0, -18] },
       splitLine: { lineStyle: { color: '#eef1f6' } },
     },
-    series: [{
-      type: 'bar', barMaxWidth: 28,
-      // A 股习惯：正（盈利 / 增长）红、负绿
-      data: values.map(v => v == null ? null : ({
-        value: v,
-        itemStyle: { color: v >= 0 ? UP : DOWN },
-      })),
-    }],
+    series,
   }
 })
 
@@ -901,9 +927,15 @@ const chartOption = computed(() => {
                 <small v-if="finSubTab === 'summary'">逐季度对比 · 累计值 / 单季差分</small>
                 <small v-else>逐科目明细 · 金额自动按亿/万显示</small>
               </h2>
-              <el-select v-if="finSubTab === 'summary'" v-model="finMetric" style="width: 175px" size="small">
-                <el-option v-for="m in FIN_METRICS" :key="m.value" :label="m.label" :value="m.value" />
-              </el-select>
+              <div v-if="finSubTab === 'summary'" class="fin-head-tools">
+                <el-radio-group v-model="finChartType" size="small">
+                  <el-radio-button value="bar">柱状图</el-radio-button>
+                  <el-radio-button value="line">曲线图</el-radio-button>
+                </el-radio-group>
+                <el-select v-model="finMetric" style="width: 175px" size="small">
+                  <el-option v-for="m in FIN_METRICS" :key="m.value" :label="m.label" :value="m.value" />
+                </el-select>
+              </div>
             </div>
             <div v-if="financialsError" class="error-box">{{ financialsError }}</div>
             <template v-else>
@@ -976,7 +1008,7 @@ const chartOption = computed(() => {
                 </p>
               </div>
 
-              <!-- ── 季度对比（原有：43 行 + 柱状图） ── -->
+              <!-- ── 季度对比（原有：43 行 + 柱状图 / 曲线图） ── -->
               <template v-else>
                 <v-chart v-if="financials.length" :option="finChartOption" autoresize class="fin-chart" />
                 <div v-else-if="!financialsLoading && !financialsFound" class="empty-note">
@@ -1036,6 +1068,8 @@ const chartOption = computed(() => {
                   （分母是营业收入，不是营业总收入）。
                   「财务费用」为负 = 利息收入大于支出，按源侧原样显示，不取绝对值。
                   行按<b>报告期年</b>分组：奇数年淡底、年份切换处加深上边框。
+                  上方图表可在<b>柱状图 / 曲线图</b>之间切换：柱状看单季高低（按正负分色），
+                  曲线看趋势与拐点（缺期断开，不插值连线）。
                   银行 / 证券 / 保险不披露营业成本与毛利，相关列显示「—」。
                   速动比、资产负债率、经营现金流、股东户数等其他指标暂未在本表展示。
                 </p>
@@ -1153,6 +1187,7 @@ const chartOption = computed(() => {
 .report-note b { color: #888; font-weight: 600; }
 
 /* 财报三表 tab */
+.fin-head-tools { display: flex; align-items: center; gap: 10px; }
 .fin-summary {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px;
 }
