@@ -180,6 +180,16 @@ function fmtNum(v: number | null | undefined, digits = 2) {
 }
 
 const stock = computed(() => detail.value?.stock ?? null)
+
+// 两个时间口径不同：updatedAt = 我们几点抓的，quoteTime = 源侧行情走到几点。
+// 页面严格只显示一行「数据更新」，行情时刻与口径说明放悬停提示，避免日期重复。
+const timeTitle = computed(() => {
+  const s = stock.value
+  if (!s) return ''
+  return `源侧行情时刻 ${s.quoteTime || '—'}（东财 f124）｜ 库内快照写入 ${s.updatedAt || '—'}。`
+    + '「数据更新」是名录刷新时刻，非交易所实时行情时间；'
+    + '停牌 / 退市股的源侧时刻可能是当日 08:00 占位，不是最后成交时刻。'
+})
 const fin = computed(() => detail.value?.fundamentals ?? null)
 const lastBar = computed(() => bars.value.length ? bars.value[bars.value.length - 1] : null)
 
@@ -332,7 +342,7 @@ const chartOption = computed(() => {
         <div class="head-price">
           <div class="big-price" :class="pctClass(stock.changePct)">{{ fmtNum(stock.latestPrice) }}</div>
           <div class="price-sub" :class="pctClass(stock.changePct)">{{ fmtPct(stock.changePct) }}</div>
-          <div class="price-note">行情快照 {{ stock.quoteDate || '—' }}</div>
+          <div class="price-note" :title="timeTitle">数据更新 {{ stock.updatedAt || '—' }}</div>
         </div>
       </div>
 
@@ -548,7 +558,7 @@ const chartOption = computed(() => {
 .head-price { text-align: right; min-width: 140px; }
 .big-price { font-size: 30px; font-weight: 700; line-height: 1.1; }
 .price-sub { font-size: 15px; font-weight: 600; margin-top: 4px; }
-.price-note { font-size: 11px; color: #aaa; margin-top: 6px; }
+.price-note { font-size: 11px; color: #aaa; margin-top: 6px; cursor: help; }
 .up { color: #e04b4b; } .down { color: #17a673; } .flat { color: #333; }
 
 .metric-row {

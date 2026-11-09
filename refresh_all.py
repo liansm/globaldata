@@ -657,11 +657,14 @@ STATUS_QUERIES = [
                    COUNT(region) AS with_region,
                    COUNT(industry_csrc) AS with_industry,
                    COUNT(latest_price_date) AS with_prices,
+                   COUNT(name_pinyin) AS with_pinyin,
+                   COUNT(quote_time) AS with_quote_time,
                    MAX(latest_price_date)::text AS price_date
             FROM stocks
         """,
         "cols": ["total", "with_intro", "with_shares", "with_region",
-                 "with_industry", "with_prices", "price_date"],
+                 "with_industry", "with_prices", "with_pinyin",
+                 "with_quote_time", "price_date"],
         "optional": True,
     },
     {

@@ -737,6 +737,13 @@ export const stocks = pgTable('stocks', {
   name:              varchar('name', { length: 120 }).notNull(),
   // NFKC + 去空白 + 大写的检索键：「万  科Ａ」→「万科A」，供名称搜索用
   nameSearch:        text('name_search'),
+  // 名称拼音首字母缩写，东财 searchapi 权威值（非本地生成）：招商轮船 → ZSLC。
+  // NULL = 源侧未取到，由 fetch_stock_info.py --pinyin-only 下次自动补。
+  namePinyin:        varchar('name_pinyin', { length: 32 }),
+  // 源侧行情时刻（东财 clist f124，Unix 秒→UTC+8），≠ updated_at 的库内写入时刻。
+  // ⚠ 339 只停牌/退市/ST 股源侧给当日 08:00:00 占位，不是最后成交时刻，
+  //   别拿它判断「最后交易日」。
+  quoteTime:         timestamp('quote_time', { withTimezone: true }),
   companyName:       text('company_name'),
   nameEn:            text('name_en'),
   formerName:        text('former_name'),
@@ -780,6 +787,7 @@ export const stocks = pgTable('stocks', {
 }, (t) => [
   index('idx_stocks_name').on(t.name),
   index('idx_stocks_name_search').on(t.nameSearch),
+  index('idx_stocks_name_pinyin').on(t.namePinyin),
   index('idx_stocks_exchange_board').on(t.exchange, t.board),
   index('idx_stocks_region').on(t.region),
   index('idx_stocks_industry').on(t.industry),

@@ -53,7 +53,8 @@ export interface StockDetail extends StockItem {
   website: string | null
   email: string | null
   phone: string | null
-  updatedAt: string | null
+  updatedAt: string | null   // 库内快照写入时刻，北京时间 'YYYY-MM-DD HH:mm:ss'
+  quoteTime: string | null   // 源侧行情时刻（东财 f124）；停牌/退市股可能是当日 08:00 占位
 }
 
 export interface StockPriceStats {

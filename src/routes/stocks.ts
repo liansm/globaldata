@@ -85,7 +85,8 @@ function mapDetail(r: StockRow) {
     website:           r.website,
     email:             r.email,
     phone:             r.phone,
-    updatedAt:         r.updated_at,
+    updatedAt:         r.updated_at_text ?? null,   // 北京时间 'YYYY-MM-DD HH:mm:ss'
+    quoteTime:         r.quote_time_text ?? null,   // 源侧行情时刻，同格式
   }
 }
 
@@ -137,12 +138,21 @@ export async function stocksRoutes(app: FastifyInstance) {
     const page     = Math.max(1, parseInt(req.query.page ?? '1', 10) || 1)
     const pageSize = Math.min(200, Math.max(1, parseInt(req.query.pageSize ?? '20', 10) || 20))
     const offset   = (page - 1) * pageSize
-    const likeQ    = q ? `%${q}%` : null
-    const likeN    = q ? `%${normName(q)}%` : null
+    // LIKE 通配符统一转义（ESCAPE '!'）：否则输入 % 或 _ 会让 code/name 条件命中全表。
+    const escLike  = (s: string) => s.replace(/[!%_]/g, c => `!${c}`)
+    const codeQ    = q ? escLike(q) : null
+    const likeQ    = q ? `%${escLike(q)}%` : null
+    const likeN    = q ? `%${escLike(normName(q))}%` : null
+    // 拼音首字母：源侧只给缩写（ZSLC），不支持全拼。仅纯字母/数字输入启用，
+    // 中文/符号查询不白扫拼音列，也不会带进 % / _ 通配符。
+    const pinyinQ  = q && /^[A-Za-z0-9]+$/.test(q) ? q.toUpperCase() : null
 
     const cond: SQL = sql`
-        (${q}::text IS NULL OR s.code LIKE ${q}::text || '%'
-              OR s.name ILIKE ${likeQ}::text OR s.name_search LIKE ${likeN}::text)
+        (${q}::text IS NULL OR s.code LIKE ${codeQ}::text || '%' ESCAPE '!'
+              OR s.name ILIKE ${likeQ}::text ESCAPE '!'
+              OR s.name_search LIKE ${likeN}::text ESCAPE '!'
+              OR (${pinyinQ}::text IS NOT NULL
+                  AND s.name_pinyin LIKE ${pinyinQ}::text || '%'))
     AND (${exchange}::text IS NULL OR s.exchange = ${exchange})
     AND (${board}::text    IS NULL OR s.board    = ${board})
     AND (${region}::text   IS NULL OR s.region   = ${region})
@@ -162,7 +172,11 @@ export async function stocksRoutes(app: FastifyInstance) {
         FROM ${stocks} s
         LEFT JOIN stock_fundamentals f ON f.code = s.code
         WHERE ${cond}
-        ORDER BY CASE WHEN ${sort} = 'marketCap' THEN s.market_cap END DESC NULLS LAST,
+        -- 首字母完整命中（输入 ZSLC 恰好等于某只票的简拼）优先置顶；
+        -- 其余仍按选定排序。拼音未回填的行 name_pinyin 为 NULL，不影响其位置。
+        ORDER BY CASE WHEN ${pinyinQ}::text IS NOT NULL
+                           AND s.name_pinyin = ${pinyinQ}::text THEN 0 ELSE 1 END,
+                 CASE WHEN ${sort} = 'marketCap' THEN s.market_cap END DESC NULLS LAST,
                  CASE WHEN ${sort} = 'changePct' THEN s.change_pct END DESC NULLS LAST,
                  s.code ASC
         LIMIT ${pageSize} OFFSET ${offset}
@@ -185,7 +199,20 @@ export async function stocksRoutes(app: FastifyInstance) {
       found: false, stock: null, industries: { industry: [], concept: [], region: [] },
       priceStats: null, fundamentals: null, rows: [], total: 0, page: 1, pageSize: 20,
     }
-    const res = await db.execute(sql`SELECT * FROM ${stocks} WHERE code = ${code} LIMIT 1`)
+    // ⚠ timestamptz 别丢给 JS 算本地时间：在 SQL 里按北京时间格式化成字符串，
+    //   避免部署环境 / 浏览器时区漂移（本项目踩过 date 列被 +8h 推到第二天的坑）。
+    //   两个时间**口径不同**，别混用：
+    //     updated_at  = fetch_stock_info.py 名录 UPSERT 的写入时刻（我们几点抓的）
+    //     quote_time  = 东财 clist f124 源侧行情时刻（源侧行情走到几点）
+    //   活跃股两者只差几秒；339 只停牌 / 退市 / ST 股源侧给当日 08:00:00 占位时钟，
+    //   **不是**最后成交时刻，不能拿它判断最后交易日。
+    const res = await db.execute(sql`
+      SELECT *, to_char(updated_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')
+               AS updated_at_text,
+               to_char(quote_time AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')
+               AS quote_time_text
+      FROM ${stocks} WHERE code = ${code} LIMIT 1
+    `)
     const row = (res.rows as StockRow[])[0]
     if (!row) return empty
 

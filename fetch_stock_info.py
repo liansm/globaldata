@@ -13,9 +13,16 @@ A 股股票基本信息（名录 + 静态属性 + 多值行业标签）
        fs = m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048
    ⚠ ``pz`` 被服务端**静默夹到 100**（传 10000 只返回 100 条，total=5927），
      所以必须翻页；实测 60 页 5927 行、5927 个唯一代码，无重叠。
-   字段映射：f12 代码 / f14 简称 / f2 最新价 / f3 涨跌幅 / f20 总市值(元) /
+   字段映射：   f12 代码 / f14 简称 / f2 最新价 / f3 涨跌幅 / f20 总市值(元) /
              f21 流通市值(元) / f26 上市日期 / f297 行情日期 / f13 市场(0=深/北,1=沪)
+             f124 **源侧行情时刻**（Unix 秒，北京时间）→ ``stocks.quote_time``
    ⚠ **不用 f13 判交易所**：北交所也返回 0，会混进深市。一律按代码前缀分类。
+   ⚠ ``f124`` 是**请求时刻的源侧行情时钟**，不是这笔价格的成交时刻：活跃股与抓取
+     时刻只差几秒；**339/5562（6.1%）停牌 / 退市 / ST 股返回当日 08:00:00 占位**
+     （000003 PT金田A、000004 国华退、000005 ST星源、000024 招商地产…），
+     **并非**最后交易日收盘。⇒ 不能用它判断「最后成交日」，只能看源侧行情时钟有没有走动。
+   ⚠ 它与 ``stocks.updated_at``（库内名录 UPSERT 写入时刻）是**两个口径**：
+     前者回答「源侧行情走到几点」，后者回答「我们几点抓的」，不要混用。
 
 2) 总股本 / 流通股本 / 细分行业 / 地域：东财 stock/get（逐只，1 请求/只）
        GET https://push2.eastmoney.com/api/qt/stock/get?secid=<1|0>.<code>
@@ -43,6 +50,26 @@ A 股股票基本信息（名录 + 静态属性 + 多值行业标签）
    ⚠ 概念板块里混着「昨日连板」「融资融券」「HS300_」这类**交易特征/指数成分**，
      不是行业。kind 仍记 concept，但前端过滤下拉只用 industry + region。
 
+5) 名称拼音首字母：东财搜索建议（**按代码逐只查**，1 请求/只）
+       GET http://searchapi.eastmoney.com/api/suggest/get
+           ?input=<6位代码>&type=14&count=10&token=<公开token>
+   取 ``QuotationCodeTable.Data[]`` 里 ``Code == 代码`` 那条的 ``PinYin``：
+       601872 → 招商轮船 / ZSLC，000625 → 长安汽车 / CAQC，600132 → 重庆啤酒 / CQPJ
+   ⚠ **必须走 http://**：HTTPS 通道的 gzip 缓存会把响应串成 2023 年的 JSONP
+     （``jQuery35108723733748578402_1693632913001({...passportWeb...})``）。
+     requests 默认带 ``Accept-Encoding: gzip`` 必中招，而 curl 不带该头看着「正常」
+     —— 实测同一 URL：requests/HTTPS 恒返回 JSONP，requests/HTTP 恒返回正确信封。
+     响应头有 ``Vary: Accept-Encoding`` + ``Content-Encoding: gzip``，是缓存串包。
+   ⚠ **不要加 ``classify=AStock``**：科创板在源侧 ``Classify='23'`` 而非 ``'AStock'``，
+     加了会把 688/689 全部**静默漏掉**（120 只样本里 15 只 MISS 全是科创板）。
+     正确做法 = 不加市场过滤，按返回里的 ``Code`` 精确匹配 + 名称闸门。
+   ⚠ **名称闸门**：NFKC（全角Ａ→A）+ 去空白 + 去 '-' 后与库内 name 比对，
+     「三 力 士」/「深振业Ａ」/「泰诺麦博-U」都能对上；对不上一律不写（宁缺勿错）。
+   ⚠ 只存**简称首字母缩写**，不存全拼。特殊前缀以源侧为准：``*ST天茂 → STTM``
+     （去星号）、``S佳通 → SJT``、``PT金田A → PTJTA``、``万科A → WKA``。
+   ⚠ 多音字必须用源侧值，不能本地生成：重庆啤酒 = CQPJ、长安汽车 = CAQC，
+     pypinyin 这类库会错成 ZQPJ / ZAQC（系统 Python 也没装，不引这个依赖）。
+
 深度 / 覆盖 / 死路
 ------------------
 * 范围 = 沪市主板(600/601/603/605) + 科创板(688/689) + 深市主板(000/001/002/003)
@@ -62,6 +89,11 @@ A 股股票基本信息（名录 + 静态属性 + 多值行业标签）
   直连 clist 并发 60 页只要 9 秒，所以不用它。
 * 交易所官方名录可作交叉校验：``stock_info_sh_name_code("主板A股"/"科创板")`` 1700+618 行、
   ``stock_info_sz_name_code("A股列表")`` 2906 行（含 A股总股本 + 证监会行业）。
+* **死路 3（2026-11-09 实测，别再踩）**：想靠 searchapi 的 ``count=1000`` 一次拉全市场
+  拼音 —— ``count`` 被硬夹 100，且 ``pageindex`` / ``page`` / ``pn`` / ``start`` /
+  ``pagesize`` 全部**无效**（返回首条不变，不报错），无法翻页；``classify=AStock``
+  又会漏掉科创板。⇒ 按代码逐只查是唯一能全覆盖的入口，实测 10 线程 132 只 1.0 秒、
+  0 失败、0 名称错配（含科创板与 -U/-W 后缀）。
 
 增量语义
 --------
@@ -72,6 +104,10 @@ A 股股票基本信息（名录 + 静态属性 + 多值行业标签）
   断点续跑，**只有事务提交成功后才记进度**（失败绝不记）。
 * 名录 UPSERT 只更新名称 / 快照 / 市值等动态列，**不碰静态属性列**；
   详情 UPDATE 一律 ``COALESCE(EXCLUDED, 原值)``，备源缺字段不会把已有值抹成 NULL。
+* 拼音首字母由 ``backfill_pinyin()`` 单独补：只查 ``name_pinyin IS NULL`` 的行，
+  **改名时名录 UPSERT 会把该列置回 NULL** 让它重算；按 CHUNK 分批提交，
+  失败的行不写、保持 NULL → 下次自动重试，**没有进度文件、失败绝不记成进度**。
+  日常增量因此只有新股 / 改名股会发请求，首次全量回填手动 ``--pinyin-only`` 单跑。
 
 合规
 ----
@@ -85,6 +121,8 @@ A 股股票基本信息（名录 + 静态属性 + 多值行业标签）
     python fetch_stock_info.py --limit 50      # 只处理前 50 只（联调用）
     python fetch_stock_info.py --codes 600519,000001
     python fetch_stock_info.py --dry-run       # 只抓不写库
+    python fetch_stock_info.py --pinyin-only   # 只补缺失的拼音首字母（可中断续跑）
+    python fetch_stock_info.py --pinyin-only --pinyin-all   # 全量重算（校验/纠错用）
 """
 
 import argparse
@@ -96,7 +134,7 @@ import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -121,13 +159,16 @@ CLIST = "https://push2.eastmoney.com/api/qt/clist/get"
 SGET = "https://push2.eastmoney.com/api/qt/stock/get"
 SLIST = "https://push2.eastmoney.com/api/qt/slist/get"
 F10 = "https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/PageAjax"
+# ⚠ 必须 http://：HTTPS 的 gzip 缓存会串成 2023 年的 JSONP（见 docstring 源 5）
+SUGGEST = "http://searchapi.eastmoney.com/api/suggest/get"
+SUGGEST_TOKEN = "D43BF722C8E33BDC906FB84D85E326E8"
 FS_A = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
 BOARD_FS = {
     "region":   "m:90+t:1+f:!50",
     "industry": "m:90+t:2+f:!50",
     "concept":  "m:90+t:3+f:!50",
 }
-CLIST_FIELDS = "f12,f13,f14,f2,f3,f20,f21,f26,f297"
+CLIST_FIELDS = "f12,f13,f14,f2,f3,f20,f21,f26,f297,f124"
 GET_FIELDS = ("f57,f58,f84,f85,f116,f117,f127,f128")
 SLIST_FIELDS = "f12,f13,f14,f3,f4,f128,f140,f141,f136,f152"
 
@@ -218,6 +259,11 @@ CREATE INDEX IF NOT EXISTS idx_stock_prices_date      ON stock_prices(trade_date
 
 -- 股价脚本用的「已核对行情日」；本脚本的名录 UPSERT 不碰它
 ALTER TABLE stocks ADD COLUMN IF NOT EXISTS price_checked_date date;
+-- 名称拼音首字母（东财 searchapi 权威值，非本地生成）；NULL = 未取到，下次自动补
+ALTER TABLE stocks ADD COLUMN IF NOT EXISTS name_pinyin varchar(32);
+CREATE INDEX IF NOT EXISTS idx_stocks_name_pinyin ON stocks(name_pinyin);
+-- 源侧行情时刻（东财 clist f124，北京时间）；与 updated_at 是两个口径，见 docstring
+ALTER TABLE stocks ADD COLUMN IF NOT EXISTS quote_time timestamptz;
 """
 
 
@@ -282,6 +328,45 @@ def norm_name(s) -> str:
                    if not c.isspace()).upper()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 源 5：名称拼音首字母（东财搜索建议，按代码逐只查）
+# ─────────────────────────────────────────────────────────────────────────────
+def name_key(s) -> str:
+    """名称闸门比较键：NFKC + 去空白 + 去 '-' + 大写。
+    源侧对 -U/-W 后缀写法偶有差异，比较时统一去掉；不改库里的展示名。
+    """
+    return norm_name(s).replace("-", "")
+
+
+def suggest_pinyin(code: str, name: str) -> tuple[str | None, str]:
+    """返回 ``(PinYin, 原因)``。查不到 / 信封不对 / 名称对不上 / 值不合法 → (None, 原因)。
+
+    失败一律**留 NULL 且不记进度**，下次跑自动重试；原因字符串会进日志，不静默吞。
+    """
+    try:
+        j = get_json(SUGGEST, {
+            "input": code, "type": 14, "count": 10,
+            "token": SUGGEST_TOKEN, "_": int(time.time() * 1000),
+        })
+    except Exception as exc:                     # noqa: BLE001
+        return None, f"request:{type(exc).__name__}:{str(exc)[:60]}"
+    table = j.get("QuotationCodeTable")
+    if not isinstance(table, dict):
+        # HTTPS gzip 缓存串成 JSONP 时 r.json() 就已经抛异常；这里是兜底，
+        # 防止「响应 200 但信封换了」被当成 0 条结果记成源侧无数据。
+        return None, "bad-envelope(响应不是 QuotationCodeTable)"
+    data = table.get("Data") or []
+    hit = next((x for x in data if str(x.get("Code") or "").strip() == code), None)
+    if not hit:
+        return None, "no-code-match(源侧未收录该代码)"
+    if name_key(hit.get("Name")) != name_key(name):
+        return None, f"name-gate:{hit.get('Name')!r}!={name!r}(拒绝错配)"
+    py = str(hit.get("PinYin") or "").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{1,32}", py):
+        return None, f"bad-pinyin:{py!r}"
+    return py, "ok"
+
+
 def parse_date(v):
     if v is None:
         return None
@@ -307,6 +392,24 @@ def num(v):
     except (TypeError, ValueError):
         return None
     return None if f != f else f            # NaN → None
+
+
+CN_TZ = timezone(timedelta(hours=8))
+
+
+def parse_quote_time(v):
+    """东财 ``f124`` → aware datetime（UTC+8）。0 / 缺失 / 异常时间戳一律 NULL。
+
+    ⚠ 挡住「毫秒被当成秒」：``f124`` 实测是 10 位秒级（1794204707），
+      上限 4102444800（2100-01-01）之外的直接丢弃，避免写入荒谬日期。
+    """
+    ts = num(v)
+    if not ts or ts <= 0 or ts > 4102444800:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, tz=CN_TZ)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def classify(code: str):
@@ -391,6 +494,7 @@ def load_roster(workers: int) -> list[dict]:
             "float_market_cap": num(r.get("f21")),
             "listing_date": parse_date(r.get("f26")),
             "quote_date": parse_date(r.get("f297")),
+            "quote_time": parse_quote_time(r.get("f124")),
         })
     return rows
 
@@ -496,11 +600,14 @@ def fetch_one(item: dict, catalog: dict, args) -> dict:
 UPSERT_ROSTER = """
 INSERT INTO stocks (code, name, name_search, exchange, board,
                     latest_price, change_pct, market_cap, float_market_cap,
-                    listing_date, quote_date, source)
+                    listing_date, quote_date, quote_time, source)
 VALUES %s
 ON CONFLICT (code) DO UPDATE SET
     name              = EXCLUDED.name,
     name_search       = EXCLUDED.name_search,
+    -- 改简称后旧拼音作废：置 NULL 让 backfill_pinyin 重算（失败留 NULL 下次再补）
+    name_pinyin       = CASE WHEN stocks.name IS DISTINCT FROM EXCLUDED.name
+                             THEN NULL ELSE stocks.name_pinyin END,
     exchange          = EXCLUDED.exchange,
     board             = EXCLUDED.board,
     latest_price      = EXCLUDED.latest_price,
@@ -509,6 +616,8 @@ ON CONFLICT (code) DO UPDATE SET
     float_market_cap  = EXCLUDED.float_market_cap,
     listing_date      = COALESCE(stocks.listing_date, EXCLUDED.listing_date),
     quote_date        = EXCLUDED.quote_date,
+    -- 源侧偶尔不给 f124：保留上一次的行情时刻，别把已有值抹成 NULL（项目铁律）
+    quote_time        = COALESCE(EXCLUDED.quote_time, stocks.quote_time),
     source            = EXCLUDED.source,
     updated_at        = NOW()
 """
@@ -599,7 +708,7 @@ def write_roster(cur, rows):
     vals = [(
         r["code"], r["name"], norm_name(r["name"]), r["exchange"], r["board"],
         r["latest_price"], r["change_pct"], r["market_cap"], r["float_market_cap"],
-        r["listing_date"], r["quote_date"], "eastmoney_clist",
+        r["listing_date"], r["quote_date"], r["quote_time"], "eastmoney_clist",
     ) for r in rows]
     execute_values(cur, UPSERT_ROSTER, vals, page_size=500)
     return len(vals)
@@ -693,6 +802,72 @@ def select_pending(conn, all_codes, args) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 拼音回填（独立于详情抓取；DB 里的 NULL 本身就是进度，无进度文件）
+# ─────────────────────────────────────────────────────────────────────────────
+PINYIN_UPSERT = """
+UPDATE stocks s SET name_pinyin = v.py
+FROM (
+    SELECT t.code::varchar(10) AS code, t.py::varchar(32) AS py
+    FROM (VALUES %s) AS t(code, py)
+) v
+WHERE s.code = v.code
+"""
+
+
+def select_pinyin_pending(conn, all_rows: bool = False) -> list[tuple[str, str]]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT code, name FROM stocks "
+                    + ("" if all_rows else "WHERE name_pinyin IS NULL ")
+                    + "ORDER BY code")
+        return [(r[0], r[1]) for r in cur.fetchall()]
+
+
+def backfill_pinyin(conn, args, t0: float) -> dict:
+    """逐只补拼音首字母。每 CHUNK 提交一次；失败行保持 NULL，下次自动重试。"""
+    items = select_pinyin_pending(conn, args.pinyin_all)
+    mode = "全量重算" if args.pinyin_all else "仅补缺失"
+    print(f"      待处理 {len(items)} 只（{mode}；workers={args.workers}）", flush=True)
+    stats: dict = {"ok": 0, "fail": 0, "reasons": {}}
+    if args.dry_run:
+        print(f"[dry-run] 将处理 {len(items)} 只，未发请求、未写库")
+        return stats
+    for start in range(0, len(items), CHUNK):
+        chunk = items[start:start + CHUNK]
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            results = list(ex.map(lambda it: suggest_pinyin(it[0], it[1]), chunk))
+        vals, fails = [], []
+        for (code, _), (py, why) in zip(chunk, results):
+            if py:
+                vals.append((code, py))
+            else:
+                fails.append((code, why))
+                kind = why.split(":", 1)[0].split("(", 1)[0]
+                stats["reasons"][kind] = stats["reasons"].get(kind, 0) + 1
+        if vals:
+            with conn:
+                with conn.cursor() as cur:
+                    execute_values(cur, PINYIN_UPSERT, vals, page_size=200)
+        stats["ok"] += len(vals)
+        stats["fail"] += len(fails)
+        print(f"      [{stats['ok'] + stats['fail']}/{len(items)}] 入库 {len(vals)} / "
+              f"失败 {len(fails)}，累计耗时 {time.time()-t0:.1f}s", flush=True)
+        for c, w in fails[:5]:
+            print(f"      [WARN] {c} 拼音未入库: {w}", flush=True)
+        if len(fails) > 5:
+            print(f"      [WARN] …另有 {len(fails)-5} 只，均留 NULL 下次自动补", flush=True)
+    if stats["reasons"]:
+        print(f"      失败原因分布：{stats['reasons']}", flush=True)
+    return stats
+
+
+def pinyin_summary(conn) -> tuple[int, int]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS total, COUNT(name_pinyin) AS with_py FROM stocks")
+        total, with_py = cur.fetchone()
+    return total, with_py
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # main
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
@@ -705,6 +880,10 @@ def main():
     ap.add_argument("--qps", type=float, default=DEFAULT_QPS)
     ap.add_argument("--skip-profile", action="store_true", help="跳过 F10 公司简介（联调用）")
     ap.add_argument("--skip-boards", action="store_true", help="跳过东财多值板块标签（联调用）")
+    ap.add_argument("--pinyin-only", action="store_true",
+                    help="不抓名录/详情，只补名称拼音首字母（可中断续跑）")
+    ap.add_argument("--pinyin-all", action="store_true",
+                    help="配合 --pinyin-only：全量重算拼音，而非只补 NULL")
     args = ap.parse_args()
 
     global LIMITER
@@ -712,7 +891,26 @@ def main():
     args.codes = [c.strip() for c in args.codes.split(",") if c.strip()]
 
     t0 = time.time()
-    print("[1/4] 拉取全市场名录（东财 clist，并发翻页）…", flush=True)
+
+    # 拼音首次回填 / 校验重算：单独跑，不碰名录与详情，失败可随时重来
+    if args.pinyin_only:
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(SQL_ENSURE)
+            print("[1/2] DDL 就绪；开始补名称拼音首字母", flush=True)
+            stats = backfill_pinyin(conn, args, t0)
+            total, with_py = pinyin_summary(conn)
+            print(f"[2/2] 库内：股票 {total} / 有拼音 {with_py} / 缺 {total - with_py}；"
+                  f"本次写入 {stats['ok']} / 失败 {stats['fail']}"
+                  f"{'（dry-run 未写库）' if args.dry_run else ''}")
+            print(f"完成，总耗时 {time.time()-t0:.1f}s")
+        finally:
+            conn.close()
+        return 0
+
+    print("[1/5] 拉取全市场名录（东财 clist，并发翻页）…", flush=True)
     rows = load_roster(args.workers)
     print(f"      全市场 {len(rows)} 只（已剔除北交所/B股），耗时 {time.time()-t0:.1f}s", flush=True)
     if not rows:
@@ -736,15 +934,18 @@ def main():
         with conn:
             with conn.cursor() as cur:
                 cur.execute(SQL_ENSURE)
-        print("[2/4] DDL 就绪", flush=True)
+        print("[2/5] DDL 就绪", flush=True)
 
         with conn:
             with conn.cursor() as cur:
                 n = write_roster(cur, rows)
         print(f"      名录 UPSERT {n} 行", flush=True)
 
+        print("[3/5] 补名称拼音首字母（东财搜索建议，逐只按代码查）…", flush=True)
+        backfill_pinyin(conn, args, t0)
+
         pending = select_pending(conn, all_codes, args)
-        print(f"[3/4] 待抓详情 {len(pending)} 只"
+        print(f"[4/5] 待抓详情 {len(pending)} 只"
               f"（{'全量' if args.full else '增量'}；workers={args.workers}）", flush=True)
 
         catalog = {}
@@ -820,8 +1021,9 @@ def main():
                 FROM stocks
             """)
             t = cur.fetchone()
-        print(f"[4/4] 库内：股票 {t[0]} / 有简介 {t[4]} / 有总股本 {t[3]} / "
-              f"有地域 {t[5]} / 有标签时间戳 {t[2]}")
+        total, with_py = pinyin_summary(conn)
+        print(f"[5/5] 库内：股票 {t[0]} / 有简介 {t[4]} / 有总股本 {t[3]} / "
+              f"有地域 {t[5]} / 有标签时间戳 {t[2]} / 有拼音 {with_py}/{total}")
         print(f"      失败端点 {stats['errors']} 只（不计进度，下次自动补）")
         print(f"完成，总耗时 {time.time()-t0:.1f}s")
     finally:
