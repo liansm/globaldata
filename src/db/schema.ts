@@ -3,6 +3,7 @@ import {
   varchar,
   text,
   integer,
+  smallint,
   numeric,
   date,
   timestamp,
@@ -972,6 +973,9 @@ export const stockFinancials = pgTable('stock_financials', {
   manageExpense:        numeric('manage_expense',         { precision: 24, scale: 2 }),
   financeExpense:       numeric('finance_expense',        { precision: 24, scale: 2 }),
   researchExpense:      numeric('research_expense',       { precision: 24, scale: 2 }),
+  // 其他收益（与「营业外收入」非同一项）。2026-11-10 补：列早在库里、视图
+  // v_stock_financials_quarterly 也在用，此前 schema.ts 漏声明。
+  otherIncome:          numeric('other_income',           { precision: 24, scale: 2 }),
   basicEps:             numeric('basic_eps',              { precision: 16, scale: 4 }),
   dilutedEps:           numeric('diluted_eps',            { precision: 16, scale: 4 }),
 
@@ -1055,4 +1059,39 @@ export const stockEmployeeSnapshots = pgTable('stock_employee_snapshots', {
                    .default(sql`NOW()`).notNull(),
 }, (t) => [
   primaryKey({ columns: [t.code, t.snapshotYear] }),
+])
+
+// 十大股东 / 十大流通股东（fetch_stock_shareholders.py，350 万行）。
+// ⚠ 与 stock_holder_counts 是**两张不同的表**：那张是「股东户数」（每期一行汇总），
+//   这张是「前十大股东明细」（每期每人一行）。2026-11-10 补：表在库里、脚本在写，
+//   此前 schema.ts 完全漏声明，Drizzle 侧查不到。
+// kind 区分口径：top = 按总股本排的十大股东；free = 按流通股排的十大流通股东。
+export const stockShareholders = pgTable('stock_shareholders', {
+  code:          varchar('code', { length: 10 }).notNull(),
+  reportDate:    date('report_date').notNull(),
+  kind:          varchar('kind', { length: 4 }).notNull(),   // top | free
+  holderRank:    integer('holder_rank').notNull(),           // 1..10
+  holderName:    varchar('holder_name', { length: 300 }),
+  holderCode:    varchar('holder_code', { length: 40 }),
+  holdNum:       numeric('hold_num',     { precision: 24, scale: 2 }),
+  totalRatio:    numeric('total_ratio',  { precision: 12, scale: 6 }),  // 占总股本 %（两类都有）
+  floatRatio:    numeric('float_ratio',  { precision: 12, scale: 6 }),  // 占流通股 %（仅 free）
+  holdChange:    numeric('hold_change',  { precision: 24, scale: 2 }),  // 增减股数（源侧为数字时）
+  changeText:    varchar('change_text', { length: 24 }),     // 不变 / 新进 / 加仓 …
+  sharesType:    varchar('shares_type', { length: 24 }),
+  holderType:    varchar('holder_type', { length: 24 }),     // 股东类型（仅 free）
+  isOrg:         smallint('is_org'),                         // IS_HOLDORG 是否机构
+  isDg:          smallint('is_dg'),                          // IS_DJG 是否董监高（仅 free）
+  isSjkzr:       smallint('is_sjkzr'),                       // IS_SJKZR 是否实际控制人（仅 free）
+  marketCap:     numeric('market_cap',   { precision: 24, scale: 2 }),  // 期末持仓市值
+  totalShares:   numeric('total_shares', { precision: 24, scale: 2 }),  // 总股本（仅 top）
+  noticeDate:    date('notice_date'),                        // 披露日（仅 free）
+  reportName:    varchar('report_name', { length: 24 }),     // 2026三季报（仅 free）
+  raw:           jsonb('raw'),
+  source:        varchar('source', { length: 200 }),
+  updatedAt:     timestamp('updated_at', { withTimezone: true })
+                   .default(sql`NOW()`).notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.code, t.reportDate, t.kind, t.holderRank] }),
+  index('idx_stock_shareholders_code').on(t.code, t.reportDate.desc()),
 ])

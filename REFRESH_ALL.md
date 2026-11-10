@@ -304,6 +304,7 @@ python refresh_all.py --status
 | `.workbuddy/load_simu_nav.py` | 排排网净值落库（需 `.cdp_session.json`） | 别手动跑，交给 `refresh_private.py` |
 | **`refresh_private.py`** | **私募整轮更新（备案增量 + 三源净值 + 可选管理人）** | 单独跑，或 `refresh_all.py --fetch --with-private`；`--status` 看新鲜度 |
 | **`fetch_stock_financials.py`** | **A 股财报三表 + 股东户数 + 员工数（季度频，2026-11-09 新增）** | 直接跑＝增量；首次 `--full`；或 `refresh_all.py --fetch --with-financials` |
+| **`fetch_stock_shareholders.py`** | **A 股十大股东 / 十大流通股东（季度频，2026-11-10 新增）** | 直接跑＝增量（缺期 + 最近 2 期，约 40 秒）；首次 `--full`（43 期约 30 分钟）；或 `refresh_all.py --fetch --with-shareholders` |
 
 > **2026-11-07 起私募有统一入口了**：以前这一域所有脚本都不在日常刷新里，净值停在
 > 10-30、备案停在 9-16、管理人停在 9-17 都无人察觉。`refresh_private.py` 把四条链路
@@ -326,6 +327,13 @@ python refresh_all.py --status
 > **没进 `CLEAR_TABLES`**（清了不会自动补回，得重跑全量）。
 > 单季净利润由 `v_stock_financials_quarterly` 视图 LAG 差分，不落派生表；
 > 口径与死路见脚本 docstring / `DATASOURCES.md`。
+
+> **2026-11-10 起十大股东 / 十大流通股东**：同样季度频、同样**不进 `FETCH_SCRIPTS`**
+> （`OPT_IN_SCRIPTS --with-shareholders`）。全量 43 期约 30 分钟、约 430 万行；
+> 默认增量＝缺期 + 最近 2 期，约 40 秒。**没进 `CLEAR_TABLES`**（清了要重跑半小时）。
+> ⚠ 该接口**深分页有硬上限**：只按 `END_DATE` 过滤、靠 pageNumber 往后翻，到 offset ~5 万行
+> 就返回「服务器繁忙」并连带限流，5.6 万行的报告期**拿不全** → 脚本改按代码分批
+> （每批 250 个 `SECURITY_CODE in (...)`）。细节见脚本 docstring / `DATASOURCES.md`。
 
 **三种「不接入」的方式别搞混：**
 

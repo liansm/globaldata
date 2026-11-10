@@ -192,6 +192,19 @@ OPT_IN_SCRIPTS = {
         "A股财报三表 + 股东户数 + 员工数（季度频，默认按 UPDATE_DATE 增量约 1~2 分钟）",
         [], {},
     ),
+    # 十大股东 / 十大流通股东（2026-11-10）：**季度频，不进 FETCH_SCRIPTS**。
+    # 默认增量＝缺期 + 最近 2 期（最新一期仍在陆续披露、老期会被追溯更正），
+    # 约 40 秒（2 期 × 2 端点 × 每期 ~115 页）；--full 全量 43 期约 30 分钟，
+    # 全量 430 万行，可断点续跑（进度文件 .workbuddy/stock_shareholders_progress.json）。
+    #   python fetch_stock_shareholders.py                 # 增量
+    #   python refresh_all.py --fetch --with-shareholders  # 连同整轮一起跑
+    #   python fetch_stock_shareholders.py --full          # 首次全量（后台跑）
+    # ⚠ 不要加进 CLEAR_TABLES：清空后不会自动补回，全量要重跑约 30 分钟。
+    "shareholders": (
+        "fetch_stock_shareholders.py",
+        "A股十大股东 / 十大流通股东（季度频，默认增量约 40 秒）",
+        [], {},
+    ),
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -782,6 +795,23 @@ STATUS_QUERIES = [
             FROM stock_employee_snapshots
         """,
         "cols": ["rows", "stocks", "earliest", "latest"],
+        "optional": True,
+    },
+    {
+        # 十大股东 / 十大流通股东：一行 = 股票 × 报告期 × 类型 × 名次（每类每期 10 行）。
+        # top / free 行数不等是**源侧缺口**（有的股票某期只披露其中一类），不是抓漏。
+        "title": "stock_shareholders  (十大股东 / 十大流通股东)",
+        "sql": """
+            SELECT COUNT(*) AS rows,
+                   COUNT(DISTINCT code) AS stocks,
+                   COUNT(DISTINCT report_date) AS periods,
+                   MIN(report_date)::text AS earliest,
+                   MAX(report_date)::text AS latest,
+                   COUNT(*) FILTER (WHERE kind = 'top')  AS top_rows,
+                   COUNT(*) FILTER (WHERE kind = 'free') AS free_rows
+            FROM stock_shareholders
+        """,
+        "cols": ["rows", "stocks", "periods", "earliest", "latest", "top_rows", "free_rows"],
         "optional": True,
     },
 ]
