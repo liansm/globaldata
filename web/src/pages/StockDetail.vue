@@ -169,8 +169,8 @@ const financialsResult = ref<StockFinancialsResult | null>(null)
 const financialsLoading = ref(false)
 const financialsError = ref('')
 const financialsFound = ref(false)
-// 季度对比的指标清单 = 表格列顺序：前 10 项单季、后 2 项累计。
-// unit 决定图表 Y 轴是「亿元」还是「%」——毛利率是比率，不能再除 1e8。
+// 季度对比的指标清单 = 表格列顺序：前 11 项单季、后 2 项累计。
+// unit 决定图表 Y 轴是「亿元」「%」还是「数量」——比率 / 户数不能再除 1e8。
 // ⚠ 「其他收益」接口仍返回（qOtherIncome），2026-11-09 用户要求先从表格/图表里拿掉，
 //   数据与接口都保留，要显示回来只需在这里加一行 + 表格加一列。
 const FIN_METRICS = [
@@ -184,11 +184,48 @@ const FIN_METRICS = [
   { label: '营业利润',       value: 'qOperateProfit',  unit: 'money' },
   { label: '所得税',         value: 'qIncomeTax',      unit: 'money' },
   { label: '净利润',         value: 'qNetprofit',      unit: 'money' },
-  { label: '累计营业总收入', value: 'revenue',         unit: 'money' },
+  // 单季净利率 = 单季净利润 ÷ 单季营业总收入（2026-11-10 用户要求，紧跟净利润）
+  { label: '净利率',         value: 'qNetMargin',      unit: 'percent' },
+  { label: '累计总收入',     value: 'revenue',         unit: 'money' },
   { label: '累计归母净利',   value: 'parentNetprofit', unit: 'money' },
 ] as const
+
+// 「季度对比(其他)」：资产负债 / 现金流 / 股本结构（2026-11-10 用户指定，顺序勿改）。
+// ⚠ 时效不同：资产负债类是**季末时点值**（不差分）；经营活动现金流是**单季差分**；
+//   员工数量是**年度快照**（季报不披露，按报告期年份匹配）；股东数量是季度内最后一个统计截止日。
+const FIN_METRICS_OTHER = [
+  { label: '流动资产',       value: 'totalCurrentAssets', unit: 'money' },
+  { label: '流动负债',       value: 'totalCurrentLiab',   unit: 'money' },
+  { label: '负债合计',       value: 'totalLiabilities',   unit: 'money' },
+  { label: '资产合计',       value: 'totalAssets',        unit: 'money' },
+  { label: '归母所有者权益', value: 'totalParentEquity',  unit: 'money' },
+  { label: '短期借款',       value: 'shortLoan',          unit: 'money' },
+  { label: '长期借款',       value: 'longLoan',           unit: 'money' },
+  { label: '应收账款',       value: 'accountsRece',       unit: 'money' },
+  { label: '应付账款',       value: 'accountsPayable',    unit: 'money' },
+  { label: '存货',           value: 'inventory',          unit: 'money' },
+  { label: '货币资金',       value: 'monetaryFunds',      unit: 'money' },
+  { label: '经营活动现金流', value: 'qNetcashOperate',    unit: 'money' },
+  { label: '期末现金',       value: 'endCce',             unit: 'money' },
+  { label: '员工数量',       value: 'employeeNum',        unit: 'count' },
+  { label: '股东数量',       value: 'holderNum',          unit: 'count' },
+] as const
+
 type FinMetricKey = typeof FIN_METRICS[number]['value']
+type FinMetricOtherKey = typeof FIN_METRICS_OTHER[number]['value']
+type AnyFinMetricKey = FinMetricKey | FinMetricOtherKey
+type MetricDef = { label: string; value: AnyFinMetricKey; unit: 'money' | 'percent' | 'count' }
+
+// as const 的元组需要放宽成统一结构才能在同一处图表逻辑里互换
+const FIN_DEFS: MetricDef[] = FIN_METRICS.map(m => ({ ...m }))
+const FIN_DEFS_OTHER: MetricDef[] = FIN_METRICS_OTHER.map(m => ({ ...m }))
+
 const finMetric = ref<FinMetricKey>('qRevenue')
+const finMetricOther = ref<FinMetricOtherKey>('totalCurrentAssets')
+// 图表形态：柱状（逐季对比高低）/ 曲线（看趋势与拐点）。
+// 默认柱状 —— 费用、税费这类科目单季波动大，柱更容易读绝对值；趋势判断再切曲线。
+const finChartType = ref<'bar' | 'line'>('bar')
+const finChartTypeOther = ref<'bar' | 'line'>('bar')
 let financialsLoaded = false
 
 async function loadFinancials() {
@@ -217,7 +254,29 @@ function fmtYi(v: number | null | undefined): string {
 
 // ── 逐科目三表（雪球式）：行 = 报表科目，列 = 报告期，可切年报/中报/季报并翻页 ──
 // 数据来自 /statement（直接读 raw 里的 200~319 个字段），与上面的「季度对比」同一批数据。
-const finSubTab = ref<'BALANCE' | 'INCOME' | 'CASHFLOW' | 'summary'>('BALANCE')
+// summary = 季度对比(财务)；summaryOther = 季度对比(其他，资产负债/现金流/股本)
+type FinSubTab = 'BALANCE' | 'INCOME' | 'CASHFLOW' | 'summary' | 'summaryOther'
+const finSubTab = ref<FinSubTab>('BALANCE')
+/** 两个「季度对比」子页签共用同一批 financials 行，只是表格列与图表指标不同 */
+const isCompareTab = computed(() =>
+  finSubTab.value === 'summary' || finSubTab.value === 'summaryOther')
+/** 当前对比页签的指标清单 / 选中指标 / 图表形态（两套各自记忆，切页签不互相覆盖） */
+const activeMetricDefs = computed<MetricDef[]>(() =>
+  finSubTab.value === 'summaryOther' ? FIN_DEFS_OTHER : FIN_DEFS)
+const activeMetric = computed<AnyFinMetricKey>({
+  get: () => (finSubTab.value === 'summaryOther' ? finMetricOther.value : finMetric.value),
+  set: v => {
+    if (finSubTab.value === 'summaryOther') finMetricOther.value = v as FinMetricOtherKey
+    else finMetric.value = v as FinMetricKey
+  },
+})
+const activeChartType = computed<'bar' | 'line'>({
+  get: () => (finSubTab.value === 'summaryOther' ? finChartTypeOther.value : finChartType.value),
+  set: v => {
+    if (finSubTab.value === 'summaryOther') finChartTypeOther.value = v
+    else finChartType.value = v
+  },
+})
 const STMT_FILTERS: { value: StmtFilter; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'annual', label: '年报' },
@@ -277,7 +336,7 @@ function stmtRowClass({ row }: { row: StmtLineRow }): string {
 }
 
 async function loadStatement() {
-  if (finSubTab.value === 'summary') return
+  if (isCompareTab.value) return
   const type = finSubTab.value as StmtType
   const key = `${code.value}|${type}|${stmtFilter.value}|${stmtPage.value}`
   const cached = stmtCache.get(key)
@@ -318,8 +377,8 @@ function gotoStmtPage(p: number) {
   loadStatement()
 }
 
-watch(finSubTab, async v => {
-  if (v !== 'summary') {
+watch(finSubTab, async () => {
+  if (!isCompareTab.value) {
     stmtPage.value = 1
     stmtResult.value = null
     await loadStatement()
@@ -355,14 +414,47 @@ function finRowClass({ row, rowIndex }:
 const finChartOption = computed(() => {
   const rows = financials.value.slice(0, 20).slice().reverse()
   const labels = rows.map(periodText)
-  const metric = FIN_METRICS.find(m => m.value === finMetric.value) ?? FIN_METRICS[0]
-  const pct = metric.unit === 'percent'
+  const key = activeMetric.value
+  const unit = (activeMetricDefs.value.find(m => m.value === key) ?? activeMetricDefs.value[0]).unit
+  const pct = unit === 'percent'
+  const cnt = unit === 'count'
   const values = rows.map(r => {
-    const raw = r[finMetric.value]
+    const raw = r[key]
     if (raw == null) return null
-    return pct ? raw : raw / 1e8
+    // 亿元 / % / 数量（户、人）三种量纲，只有金额要除 1e8
+    return unit === 'money' ? raw / 1e8 : raw
   })
   const rotated = labels.length > 12
+  // 柱状按正负分色（涨红跌绿），曲线只有一条线 → 统一用红 + 淡红渐隐面积，
+  // 靠 Y 轴 0 线判断正负（负数会自然落到 0 线以下）。两种形态共用同一份网格与坐标轴。
+  const asLine = activeChartType.value === 'line'
+  const series = asLine
+    ? [{
+        type: 'line', smooth: true, smoothMonotone: 'x',
+        symbol: 'circle', symbolSize: 7,
+        // 缺期就断开，不要 connectNulls 拉一条假直线
+        connectNulls: false,
+        data: values,
+        itemStyle: { color: UP },
+        lineStyle: { color: UP, width: 2 },
+        areaStyle: {
+          color: {
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(224,75,75,0.26)' },
+              { offset: 1, color: 'rgba(224,75,75,0.02)' },
+            ],
+          },
+        },
+      }]
+    : [{
+        type: 'bar', barMaxWidth: 28,
+        // A 股习惯：正（盈利 / 增长）红、负绿
+        data: values.map(v => v == null ? null : ({
+          value: v,
+          itemStyle: { color: v >= 0 ? UP : DOWN },
+        })),
+      }]
   return {
     backgroundColor: 'transparent',
     // ⚠ 下边距要跟 X 轴标签倾斜一起变：标签转 40° 后纵向占 ~40px，
@@ -371,7 +463,9 @@ const finChartOption = computed(() => {
     tooltip: {
       trigger: 'axis',
       valueFormatter: (v: unknown) => v == null ? '—'
-        : pct ? `${Number(v).toFixed(2)}%` : `${Number(v).toFixed(2)} 亿元`,
+        : pct ? `${Number(v).toFixed(2)}%`
+        : cnt ? `${Number(v).toLocaleString('zh-CN')}`
+        : `${Number(v).toFixed(2)} 亿元`,
     },
     xAxis: {
       type: 'category', data: labels,
@@ -380,21 +474,14 @@ const finChartOption = computed(() => {
       axisLine: { lineStyle: { color: '#dfe3ea' } },
     },
     yAxis: {
-      type: 'value', name: pct ? '%' : '亿元',
+      type: 'value', name: pct ? '%' : cnt ? '数量' : '亿元',
       // nameGap 太小会让「亿元」压在容器顶边被切掉（截图验收踩过），配 top:36
       nameGap: 12,
       axisLabel: { color: '#888', fontSize: 11 },
       nameTextStyle: { color: '#999', fontSize: 11, padding: [0, 0, 0, -18] },
       splitLine: { lineStyle: { color: '#eef1f6' } },
     },
-    series: [{
-      type: 'bar', barMaxWidth: 28,
-      // A 股习惯：正（盈利 / 增长）红、负绿
-      data: values.map(v => v == null ? null : ({
-        value: v,
-        itemStyle: { color: v >= 0 ? UP : DOWN },
-      })),
-    }],
+    series,
   }
 })
 
@@ -898,12 +985,19 @@ const chartOption = computed(() => {
             <div class="card-head">
               <h2>
                 财务报表
-                <small v-if="finSubTab === 'summary'">逐季度对比 · 累计值 / 单季差分</small>
+                <small v-if="finSubTab === 'summary'">季度对比(财务) · 累计值 / 单季差分</small>
+                <small v-else-if="finSubTab === 'summaryOther'">季度对比(其他) · 资产负债 / 现金流 / 股本</small>
                 <small v-else>逐科目明细 · 金额自动按亿/万显示</small>
               </h2>
-              <el-select v-if="finSubTab === 'summary'" v-model="finMetric" style="width: 175px" size="small">
-                <el-option v-for="m in FIN_METRICS" :key="m.value" :label="m.label" :value="m.value" />
-              </el-select>
+              <div v-if="isCompareTab" class="fin-head-tools">
+                <el-radio-group v-model="activeChartType" size="small">
+                  <el-radio-button value="bar">柱状图</el-radio-button>
+                  <el-radio-button value="line">曲线图</el-radio-button>
+                </el-radio-group>
+                <el-select v-model="activeMetric" style="width: 175px" size="small">
+                  <el-option v-for="m in activeMetricDefs" :key="m.value" :label="m.label" :value="m.value" />
+                </el-select>
+              </div>
             </div>
             <div v-if="financialsError" class="error-box">{{ financialsError }}</div>
             <template v-else>
@@ -922,11 +1016,13 @@ const chartOption = computed(() => {
                 <button :class="['stmt-tab', { active: finSubTab === 'CASHFLOW' }]"
                         @click="finSubTab = 'CASHFLOW'">现金流量表</button>
                 <button :class="['stmt-tab', { active: finSubTab === 'summary' }]"
-                        @click="finSubTab = 'summary'">季度对比</button>
+                        @click="finSubTab = 'summary'">季度对比(财务)</button>
+                <button :class="['stmt-tab', { active: finSubTab === 'summaryOther' }]"
+                        @click="finSubTab = 'summaryOther'">季度对比(其他)</button>
               </div>
 
               <!-- ── 逐科目三表（雪球式：行 = 科目，列 = 报告期） ── -->
-              <div v-if="finSubTab !== 'summary'" class="stmt-pane">
+              <div v-if="!isCompareTab" class="stmt-pane">
                 <div class="stmt-toolbar">
                   <div class="stmt-filters">
                     <button v-for="f in STMT_FILTERS" :key="f.value"
@@ -969,15 +1065,15 @@ const chartOption = computed(() => {
                 <p class="src-note report-note">
                   数据来源：东方财富 datacenter F10 结构化接口（不解析 PDF），报告期 2016 年起。
                   <b>{{ finSubTab === 'BALANCE' ? '资产负债表是季末时点值' : '利润表 / 现金流量表是年初至今累计值' }}</b>，
-                  与交易所披露口径一致，不是单季；要看单季请切到「季度对比」。
+                  与交易所披露口径一致，不是单季；要看单季请切到「季度对比(财务)」。
                   单位逐格自适应（≥1 亿显示亿、≥1 万显示万），每股收益为元/股。
                   资产减值损失、信用减值损失按报表习惯显示为<b>正的损失额</b>（源侧存的是带符号收益）。
                   银行 / 证券 / 保险使用各自报表模板，通用科目为空的行已自动隐藏。
                 </p>
               </div>
 
-              <!-- ── 季度对比（原有：43 行 + 柱状图） ── -->
-              <template v-else>
+              <!-- ── 季度对比(财务)：43 行 + 柱状图 / 曲线图 ── -->
+              <template v-else-if="finSubTab === 'summary'">
                 <v-chart v-if="financials.length" :option="finChartOption" autoresize class="fin-chart" />
                 <div v-else-if="!financialsLoading && !financialsFound" class="empty-note">
                   该股票暂无财报三表数据（源侧未披露或不在采集范围）。
@@ -988,7 +1084,7 @@ const chartOption = computed(() => {
                   <el-table-column label="报告期" width="104" fixed>
                     <template #default="{ row }"><b>{{ periodText(row) }}</b></template>
                   </el-table-column>
-                  <!-- 前 10 列为单季值，后 2 列为累计值（顺序 = 用户指定，勿随意调整） -->
+                  <!-- 前 11 列为单季值，后 2 列为累计值（顺序 = 用户指定，勿随意调整） -->
                   <el-table-column label="总收入" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qRevenue) }}</template>
                   </el-table-column>
@@ -1019,7 +1115,10 @@ const chartOption = computed(() => {
                   <el-table-column label="净利润" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qNetprofit) }}</template>
                   </el-table-column>
-                  <el-table-column label="累计营业总收入" min-width="110" align="right">
+                  <el-table-column label="净利率" min-width="76" align="right">
+                    <template #default="{ row }">{{ fmtRatio(row.qNetMargin) }}</template>
+                  </el-table-column>
+                  <el-table-column label="累计总收入" min-width="92" align="right">
                     <template #default="{ row }">{{ fmtYi(row.revenue) }}</template>
                   </el-table-column>
                   <el-table-column label="累计归母净利" min-width="110" align="right">
@@ -1028,16 +1127,96 @@ const chartOption = computed(() => {
                 </el-table>
                 <p class="src-note report-note">
                   数据来源：东方财富 datacenter 结构化财报接口（无需解析 PDF），报告期从 2016 年起。
-                  表格<b>前 10 列为单季值</b>：一季报直接取累计值，二 / 三 / 四季报由年内相邻报告期差分，
+                  表格<b>前 11 列为单季值</b>：一季报直接取累计值，二 / 三 / 四季报由年内相邻报告期差分，
                   缺上一期时显示「—」；<b>后 2 列为年初至今累计值</b>。
                   「净利润」是<b>合并口径（含少数股东损益）</b>，与「累计归母净利」不同口径，
                   两者差额即少数股东损益。
                   毛利润 = 单季营业收入 − 单季营业成本；毛利率 = 毛利润 / 单季营业收入
                   （分母是营业收入，不是营业总收入）。
+                  净利率 = 单季净利润 / 单季营业总收入（分母为 0 或缺失时显示「—」）。
                   「财务费用」为负 = 利息收入大于支出，按源侧原样显示，不取绝对值。
                   行按<b>报告期年</b>分组：奇数年淡底、年份切换处加深上边框。
+                  上方图表可在<b>柱状图 / 曲线图</b>之间切换：柱状看单季高低（按正负分色），
+                  曲线看趋势与拐点（缺期断开，不插值连线）。
                   银行 / 证券 / 保险不披露营业成本与毛利，相关列显示「—」。
-                  速动比、资产负债率、经营现金流、股东户数等其他指标暂未在本表展示。
+                  资产负债、经营现金流、股东户数、员工数等看<b>「季度对比(其他)」</b>。
+                </p>
+              </template>
+
+              <!-- ── 季度对比(其他)：资产负债 / 现金流 / 股本结构（2026-11-10 新增） ── -->
+              <template v-else>
+                <v-chart v-if="financials.length" :option="finChartOption" autoresize class="fin-chart" />
+                <div v-else-if="!financialsLoading && !financialsFound" class="empty-note">
+                  该股票暂无财报三表数据（源侧未披露或不在采集范围）。
+                </div>
+                <el-table :data="financials" v-loading="financialsLoading" size="small"
+                          empty-text="暂无财报数据" class="fin-table"
+                          :row-class-name="finRowClass">
+                  <el-table-column label="报告期" width="88" fixed>
+                    <template #default="{ row }"><b>{{ periodText(row) }}</b></template>
+                  </el-table-column>
+                  <!-- 列顺序 = 用户 2026-11-10 指定，勿随意调整 -->
+                  <!-- 16 列要塞进 1400px 容器（.detail-page max-width），列宽按内容压到最小以免横向滚动 -->
+                  <el-table-column label="流动资产" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.totalCurrentAssets) }}</template>
+                  </el-table-column>
+                  <el-table-column label="流动负债" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.totalCurrentLiab) }}</template>
+                  </el-table-column>
+                  <el-table-column label="负债合计" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.totalLiabilities) }}</template>
+                  </el-table-column>
+                  <el-table-column label="资产合计" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.totalAssets) }}</template>
+                  </el-table-column>
+                  <el-table-column label="归母所有者权益" min-width="112" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.totalParentEquity) }}</template>
+                  </el-table-column>
+                  <el-table-column label="短期借款" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.shortLoan) }}</template>
+                  </el-table-column>
+                  <el-table-column label="长期借款" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.longLoan) }}</template>
+                  </el-table-column>
+                  <el-table-column label="应收账款" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.accountsRece) }}</template>
+                  </el-table-column>
+                  <el-table-column label="应付账款" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.accountsPayable) }}</template>
+                  </el-table-column>
+                  <el-table-column label="存货" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.inventory) }}</template>
+                  </el-table-column>
+                  <el-table-column label="货币资金" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.monetaryFunds) }}</template>
+                  </el-table-column>
+                  <el-table-column label="经营活动现金流" min-width="112" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.qNetcashOperate) }}</template>
+                  </el-table-column>
+                  <el-table-column label="期末现金" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtYi(row.endCce) }}</template>
+                  </el-table-column>
+                  <el-table-column label="员工数量" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtCount(row.employeeNum) }}</template>
+                  </el-table-column>
+                  <el-table-column label="股东数量" min-width="74" align="right">
+                    <template #default="{ row }">{{ fmtCount(row.holderNum) }}</template>
+                  </el-table-column>
+                </el-table>
+                <p class="src-note report-note">
+                  数据来源：东方财富 datacenter 结构化财报接口，报告期从 2016 年起。
+                  本表是<b>资产负债表视角</b>：前 12 个金额列中，除「经营活动现金流」外
+                  都是<b>季末时点值</b>（余额，不做差分）；<b>「经营活动现金流」是单季差分值</b>
+                  （一季报取累计值，二 / 三 / 四季报由年内相邻报告期相减，缺上一期显示「—」）。
+                  「期末现金」= 期末现金及现金等价物余额（时点值）。
+                  「归母所有者权益」= 归属于母公司股东权益合计，不含少数股东权益；
+                  与「资产合计 − 负债合计」的差额即少数股东权益。
+                  「短期借款 / 长期借款」源侧不披露时显示「—」（例如无有息负债），不代表 0。
+                  「员工数量」是<b>年度快照</b>（源侧不披露季报员工数），按报告期所属年份匹配，
+                  同一年内四个报告期显示同一数值；库里 2026 年起才逐年累积，更早的报告期为「—」。
+                  「股东数量」取该报告期所在季度内<b>最后一个统计截止日</b>的股东户数，
+                  不一定等于季末。
+                  银行 / 证券 / 保险不按流动 / 非流动划分资产，流动资产、流动负债、存货等列显示「—」。
                 </p>
               </template>
             </template>
@@ -1153,6 +1332,7 @@ const chartOption = computed(() => {
 .report-note b { color: #888; font-weight: 600; }
 
 /* 财报三表 tab */
+.fin-head-tools { display: flex; align-items: center; gap: 10px; }
 .fin-summary {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px;
 }

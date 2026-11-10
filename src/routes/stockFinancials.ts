@@ -8,6 +8,18 @@ const toNum = (v: unknown): number | null => (v == null ? null : Number(v))
 const day = (v: unknown): string | null => (v == null ? null : String(v).slice(0, 10))
 const toInt = (v: unknown): number | null => (v == null ? null : Number(v))
 
+/**
+ * 单季净利率 % = 单季净利润 ÷ 单季营业总收入。
+ * 分母缺失或 ≤ 0 时返回 null（**不用 0 充数**），前端显示「—」。
+ * ⚠ 与 View 里的 `net_margin` 不是一个口径：那个是累计（归母净利润 ÷ 营业总收入），
+ *   这个分子用合并口径净利润、且分子分母都是单季值 —— 两个数不能混看。
+ */
+const qNetMarginOf = (np: unknown, rev: unknown): number | null => {
+  const n = toNum(np)
+  const d = toNum(rev)
+  return n != null && d != null && d > 0 ? (n / d) * 100 : null
+}
+
 type Row = Record<string, unknown>
 
 /**
@@ -27,6 +39,9 @@ type Row = Record<string, unknown>
  *   ⑤ 员工数只有「当前值 + 年度快照」，单独返回 employee，不伪装成每季度的列。
  *   ⑥ 详情类接口一律 200 + {found:false}（axios 对 404 直接抛异常），并补齐
  *      rows/total/page/pageSize，前端必须显式分支。
+ *   ⑦ 「季度对比(其他)」用同一批行：资产负债类是**季末时点值**（不差分），
+ *      员工数是**年度快照**（按 report_year 匹配，季报不披露），股东户数是季度内
+ *      最后一个统计截止日的值 —— 三种时效混在一张表里，前端注释已标明。
  */
 export function stockFinancialsRoutes(app: FastifyInstance) {
   app.get<{
@@ -70,7 +85,7 @@ export function stockFinancialsRoutes(app: FastifyInstance) {
       db.execute(sql`
         SELECT snapshot_year, emp_num, collected_at::text AS collected_at
         FROM stock_employee_snapshots
-        WHERE code = ${code} ORDER BY snapshot_year DESC LIMIT 1
+        WHERE code = ${code} ORDER BY snapshot_year DESC
       `),
     ])
 
@@ -79,7 +94,16 @@ export function stockFinancialsRoutes(app: FastifyInstance) {
     if (!total) return empty
 
     const orgType = meta.org_type == null ? null : String(meta.org_type)
-    const emp = (empRes.rows as Row[])[0]
+    const empRows = empRes.rows as Row[]
+    const emp = empRows[0]
+    // 员工数是**年度快照**（源侧不披露季报员工数），按 report_year 匹配到同一年的四个报告期。
+    // 库里 2026 起才逐年累积 → 2025 及更早的报告期没有快照，返回 null 显示「—」，不硬填。
+    const empByYear = new Map<number, number>()
+    for (const e of empRows) {
+      const y = toInt(e.snapshot_year)
+      const n = toInt(e.emp_num)
+      if (y != null && n != null) empByYear.set(y, n)
+    }
 
     return {
       found: true,
@@ -126,12 +150,30 @@ export function stockFinancialsRoutes(app: FastifyInstance) {
         qIncomeTax:        toNum(r.q_income_tax),
         // 「净利润」= 合并口径（含少数股东损益），不是归母；归母看 parentNetprofit / qParentNetprofit
         qNetprofit:        toNum(r.q_netprofit),
+        // 单季净利率 %：紧跟在净利润后面展示，口径见 qNetMarginOf 注释
+        qNetMargin:        qNetMarginOf(r.q_netprofit, r.q_revenue),
         // 资产负债表（季末时点值，禁止差分）
         totalAssets:       toNum(r.total_assets),
         totalCurrentAssets:toNum(r.total_current_assets),
-        inventory:         toNum(r.inventory),
+        totalLiabilities:  toNum(r.total_liabilities),
         totalCurrentLiab:  toNum(r.total_current_liab),
         totalEquity:       toNum(r.total_equity),
+        // 「归母所有者权益」= 归属于母公司股东权益合计（不含少数股东权益），
+        // 与 totalEquity（所有者权益合计）差 minority_equity
+        totalParentEquity: toNum(r.total_parent_equity),
+        inventory:         toNum(r.inventory),
+        monetaryFunds:     toNum(r.monetaryfunds),   // ⚠ 库里列名无下划线：monetaryfunds
+        accountsRece:      toNum(r.accounts_rece),
+        accountsPayable:   toNum(r.accounts_payable),
+        // 借款类：源侧不披露（如茅台无有息负债）时是 NULL → 显示「—」，不当 0
+        shortLoan:         toNum(r.short_loan),
+        longLoan:          toNum(r.long_loan),
+        // 期末现金及现金等价物余额（时点值，不差分）
+        endCce:            toNum(r.end_cce),
+        // 员工数：年度快照按 report_year 匹配，没有该年快照 → null
+        employeeNum:       r.report_year == null
+                             ? null
+                             : (empByYear.get(Number(r.report_year)) ?? null),
         // 派生指标（金融业为 null）
         grossMargin:       toNum(r.gross_margin),
         netMargin:         toNum(r.net_margin),
