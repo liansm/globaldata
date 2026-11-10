@@ -226,9 +226,27 @@ export interface StockFinancialRow {
   // 资产负债表季末时点值（不差分）
   totalAssets: number | null
   totalCurrentAssets: number | null
+  /** 负债合计 */
+  totalLiabilities: number | null
   inventory: number | null
+  /** 货币资金 */
+  monetaryFunds: number | null
+  /** 应收账款 */
+  accountsRece: number | null
+  /** 应付账款 */
+  accountsPayable: number | null
+  /** 短期借款；源侧不披露（无有息负债）时为 null */
+  shortLoan: number | null
+  /** 长期借款；源侧不披露时为 null */
+  longLoan: number | null
   totalCurrentLiab: number | null
   totalEquity: number | null
+  /** 归母所有者权益（不含少数股东权益） */
+  totalParentEquity: number | null
+  /** 期末现金及现金等价物余额（时点值） */
+  endCce: number | null
+  /** 员工数量：年度快照，按 reportYear 匹配；没有该年快照时为 null */
+  employeeNum: number | null
   // 派生指标（金融业为 null）
   grossMargin: number | null
   netMargin: number | null
