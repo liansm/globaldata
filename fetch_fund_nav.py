@@ -117,6 +117,14 @@ CN_TZ      = timezone(timedelta(hours=8))   # 东财时间戳口径，见文件�
 # SQL
 # ---------------------------------------------------------------------------
 SQL_ENSURE = """
+-- ⚠ 2026-11-10 补：本脚本要 ALTER funds（补 nav 快照列），但全仓原先没有 funds 的
+--   建表语句 → 空库直接跑本脚本会 `relation "funds" does not exist`。
+--   这里只建最小骨架，其余列（fund_type / scale / company …）由 fetch_funds.py 补齐。
+CREATE TABLE IF NOT EXISTS funds (
+    fund_code  VARCHAR(12)  PRIMARY KEY,
+    fund_name  VARCHAR(200) NOT NULL,
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS fund_nav (
     id           BIGSERIAL PRIMARY KEY,
     fund_code    VARCHAR(12)  NOT NULL,
