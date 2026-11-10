@@ -314,3 +314,41 @@ export interface StockStatementResult {
   sections: { title: string | null; rows: StmtLineRow[] }[]
   unit: string
 }
+
+// ── 十大股东 / 十大流通股东（2026-11-10）────────────────────────────────
+export interface StockShareholderRow {
+  rank: number | null
+  name: string | null
+  holderCode: string | null
+  /** 持股数（股） */
+  holdNum: number | null
+  /** 占总股本 %（两类都有） */
+  totalRatio: number | null
+  /** 占流通股 %（仅十大流通股东有） */
+  floatRatio: number | null
+  /** 增减股数（源侧是数字时） */
+  holdChange: number | null
+  /** 增减文字：不变 / 新进 / 加仓 … */
+  changeText: string | null
+  sharesType: string | null
+  /** 股东类型（仅流通股东：其它 / 投资公司 / 基金 …） */
+  holderType: string | null
+  isOrg: number | null
+  isDg: number | null
+  isSjkzr: number | null
+  marketCap: number | null
+  totalShares: number | null
+  noticeDate: string | null
+  reportName: string | null
+}
+
+export interface StockShareholdersResult {
+  found: boolean
+  code: string
+  /** 实际返回的报告期（请求的期库里没有时会回退到最新一期） */
+  period: string | null
+  periods: { date: string; label: string }[]
+  top: StockShareholderRow[]
+  free: StockShareholderRow[]
+  source?: string
+}

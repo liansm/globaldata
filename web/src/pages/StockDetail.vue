@@ -11,12 +11,13 @@ import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import dayjs from 'dayjs'
 import { fetchStockDetail, fetchStockPrices, fetchStockReports, fetchStockHoldings,
-         fetchStockFinancials, fetchStockStatement } from '@/api/stocks'
+         fetchStockFinancials, fetchStockStatement, fetchStockShareholders } from '@/api/stocks'
 import type {
   StockDetailResult, PricePeriod, PriceBar, StockReport,
   StockFundHolding, HoldingReportDate, StockHoldingsResult,
   StockFinancialRow, StockFinancialsResult,
   StockStatementResult, StmtType, StmtFilter, StmtLineRow,
+  StockShareholderRow,
 } from '@/types/stocks'
 
 use([CanvasRenderer, CandlestickChart, BarChart, LineChart, GridComponent,
@@ -101,7 +102,7 @@ const QUARTER_OPTIONS = [
   { label: '第一季度', value: 'Q1' }, { label: '中报', value: 'H1' },
   { label: '第三季度', value: 'Q3' }, { label: '年报', value: 'FY' },
 ]
-const activeTab = ref<'profile' | 'reports' | 'holdings' | 'financials'>('profile')
+const activeTab = ref<'profile' | 'reports' | 'holdings' | 'financials' | 'shareholders'>('profile')
 const reports = ref<StockReport[]>([])
 const reportsTotal = ref(0)
 const reportsLoading = ref(false)
@@ -525,6 +526,10 @@ function fmtWan(v: number | null | undefined): string {
 function fmtRatio(v: number | null): string {
   return v == null ? '—' : `${v.toFixed(2)}%`
 }
+/** 股数 → 万股（两位小数 + 千分位），空值 — */
+function fmtWanShares(v: number | null | undefined): string {
+  return v == null ? '—' : fmtWan(v / 1e4)
+}
 
 async function loadReports() {
   reportsLoading.value = true
@@ -547,9 +552,64 @@ function periodLabel(r: StockReport) {
   return `${r.reportYear ?? '—'} ${QUARTER_LABEL[r.quarter] ?? r.quarter}`
 }
 
+// ── 股东信息（十大股东 / 十大流通股东，2026-11-10）────────────────────────────
+// ⚠ 两个口径：十大股东按**总股本**算比例；十大流通股东按**流通股**算比例，
+//   同时给「占总股本」。A+H / 有未流通股的公司两者差很多，别混着比。
+const shPeriods = ref<{ date: string; label: string }[]>([])
+const shPeriod = ref('')
+const shTop = ref<StockShareholderRow[]>([])
+const shFree = ref<StockShareholderRow[]>([])
+const shTab = ref<'top' | 'free'>('top')
+const shLoading = ref(false)
+const shError = ref('')
+const shFound = ref(false)
+let shLoaded = false
+
+async function loadShareholders(period?: string) {
+  shLoading.value = true
+  shError.value = ''
+  try {
+    const r = await fetchStockShareholders(code.value, { period, periods: 40 })
+    shPeriods.value = r.periods
+    // 后端会把不存在 / 非法的报告期回退到最新一期，前端一律以返回值为准
+    shPeriod.value = r.period ?? ''
+    shTop.value = r.top
+    shFree.value = r.free
+    shFound.value = r.found
+    shLoaded = true
+  } catch {
+    shError.value = '加载失败，请检查后端服务是否启动'
+    shTop.value = []
+    shFree.value = []
+    shFound.value = false
+  } finally {
+    shLoading.value = false
+  }
+}
+
+function onShPeriodChange() {
+  loadShareholders(shPeriod.value)
+}
+
+/** 增减：有股数就显示股数（万/亿自适应 + 正负号），源侧只给文字（不变/新进）就显示文字。 */
+function shChangeText(r: StockShareholderRow): string {
+  if (r.holdChange != null && r.holdChange !== 0) {
+    const a = Math.abs(r.holdChange)
+    const v = a >= 1e8 ? `${(a / 1e8).toFixed(2)} 亿` : `${(a / 1e4).toFixed(2)} 万`
+    return (r.holdChange > 0 ? '+' : '-') + v
+  }
+  return r.changeText || (r.holdChange === 0 ? '不变' : '—')
+}
+
+function shChangeClass(r: StockShareholderRow): string {
+  if (r.holdChange == null) return r.changeText === '新进' ? 'sh-up' : ''
+  return r.holdChange > 0 ? 'sh-up' : r.holdChange < 0 ? 'sh-down' : ''
+}
+
 // 财报列表按需加载；切回行情 tab 时逼 ECharts 重算宽度（隐藏 pane 里宽度会变 0）
 watch(activeTab, async v => {
   if (v === 'reports' && !reportsLoaded) await loadReports()
+  if (v === 'shareholders' && !shLoaded) await loadShareholders()
   if (v === 'holdings' && !holdingsLoaded) await loadHoldings()
   if (v === 'financials' && !financialsLoaded) await loadFinancials()
   if (v === 'financials') await loadStatement()
@@ -562,6 +622,7 @@ watch(activeTab, async v => {
 onMounted(() => {
   loadDetail()
   if (route.query.tab === 'reports') activeTab.value = 'reports'
+  if (route.query.tab === 'shareholders') activeTab.value = 'shareholders'
   if (route.query.tab === 'holdings') activeTab.value = 'holdings'
   if (route.query.tab === 'financials') activeTab.value = 'financials'
 })
@@ -570,6 +631,12 @@ watch(code, () => {
   range.value = '1y'
   reportsLoaded = false
   reports.value = []
+  shLoaded = false
+  shPeriods.value = []
+  shPeriod.value = ''
+  shTop.value = []
+  shFree.value = []
+  shFound.value = false
   holdingsLoaded = false
   holdings.value = []
   holdingsFound.value = false
@@ -1223,6 +1290,77 @@ const chartOption = computed(() => {
           </div>
         </el-tab-pane>
 
+        <el-tab-pane label="股东信息" name="shareholders">
+          <!-- ── 股东信息（十大股东 / 十大流通股东，2026-11-10） ── -->
+          <div class="card">
+            <div class="card-head">
+              <h2>
+                股东信息
+                <small v-if="shPeriod">报告期 {{ shPeriod }} · 按报告期倒序</small>
+                <small v-else>十大股东 / 十大流通股东</small>
+              </h2>
+              <el-select v-model="shPeriod" placeholder="最新报告期" style="width: 150px"
+                         :disabled="!shPeriods.length" @change="onShPeriodChange">
+                <el-option v-for="p in shPeriods" :key="p.date" :label="p.label" :value="p.date" />
+              </el-select>
+            </div>
+            <div v-if="shError" class="error-box">{{ shError }}</div>
+            <template v-else>
+              <div class="stmt-tabs">
+                <button :class="['stmt-tab', { active: shTab === 'top' }]"
+                        @click="shTab = 'top'">十大股东</button>
+                <button :class="['stmt-tab', { active: shTab === 'free' }]"
+                        @click="shTab = 'free'">十大流通股东</button>
+              </div>
+              <div v-if="!shLoading && !shFound" class="empty-note">
+                该股票暂无股东披露数据（源侧未披露，或为已退市 / 吸收合并主体）。
+              </div>
+              <el-table v-else :data="shTab === 'top' ? shTop : shFree" v-loading="shLoading"
+                        size="small" empty-text="该报告期暂无披露">
+                <el-table-column label="名次" width="62" align="center">
+                  <template #default="{ row }">{{ row.rank ?? '—' }}</template>
+                </el-table-column>
+                <el-table-column label="股东名称" min-width="260">
+                  <template #default="{ row }">
+                    <span class="sh-name">{{ row.name || '—' }}</span>
+                    <i v-if="row.isSjkzr === 1" class="sh-tag">实控人</i>
+                    <i v-else-if="row.isDg === 1" class="sh-tag">董监高</i>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="shTab === 'free'" label="股东类型" width="116">
+                  <template #default="{ row }">{{ row.holderType || '—' }}</template>
+                </el-table-column>
+                <el-table-column label="持股数（万股）" width="132" align="right">
+                  <template #default="{ row }"><b>{{ fmtWanShares(row.holdNum) }}</b></template>
+                </el-table-column>
+                <el-table-column label="占总股本" width="100" align="right">
+                  <template #default="{ row }">{{ fmtRatio(row.totalRatio) }}</template>
+                </el-table-column>
+                <el-table-column v-if="shTab === 'free'" label="占流通股" width="100" align="right">
+                  <template #default="{ row }">{{ fmtRatio(row.floatRatio) }}</template>
+                </el-table-column>
+                <el-table-column label="较上期" width="110" align="right">
+                  <template #default="{ row }">
+                    <span :class="shChangeClass(row)">{{ shChangeText(row) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="shTab === 'free'" label="披露日" width="110">
+                  <template #default="{ row }">{{ row.noticeDate || '—' }}</template>
+                </el-table-column>
+              </el-table>
+              <p class="src-note report-note">
+                数据来源：东方财富 datacenter F10 十大股东 / 十大流通股东接口（不解析 PDF），
+                一个季度一行，报告期从 2016 年起。
+                <b>「十大股东」按总股本计算比例，「十大流通股东」按流通股计算比例</b>
+                （同时给出占总股本，两个比例为不同分母，不能相互比较）。
+                「较上期」= 相对上一报告期的持股数变化，源侧只给文字（不变 / 新进）时照原样显示。
+                十大股东表源侧不提供披露日，故该表不显示「披露日」列。
+                部分股票某一期未披露股东名单属源侧缺失，不是抓漏。
+              </p>
+            </template>
+          </div>
+        </el-tab-pane>
+
         <el-tab-pane label="基金持仓" name="holdings">
           <div class="card">
             <div class="card-head">
@@ -1343,6 +1481,17 @@ const chartOption = computed(() => {
 .fin-summary span { font-size: 12px; color: #999; }
 .fin-summary b { font-size: 16px; color: #1a1a2e; font-weight: 650; }
 .fin-chart { height: 280px; width: 100%; margin-bottom: 14px; }
+
+/* 股东信息（独立 tab，2026-11-10 从「财报链接」拆出） */
+.sh-name { color: #1a1a2e; }
+.sh-tag {
+  display: inline-block; margin-left: 6px; padding: 0 5px; font-size: 11px; font-style: normal;
+  color: #b26a00; background: #fff4e0; border: 1px solid #ffe0b2; border-radius: 3px;
+  vertical-align: 1px;
+}
+/* 增减按 A 股习惯：增持红、减持绿 */
+.sh-up { color: #e04b4b; }
+.sh-down { color: #17a673; }
 .fin-table {
   width: 100%;
   /* 悬停改暖黄（用户 2026-11-09 指定）：Element Plus 默认是 --el-fill-color-light 冷灰，

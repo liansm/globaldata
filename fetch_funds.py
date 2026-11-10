@@ -171,10 +171,54 @@ VALUES ('funds', %s, NULL, NULL)
 """
 
 # 本仓库无 migrations，DDL 内联在脚本里，全部幂等。
+# ⚠ 2026-11-10 补：此前全仓**没有** funds / fund_holdings 的建表语句，只有下面那段
+#   建索引。库是早先手工建好的，所以一直没暴露；新建空库时本脚本会在建索引那步
+#   直接报 `relation "fund_holdings" does not exist`，早于任何写入。
 # ⚠ fund_holdings 原本只有 (fund_code, report_date) 索引，按 security_code 反查
 #   「哪些基金持有这只股票」会全表扫 147 万行；2026-11-09 实测加索引后
 #   查询 0.106s → 0.0055s。重建表后此索引必须自动补回。
+# ⚠ funds 的 nav 相关列（latest_nav 等）由 fetch_fund_nav.py 用 ALTER 补，
+#   两个脚本都能独立跑：这里只保证「本脚本要写的列」齐全，不重复定义那几个列。
 SQL_ENSURE = """
+CREATE TABLE IF NOT EXISTS funds (
+    fund_code        VARCHAR(12)  NOT NULL PRIMARY KEY,
+    fund_name        VARCHAR(200) NOT NULL,
+    fund_type        VARCHAR(60),
+    fund_company     VARCHAR(200),
+    fund_manager     VARCHAR(200),
+    scale            NUMERIC(16,4),
+    scale_raw        VARCHAR(50),
+    inception_date   DATE,
+    scale_updated_at TIMESTAMPTZ,
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+-- 表可能由别处先建（列不全）→ 逐列补，幂等
+ALTER TABLE funds ADD COLUMN IF NOT EXISTS fund_type        VARCHAR(60);
+ALTER TABLE funds ADD COLUMN IF NOT EXISTS fund_company     VARCHAR(200);
+ALTER TABLE funds ADD COLUMN IF NOT EXISTS fund_manager     VARCHAR(200);
+ALTER TABLE funds ADD COLUMN IF NOT EXISTS scale            NUMERIC(16,4);
+ALTER TABLE funds ADD COLUMN IF NOT EXISTS scale_raw        VARCHAR(50);
+ALTER TABLE funds ADD COLUMN IF NOT EXISTS inception_date   DATE;
+ALTER TABLE funds ADD COLUMN IF NOT EXISTS scale_updated_at TIMESTAMPTZ;
+ALTER TABLE funds ADD COLUMN IF NOT EXISTS updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE TABLE IF NOT EXISTS fund_holdings (
+    id            BIGSERIAL   PRIMARY KEY,
+    fund_code     VARCHAR(12) NOT NULL,
+    report_date   DATE        NOT NULL,
+    holding_type  VARCHAR(10) NOT NULL,   -- stock | bond
+    security_code VARCHAR(12) NOT NULL,
+    security_name VARCHAR(100),
+    ratio         NUMERIC(10,4),          -- 占净值 %
+    shares        NUMERIC(20,4),          -- 持股数（股）
+    market_value  NUMERIC(20,4),          -- 持仓市值（元）
+    CONSTRAINT fund_holdings_uniq
+        UNIQUE (fund_code, report_date, holding_type, security_code)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS fund_holdings_uniq
+    ON fund_holdings(fund_code, report_date, holding_type, security_code);
+CREATE INDEX IF NOT EXISTS idx_fund_holdings_fund_date
+    ON fund_holdings(fund_code, report_date);
 CREATE INDEX IF NOT EXISTS idx_fund_holdings_security_date
     ON fund_holdings(security_code, report_date, holding_type);
 """
