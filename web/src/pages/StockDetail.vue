@@ -169,8 +169,8 @@ const financialsResult = ref<StockFinancialsResult | null>(null)
 const financialsLoading = ref(false)
 const financialsError = ref('')
 const financialsFound = ref(false)
-// 季度对比的指标清单 = 表格列顺序：前 10 项单季、后 2 项累计。
-// unit 决定图表 Y 轴是「亿元」还是「%」——毛利率是比率，不能再除 1e8。
+// 季度对比的指标清单 = 表格列顺序：前 11 项单季、后 2 项累计。
+// unit 决定图表 Y 轴是「亿元」还是「%」——毛利率 / 净利率是比率，不能再除 1e8。
 // ⚠ 「其他收益」接口仍返回（qOtherIncome），2026-11-09 用户要求先从表格/图表里拿掉，
 //   数据与接口都保留，要显示回来只需在这里加一行 + 表格加一列。
 const FIN_METRICS = [
@@ -184,7 +184,9 @@ const FIN_METRICS = [
   { label: '营业利润',       value: 'qOperateProfit',  unit: 'money' },
   { label: '所得税',         value: 'qIncomeTax',      unit: 'money' },
   { label: '净利润',         value: 'qNetprofit',      unit: 'money' },
-  { label: '累计营业总收入', value: 'revenue',         unit: 'money' },
+  // 单季净利率 = 单季净利润 ÷ 单季营业总收入（2026-11-10 用户要求，紧跟净利润）
+  { label: '净利率',         value: 'qNetMargin',      unit: 'percent' },
+  { label: '累计总收入',     value: 'revenue',         unit: 'money' },
   { label: '累计归母净利',   value: 'parentNetprofit', unit: 'money' },
 ] as const
 type FinMetricKey = typeof FIN_METRICS[number]['value']
@@ -1020,7 +1022,7 @@ const chartOption = computed(() => {
                   <el-table-column label="报告期" width="104" fixed>
                     <template #default="{ row }"><b>{{ periodText(row) }}</b></template>
                   </el-table-column>
-                  <!-- 前 10 列为单季值，后 2 列为累计值（顺序 = 用户指定，勿随意调整） -->
+                  <!-- 前 11 列为单季值，后 2 列为累计值（顺序 = 用户指定，勿随意调整） -->
                   <el-table-column label="总收入" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qRevenue) }}</template>
                   </el-table-column>
@@ -1051,7 +1053,10 @@ const chartOption = computed(() => {
                   <el-table-column label="净利润" min-width="86" align="right">
                     <template #default="{ row }">{{ fmtYi(row.qNetprofit) }}</template>
                   </el-table-column>
-                  <el-table-column label="累计营业总收入" min-width="110" align="right">
+                  <el-table-column label="净利率" min-width="76" align="right">
+                    <template #default="{ row }">{{ fmtRatio(row.qNetMargin) }}</template>
+                  </el-table-column>
+                  <el-table-column label="累计总收入" min-width="92" align="right">
                     <template #default="{ row }">{{ fmtYi(row.revenue) }}</template>
                   </el-table-column>
                   <el-table-column label="累计归母净利" min-width="110" align="right">
@@ -1060,12 +1065,13 @@ const chartOption = computed(() => {
                 </el-table>
                 <p class="src-note report-note">
                   数据来源：东方财富 datacenter 结构化财报接口（无需解析 PDF），报告期从 2016 年起。
-                  表格<b>前 10 列为单季值</b>：一季报直接取累计值，二 / 三 / 四季报由年内相邻报告期差分，
+                  表格<b>前 11 列为单季值</b>：一季报直接取累计值，二 / 三 / 四季报由年内相邻报告期差分，
                   缺上一期时显示「—」；<b>后 2 列为年初至今累计值</b>。
                   「净利润」是<b>合并口径（含少数股东损益）</b>，与「累计归母净利」不同口径，
                   两者差额即少数股东损益。
                   毛利润 = 单季营业收入 − 单季营业成本；毛利率 = 毛利润 / 单季营业收入
                   （分母是营业收入，不是营业总收入）。
+                  净利率 = 单季净利润 / 单季营业总收入（分母为 0 或缺失时显示「—」）。
                   「财务费用」为负 = 利息收入大于支出，按源侧原样显示，不取绝对值。
                   行按<b>报告期年</b>分组：奇数年淡底、年份切换处加深上边框。
                   上方图表可在<b>柱状图 / 曲线图</b>之间切换：柱状看单季高低（按正负分色），

@@ -221,6 +221,8 @@ export interface StockFinancialRow {
   qIncomeTax: number | null
   /** 单季净利润，**合并口径（含少数股东损益）**，不是归母 */
   qNetprofit: number | null
+  /** 单季净利率 % = 单季净利润 ÷ 单季营业总收入（分母 ≤0 或缺上一期时为 null） */
+  qNetMargin: number | null
   // 资产负债表季末时点值（不差分）
   totalAssets: number | null
   totalCurrentAssets: number | null

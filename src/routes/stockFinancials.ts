@@ -8,6 +8,18 @@ const toNum = (v: unknown): number | null => (v == null ? null : Number(v))
 const day = (v: unknown): string | null => (v == null ? null : String(v).slice(0, 10))
 const toInt = (v: unknown): number | null => (v == null ? null : Number(v))
 
+/**
+ * 单季净利率 % = 单季净利润 ÷ 单季营业总收入。
+ * 分母缺失或 ≤ 0 时返回 null（**不用 0 充数**），前端显示「—」。
+ * ⚠ 与 View 里的 `net_margin` 不是一个口径：那个是累计（归母净利润 ÷ 营业总收入），
+ *   这个分子用合并口径净利润、且分子分母都是单季值 —— 两个数不能混看。
+ */
+const qNetMarginOf = (np: unknown, rev: unknown): number | null => {
+  const n = toNum(np)
+  const d = toNum(rev)
+  return n != null && d != null && d > 0 ? (n / d) * 100 : null
+}
+
 type Row = Record<string, unknown>
 
 /**
@@ -126,6 +138,8 @@ export function stockFinancialsRoutes(app: FastifyInstance) {
         qIncomeTax:        toNum(r.q_income_tax),
         // 「净利润」= 合并口径（含少数股东损益），不是归母；归母看 parentNetprofit / qParentNetprofit
         qNetprofit:        toNum(r.q_netprofit),
+        // 单季净利率 %：紧跟在净利润后面展示，口径见 qNetMarginOf 注释
+        qNetMargin:        qNetMarginOf(r.q_netprofit, r.q_revenue),
         // 资产负债表（季末时点值，禁止差分）
         totalAssets:       toNum(r.total_assets),
         totalCurrentAssets:toNum(r.total_current_assets),
